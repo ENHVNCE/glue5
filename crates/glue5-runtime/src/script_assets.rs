@@ -21,6 +21,15 @@
 //!
 //! - Models and text blocks of later updates (golf waits for two models,
 //!   the awards' texts `MPAWD` and the club emblems' textures).
+//! - Animation dictionaries, clip sets, particle assets and Scaleform movies
+//!   of later updates: the apartment's door (`anim@apt_trans@hinge_l`, the
+//!   heists'), the heist board's movies, freemode's pointing
+//!   (`anim@mp_point`). Every script's requests, scanned, name hundreds
+//!   this data lacks.
+//! - Cutscenes of later updates: Lester's introduction to the heists
+//!   (`HEIST_INT`), which `am_Heist_Int` plays for a high-end apartment's
+//!   owner, waiting for it to load. Started, a cutscene the data lacks ends
+//!   at once, and the scripts go on as after it.
 //!
 //! Each counts as loaded for the scripts here: they go on without those
 //! sounds, textures, models or texts.
@@ -137,30 +146,38 @@ pub(crate) unsafe extern "C" fn bank_loading_status(env: *mut Env, slot: u64, ba
     if status == FAILED && REQUEST.with(Cell::get) { LOADED } else { status }
 }
 
-/// The texture dictionary store's map from name hashes to slots, in this
-/// build: the bucket count, the buckets (the first entry's index each), the
-/// entries ({ u32 hash, u32 slot, u32 next }).
-const TXD_BUCKET_COUNT: u64 = 11097520;
-const TXD_BUCKETS: u64 = 11097512;
-const TXD_ENTRIES: u64 = 11097504;
+/// A streaming store's map from name hashes to slots, in this build: at
+/// `map` the entries ({ u32 hash, u32 slot, u32 next }), at +8 the buckets
+/// (the first entry's index each), at +16 the bucket count.
+#[derive(Clone, Copy)]
+struct SlotMap(u64);
+
+/// The texture dictionary store's.
+const TXDS: SlotMap = SlotMap(11097504);
+/// The particle asset store's.
+const PTFX_ASSETS: SlotMap = SlotMap(12283968);
+/// The cutscene store's (its names hashed in the files' namespace, 1).
+const CUTSCENES: SlotMap = SlotMap(19337352);
 const NONE: u32 = u32::MAX;
 
-/// Whether the texture dictionary store has a slot for this name hash.
-fn txd_slot_exists(m: Mem, hash: u32) -> bool {
-    let buckets = m.u32(TXD_BUCKET_COUNT);
-    if buckets == 0 {
-        return false;
-    }
-    let entries = m.u64(TXD_ENTRIES);
-    let mut i = m.u32(m.u64(TXD_BUCKETS) + u64::from(hash % buckets) * 4);
-    while i != NONE {
-        let entry = entries + u64::from(i) * 12;
-        if m.u32(entry) == hash {
-            return m.u32(entry + 4) != NONE;
+impl SlotMap {
+    /// Whether the store has a slot for this name hash.
+    fn has(self, m: Mem, hash: u32) -> bool {
+        let buckets = m.u32(self.0 + 16);
+        if buckets == 0 {
+            return false;
         }
-        i = m.u32(entry + 8);
+        let entries = m.u64(self.0);
+        let mut i = m.u32(m.u64(self.0 + 8) + u64::from(hash % buckets) * 4);
+        while i != NONE {
+            let entry = entries + u64::from(i) * 12;
+            if m.u32(entry) == hash {
+                return m.u32(entry + 4) != NONE;
+            }
+            i = m.u32(entry + 8);
+        }
+        false
     }
-    false
 }
 
 /// Hook for `graphics_commands::HasStreamedTxdLoaded(char const*)`.
@@ -169,7 +186,145 @@ pub(crate) unsafe extern "C" fn txd_loaded(env: *mut Env, name: u64) -> u32 {
         return 1;
     }
     let hash = unsafe { orig::hash_string(env, 0, name) };
-    !txd_slot_exists(unsafe { Mem::of(env) }, hash) as u32
+    !TXDS.has(unsafe { Mem::of(env) }, hash) as u32
+}
+
+/// Hook for `streaming_commands::HasAnimDictLoaded(char const*)`: yes too for
+/// a dictionary the anim store has no slot for.
+pub(crate) unsafe extern "C" fn anim_dict_loaded(env: *mut Env, name: u64) -> u32 {
+    if unsafe { orig::anim_dict_loaded(env, name) } != 0 {
+        return 1;
+    }
+    (unsafe { orig::anim_dict_exists(env, name) } == 0) as u32
+}
+
+/// Hook for `streaming_commands::HasClipSetLoaded(char const*)` (clip sets and
+/// anim sets): yes too for a name no clip set has.
+pub(crate) unsafe extern "C" fn clip_set_loaded(env: *mut Env, name: u64) -> u32 {
+    if unsafe { orig::clip_set_loaded(env, name) } != 0 {
+        return 1;
+    }
+    let hash = unsafe { orig::hash_string(env, 0, name) };
+    let Ok(top) = (unsafe { exports::emscripten_stack_get_current(env) }) else { return 0 };
+    let Ok(id) = (unsafe { exports::_emscripten_stack_alloc(env, 16) }) else { return 0 };
+    unsafe { Mem::of(env) }.set_u32(id, hash);
+    let clip_set = unsafe { orig::clip_set(env, id) };
+    let _ = unsafe { exports::_emscripten_stack_restore(env, top) };
+    (clip_set == 0) as u32
+}
+
+/// Hook for `streaming_commands::HasNamedPtFxAssetLoaded(char const*)`: yes
+/// too for an asset the particle asset store has no slot for.
+pub(crate) unsafe extern "C" fn named_ptfx_loaded(env: *mut Env, name: u64) -> u32 {
+    if unsafe { orig::named_ptfx_loaded(env, name) } != 0 {
+        return 1;
+    }
+    let hash = unsafe { orig::hash_string(env, 0, name) };
+    !PTFX_ASSETS.has(unsafe { Mem::of(env) }, hash) as u32
+}
+
+/// Script threads that asked for a Scaleform movie this data lacks (which
+/// the request answers with 0).
+static LACKING_MOVIE: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+/// Hook for `graphics_commands::CommandRequestScaleformMovieCommon(char
+/// const*, bool, bool)`: REQUEST_SCALEFORM_MOVIE and its variants.
+pub(crate) unsafe extern "C" fn scaleform_request(env: *mut Env, name: u64, a: u32, b: u32) -> u32 {
+    let movie = unsafe { orig::scaleform_request(env, name, a, b) };
+    if movie == 0 && name != 0 && !movie_in_image(env, &unsafe { Mem::of(env) }.str(name)) {
+        let thread = unsafe { orig::script_active_thread(env) };
+        let mut lacking = LACKING_MOVIE.lock().unwrap();
+        if thread != 0 && !lacking.contains(&thread) {
+            lacking.push(thread);
+        }
+    }
+    movie
+}
+
+/// Whether the game data has this Scaleform movie (its file).
+fn movie_in_image(env: *mut Env, name: &str) -> bool {
+    let Ok(top) = (unsafe { exports::emscripten_stack_get_current(env) }) else { return true };
+    // Room for what the engine adds to the name.
+    let cap = name.len() + 64;
+    let Ok(at) = (unsafe { exports::_emscripten_stack_alloc(env, cap as u64) }) else { return true };
+    unsafe { Mem::of(env) }.write_str(at, name, cap);
+    let exists = unsafe { orig::scaleform_in_image(env, at) } != 0;
+    let _ = unsafe { exports::_emscripten_stack_restore(env, top) };
+    exists
+}
+
+/// The cutscene last asked for lacks in this data.
+static LACKING_CUTSCENE: AtomicBool = AtomicBool::new(false);
+
+/// Whether the cutscene store has this cutscene.
+fn cutscene_exists(env: *mut Env, name: u64) -> bool {
+    let hash = unsafe { orig::hash_string(env, 1, name) };
+    CUTSCENES.has(unsafe { Mem::of(env) }, hash)
+}
+
+/// Hook for `cutscene_commands::CommandRequestCutScene(char const*, int)`.
+pub(crate) unsafe extern "C" fn cutscene_request(env: *mut Env, name: u64, flags: u32) {
+    LACKING_CUTSCENE.store(name != 0 && !cutscene_exists(env, name), Ordering::Relaxed);
+    unsafe { orig::cutscene_request(env, name, flags) }
+}
+
+/// Hook for `cutscene_commands::CommandRequestCutSceneWithPlayBackList(char
+/// const*, int, int)`.
+pub(crate) unsafe extern "C" fn cutscene_request_list(env: *mut Env, name: u64, sections: u32, flags: u32) {
+    LACKING_CUTSCENE.store(name != 0 && !cutscene_exists(env, name), Ordering::Relaxed);
+    unsafe { orig::cutscene_request_list(env, name, sections, flags) }
+}
+
+/// Hook for `scrWrapped_HAS_CUTSCENE_LOADED::Call(rage::scrThread::Info&)`:
+/// yes too when the cutscene asked for lacks.
+pub(crate) unsafe extern "C" fn cutscene_loaded(env: *mut Env, info: u64) {
+    unsafe { orig::cutscene_loaded(env, info) };
+    let m = unsafe { Mem::of(env) };
+    let result = m.u64(info);
+    if m.u32(result) == 0 && LACKING_CUTSCENE.load(Ordering::Relaxed) {
+        m.set_u32(result, 1);
+    }
+}
+
+/// Hook for `scrWrapped_HAS_THIS_CUTSCENE_LOADED::Call(rage::scrThread::
+/// Info&)` (the cutscene's name the first parameter): yes too for a
+/// cutscene this data lacks.
+pub(crate) unsafe extern "C" fn this_cutscene_loaded(env: *mut Env, info: u64) {
+    unsafe { orig::this_cutscene_loaded(env, info) };
+    let m = unsafe { Mem::of(env) };
+    let result = m.u64(info);
+    let name = m.u64(m.u64(info + 16));
+    if m.u32(result) == 0 && name != 0 && !cutscene_exists(env, name) {
+        m.set_u32(result, 1);
+    }
+}
+
+/// Hook for `scrWrapped_HAS_SCALEFORM_MOVIE_FILENAME_LOADED::Call(rage::
+/// scrThread::Info&)` (the movie's name the first parameter): yes too for a
+/// movie this data lacks.
+pub(crate) unsafe extern "C" fn scaleform_file_loaded(env: *mut Env, info: u64) {
+    unsafe { orig::scaleform_file_loaded(env, info) };
+    let m = unsafe { Mem::of(env) };
+    let result = m.u64(info);
+    let name = m.u64(m.u64(info + 16));
+    if m.u32(result) == 0 && name != 0 && !movie_in_image(env, &m.str(name)) {
+        m.set_u32(result, 1);
+    }
+}
+
+/// Hook for `scrWrapped_HAS_SCALEFORM_MOVIE_LOADED::Call(rage::scrThread::
+/// Info&)` (the movie the first parameter, the answer the result): the movie
+/// 0 counts as loaded for a script that asked for one this data lacks.
+pub(crate) unsafe extern "C" fn scaleform_loaded(env: *mut Env, info: u64) {
+    unsafe { orig::scaleform_loaded(env, info) };
+    let m = unsafe { Mem::of(env) };
+    let result = m.u64(info);
+    if m.u32(result) == 0
+        && m.u32(m.u64(info + 16)) == 0
+        && LACKING_MOVIE.lock().unwrap().contains(&unsafe { orig::script_active_thread(env) })
+    {
+        m.set_u32(result, 1);
+    }
 }
 
 /// Hook for `streaming_commands::HasModelLoaded(int)`: HAS_MODEL_LOADED,
@@ -429,6 +584,16 @@ pub(crate) fn hooks(hooks: &mut glue5_game::Hooks) {
     hooks.bank_loading_status = Some(bank_loading_status);
     hooks.script_named_bank_request = Some(named_bank_request);
     hooks.script_txd_loaded = Some(txd_loaded);
+    hooks.anim_dict_loaded = Some(anim_dict_loaded);
+    hooks.clip_set_loaded = Some(clip_set_loaded);
+    hooks.named_ptfx_loaded = Some(named_ptfx_loaded);
+    hooks.scaleform_request = Some(scaleform_request);
+    hooks.scaleform_loaded = Some(scaleform_loaded);
+    hooks.scaleform_file_loaded = Some(scaleform_file_loaded);
+    hooks.cutscene_request = Some(cutscene_request);
+    hooks.cutscene_request_list = Some(cutscene_request_list);
+    hooks.cutscene_loaded = Some(cutscene_loaded);
+    hooks.this_cutscene_loaded = Some(this_cutscene_loaded);
     hooks.script_request = Some(script_request);
     hooks.script_loaded = Some(script_loaded);
 }
