@@ -196,8 +196,21 @@ fn completion(uri: &str, p: &Value, docs: &HashMap<String, String>) -> Value {
                 "sortText": format!("{rank:04}"),
                 "deprecated": i["deprecated"],
             });
-            if let Some(doc) = i["doc"].as_str().filter(|d| !d.is_empty()).and_then(api::documentation) {
-                item["documentation"] = json!({ "kind": "markdown", "value": doc });
+            // The details beside the list: the whole signature (the list cuts
+            // it), then the notes.
+            let doc = i["doc"].as_str().filter(|d| !d.is_empty()).and_then(api::documentation);
+            if !detail.is_empty() || doc.is_some() {
+                let mut value = String::new();
+                // (Not a namespace's whole table.)
+                if !detail.is_empty() && detail.len() <= 600 {
+                    let sep = if detail.starts_with('(') { "" } else { ": " };
+                    value.push_str(&format!("```luau\n{label}{sep}{detail}\n```"));
+                }
+                if let Some(doc) = doc {
+                    value.push_str("\n\n");
+                    value.push_str(&doc);
+                }
+                item["documentation"] = json!({ "kind": "markdown", "value": value });
             }
             item
         })
