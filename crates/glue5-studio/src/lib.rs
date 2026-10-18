@@ -8,6 +8,7 @@ mod chrome;
 mod editor;
 mod icons;
 mod menus;
+mod modpage;
 mod net;
 mod panel;
 mod sidebar;
@@ -53,7 +54,6 @@ fn App() -> impl IntoView {
         drawer: RwSignal::new(false),
         diags: RwSignal::new(HashMap::new()),
         cursor: RwSignal::new((1, 1)),
-        restart_on_save: RwSignal::new(storage().and_then(|s| s.get_item("glue5-restart").ok().flatten()).as_deref() != Some("0")),
         filter: RwSignal::new(Filter::All),
         query: RwSignal::new(String::new()),
         found: RwSignal::new(Vec::new()),
@@ -76,12 +76,6 @@ fn App() -> impl IntoView {
         }
     }
     connect(s);
-    Effect::new(move |_| {
-        let on = s.restart_on_save.get();
-        if let Some(st) = storage() {
-            let _ = st.set_item("glue5-restart", if on { "1" } else { "0" });
-        }
-    });
     Effect::new(move |_| {
         if let Some(n) = s.notice.get() {
             let _ = n;
@@ -195,6 +189,8 @@ fn Shell(s: S) -> impl IntoView {
                         <Show when=move || s.tabs.with(|t| t.is_empty())>
                             <Welcome s=s/>
                         </Show>
+                        // A mod's page, over the editor.
+                        {move || s.active.get().and_then(|p| mod_page(&p).map(str::to_string)).map(|name| view! { <modpage::ModPage s=s name=name/> })}
                     </div>
                     <BottomPanel s=s/>
                 </section>

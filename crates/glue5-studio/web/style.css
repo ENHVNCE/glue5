@@ -141,11 +141,45 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
 .state.wait { background: var(--ok); opacity: .55; }
 .state.stop { border: 1.5px solid var(--faint); }
 .state.err { background: var(--err); box-shadow: 0 0 0 3px rgba(240,149,149,.16); }
-.file { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 8px; height: 30px; margin-left: 22px; padding: 0 8px; border-radius: 7px; color: var(--muted); cursor: pointer; }
+.file { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto auto; align-items: center; gap: 8px; height: 30px; margin-left: 22px; padding: 0 8px; border-radius: 7px; color: var(--muted); cursor: pointer; }
 .file span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file:hover { background: var(--hover); color: var(--text-2); }
 .file.on { background: var(--active); color: var(--text); }
 .err-count { color: var(--err); font-size: 12px; }
+.mod.sel { background: var(--active); }
+.mod .name small { margin-left: 7px; color: var(--faint); font-size: 11.5px; }
+.mod .chev { display: grid; place-items: center; height: 100%; }
+.file-acts { display: none; gap: 2px; }
+.file-acts .icon-btn { width: 24px; height: 24px; }
+.file:hover .file-acts { display: flex; }
+.file.new { color: var(--faint); }
+.file.new:hover { color: var(--text-2); }
+/* A mod's page (its mod.json), over the editor. */
+.mp { position: absolute; inset: 0; z-index: 2; overflow: auto; background: var(--editor-bg); }
+.mp-in { max-width: 760px; margin: 0 auto; padding: 28px 32px 48px; display: grid; gap: 18px; }
+.mp-head { display: flex; align-items: center; gap: 14px; }
+.mp-head h1 { margin: 0; font: 700 34px/1 "Barlow Condensed"; color: var(--text); letter-spacing: .02em; overflow-wrap: anywhere; }
+.mp-head .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+.mp-head .grow { flex: 1; }
+.pill { font: 600 11.5px/1 var(--ui); padding: 5px 9px; border-radius: 99px; color: var(--muted); background: rgba(255,255,255,.06); white-space: nowrap; }
+.pill.ok { background: rgba(120,205,145,.14); color: var(--ok); }
+.pill.err { background: rgba(240,149,149,.12); color: var(--err); }
+.mp-card { border-radius: 12px; background: rgba(255,255,255,.035); border: 1px solid var(--line); overflow: hidden; }
+.mp-card h2 { margin: 0; padding: 12px 16px 6px; font: 700 13px/1 "Barlow Condensed"; letter-spacing: .08em; color: var(--muted); }
+.mp-row { display: flex; align-items: center; gap: 10px; padding: 10px 16px; min-height: 52px; border-top: 1px solid rgba(255,255,255,.04); }
+.mp-card h2 + .mp-row { border-top: 0; }
+.mp-row .lab { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.mp-row .lab b { color: var(--text-2); font-weight: 600; font-size: 13.5px; }
+.mp-row .lab small { color: var(--faint); font-size: 12px; }
+.mp .f { width: 300px; max-width: 55%; font: 600 13px var(--ui); color: var(--text); background: rgba(36,36,36,.9); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; outline: none; }
+.mp .f:focus { border-color: rgba(255,255,255,.3); }
+.mp .f.narrow { width: 120px; }
+.mp textarea.f { height: 64px; resize: vertical; line-height: 1.4; }
+.mp-data { margin: 0 16px 12px; padding: 10px 12px; max-height: 260px; overflow: auto; border-radius: 8px; background: rgba(0,0,0,.3); font: 400 12px/1.5 var(--mono); color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.mp-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.mp a.btn { text-decoration: none; }
+.btn.danger { color: var(--err); border-color: rgba(240,149,149,.35); background: rgba(240,149,149,.06); }
+.btn:disabled { opacity: .45; cursor: default; }
 .ico.small svg { width: 13px; height: 13px; }
 .empty { color: var(--faint); padding: 8px 12px; margin: 0; font-size: 12.5px; }
 .running { margin: 4px 8px 0; display: grid; gap: 6px; }
@@ -323,4 +357,12 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
   .phone-nav button.on { color: var(--text); }
   .phone-nav .badge { top: 6px; bottom: auto; right: auto; left: calc(50% + 6px); }
   .palette kbd { display: none; }
+  .mp-in { padding: 18px 12px 32px; gap: 14px; }
+  .mp-head h1 { font-size: 28px; }
+  .mp-row { flex-wrap: wrap; }
+  .mp-row .lab { flex-basis: 100%; }
+  .mp .f, .mp .f.narrow { width: 100%; max-width: none; }
+  .mp-row:has(.switch) { flex-wrap: nowrap; }
+  .mp-row:has(.switch) .lab { flex-basis: auto; }
+  .file-acts { display: flex; }
 }

@@ -18,13 +18,22 @@ pub(crate) fn Tabs(s: S) -> impl IntoView {
                 let p2 = t.path.clone();
                 let p3 = t.path.clone();
                 let active = move || s.active.get().as_deref() == Some(p.as_str());
-                let (file, module) = match t.path.split_once('/') { Some((m, f)) => (f.to_string(), m.to_string()), None => (t.path.clone(), String::new()) };
+                let page = mod_page(&t.path).map(str::to_string);
+                let (file, module) = match (&page, t.path.split_once('/')) {
+                    (Some(m), _) => (format!("⚙ {m}"), "mod".to_string()),
+                    (None, Some((m, f))) => (f.to_string(), m.to_string()),
+                    (None, None) => (t.path.clone(), String::new()),
+                };
+                let read_only = t.read_only && page.is_none();
                 view! {
                     <div class=move || if active() { "tab on" } else { "tab" }
-                        on:click=move |_| { s.active.set(Some(p2.clone())); with_editor(|e| e.open(&p2, "", false)); }>
+                        on:click=move |_| {
+                            s.active.set(Some(p2.clone()));
+                            if mod_page(&p2).is_none() { with_editor(|e| e.open(&p2, "", false)); }
+                        }>
                         <span>{file}</span>
                         <em>{module}</em>
-                        {if t.read_only { view! { <span class="ico lock" inner_html=icons::LOCK></span> }.into_any() }
+                        {if read_only { view! { <span class="ico lock" inner_html=icons::LOCK></span> }.into_any() }
                          else if t.dirty { view! { <span class="unsaved"></span> }.into_any() }
                          else { ().into_any() }}
                         <button class="x" on:click=move |ev| { ev.stop_propagation(); close_tab(s, &p3); }>"×"</button>
@@ -37,8 +46,9 @@ pub(crate) fn Tabs(s: S) -> impl IntoView {
 
 #[component]
 pub(crate) fn Toolbar(s: S) -> impl IntoView {
-    let current = move || s.active.get().filter(|p| p.contains('/'));
-    let module = move || current().map(|p| mod_of(&p).to_string());
+    let current = move || s.active.get().filter(|p| p.contains('/') && mod_page(p).is_none());
+    let page = move || s.active.get().and_then(|p| mod_page(&p).map(str::to_string));
+    let module = move || current().map(|p| mod_of(&p).to_string()).or_else(page);
     let info = move || module().and_then(|m| s.mods.with(|mods| mods.iter().find(|x| x.name == m).cloned()));
     let toggle_run = move |_| {
         let Some(m) = info() else { return };
@@ -54,30 +64,18 @@ pub(crate) fn Toolbar(s: S) -> impl IntoView {
             <div class="crumbs">
                 {move || current().map(|p| {
                     let (m, f) = p.split_once('/').map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or_default();
-                    view! { <span>{m}</span><span class="sep">"›"</span><span class="here">{f}</span> }
-                })}
+                    view! { <span>{m}</span><span class="sep">"›"</span><span class="here">{f}</span> }.into_any()
+                }).or_else(|| page().map(|m| view! { <span>{m}</span><span class="sep">"›"</span><span class="here">"Mod"</span> }.into_any()))}
             </div>
             <div class="grow"></div>
             {move || info().map(|m| {
                 let running = m.state == "running";
                 let name = m.name.clone();
-                let name2 = m.name.clone();
-                let autostart = m.autostart;
                 view! {
                     <div class="runstate">
                         <span class=state_class(&m)></span>
                         <b>{match m.state.as_str() { "running" if m.waiting => "Waiting", "running" => "Running", "error" => "Error", _ => "Stopped" }}</b>
                     </div>
-                    <label class="switch" title="Restart the mod when a file is saved">
-                        <input type="checkbox" prop:checked=move || s.restart_on_save.get() on:change=move |ev| s.restart_on_save.set(event_target_checked(&ev))/>
-                        <i></i><span>"Restart on save"</span>
-                    </label>
-                    <label class="switch" title="Start with the game">
-                        <input type="checkbox" prop:checked=autostart on:change=move |ev| {
-                            request("mods.autostart", json!({"name": name2, "on": event_target_checked(&ev)}), |_| {});
-                        }/>
-                        <i></i><span>"Autostart"</span>
-                    </label>
                     {running.then(|| view! {
                         <button class="btn" on:click=move |_| request("mods.restart", json!({"name": name}), |_| {})>
                             <span class="ico small" inner_html=icons::RESTART></span>"Restart"
