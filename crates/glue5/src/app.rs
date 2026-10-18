@@ -884,7 +884,7 @@ impl App {
         let s = &self.settings;
         let back_buffer = settings::render_size(self.window.size_in_pixels(), s.render_scale(), s.low_memory);
         if s.mods {
-            glue5_mods::install(&self.user_dir.join("mods"));
+            glue5_mods::install(&paths::mods_dir(&self.user_dir));
         }
         let game = glue5_runtime::start(
             glue5_runtime::Config {
@@ -1116,7 +1116,7 @@ impl App {
     /// while it is on.
     fn update_studio(&mut self) {
         if self.settings.mods && glue5_mods::dir().is_none() {
-            glue5_mods::open(&self.user_dir.join("mods"));
+            glue5_mods::open(&paths::mods_dir(&self.user_dir));
         }
         let wanted = (self.settings.mods && glue5_mods::dir().is_some() && self.settings.studio).then_some(self.settings.studio_lan);
         if self.studio.as_ref().map(|(s, _)| s.lan()) == wanted {

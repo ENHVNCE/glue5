@@ -81,6 +81,55 @@ fn android_external_dir() -> Option<PathBuf> {
     (!p.is_null()).then(|| PathBuf::from(unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned()))
 }
 
+/// The mods' folder. On phones it is beside the game's (`Documents/mods`
+/// on iOS, where the Files app and the Finder reach it; the external
+/// folder on Android), elsewhere in the user directory. A folder from
+/// before (in the user directory) is moved there once.
+pub fn mods_dir(user_dir: &Path) -> PathBuf {
+    let old = user_dir.join("mods");
+    let dir = beside_game().map_or_else(|| old.clone(), |d| d.join("mods"));
+    if dir != old && old.is_dir() && !dir.exists() {
+        // The same volume on iOS: a rename; on Android a copy.
+        if std::fs::rename(&old, &dir).is_err() {
+            match copy_dir(&old, &dir) {
+                Ok(()) => {
+                    let _ = std::fs::remove_dir_all(&old);
+                }
+                Err(e) => {
+                    log::warn!("mods: moving {} to {}: {e}", old.display(), dir.display());
+                    return old;
+                }
+            }
+        }
+        log::info!("mods: moved to {}", dir.display());
+    }
+    dir
+}
+
+/// Where a phone keeps the game's folder (its parent).
+fn beside_game() -> Option<PathBuf> {
+    #[cfg(target_os = "ios")]
+    return sdl3::filesystem::get_user_folder(sdl3::filesystem::Folder::DOCUMENTS).ok();
+    #[cfg(target_os = "android")]
+    return android_external_dir();
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    None
+}
+
+fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
 /// The app's cache folder: what can be fetched again (the stream's copy of
 /// the game, the packs this computer shares). iOS and tvOS may empty it
 /// while the app is not running; the stream then fetches again.
