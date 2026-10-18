@@ -76,6 +76,9 @@ pub struct Settings {
     pub studio: bool,
     /// Other devices on the network may open the Studio (with its code).
     pub studio_lan: bool,
+    /// The Studio's pairing code: kept, so that a browser paired once stays
+    /// paired when the game starts again (the Mods page makes a new one).
+    pub studio_code: String,
     /// Settings saved before the render scale: the back buffer's height.
     #[serde(skip_serializing)]
     render_height: Option<u32>,
@@ -234,6 +237,7 @@ impl Default for Settings {
             studio: true,
             // A phone's own browser is no place to write mods.
             studio_lan: crate::paths::MOBILE,
+            studio_code: String::new(),
             render_height: None,
             metalfx: None,
             metal_hud: None,

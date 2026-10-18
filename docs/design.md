@@ -927,8 +927,10 @@ whose own browser is no place to write mods).
 - Files written by any client reach open editors (a WebSocket message),
   changing only what differs (the cursor stays); a tab with unsaved
   changes keeps them and says so. Saving can restart the mod.
-- When the game starts again its code changes: the page asks for the new
-  one and keeps its editor, tabs and history; nothing retries the old
+- The pairing code is kept in the settings: a browser (and Claude Code's
+  MCP entry) paired once stays paired when the game starts again; the
+  Mods page makes a new one. When the code changes the page asks for
+  it and keeps its editor, tabs and history; nothing retries the old
   code meanwhile (the server takes no code for a minute after ten wrong
   ones).
 - Luau's indentation in the editor: a line leaving blocks or brackets

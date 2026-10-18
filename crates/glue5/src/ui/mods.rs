@@ -7,7 +7,7 @@ use egui::{Color32, CornerRadius, RichText, Sense, vec2};
 use glue5_mods::ModState;
 
 use super::pages::{card_title, sheet, small};
-use super::widgets::{Control, action_button, choice, inline_button, segmented, setting, slider, toggle};
+use super::widgets::{Control, action_button, action_buttons, choice, inline_button, segmented, setting, slider, toggle};
 use super::{Status, WARN, theme};
 use crate::settings::Settings;
 
@@ -281,8 +281,12 @@ fn studio_tab(ui: &mut egui::Ui, settings: &mut Settings, status: &Status) {
                     ui.ctx().copy_text(info.url.clone());
                 }
             });
-            setting(ui, &info.code, Control::Action, Some("Pairing code: the page asks for it once"), |ui| {
-                if action_button(ui, "Copy").clicked() {
+            setting(ui, &info.code, Control::Actions, Some("Pairing code: the page asks for it once"), |ui| {
+                let [new, copy] = <[_; 2]>::try_from(action_buttons(ui, &["New", "Copy"])).unwrap();
+                if new.on_hover_text("A new code: browsers paired with this one must pair again").clicked() {
+                    settings.studio_code.clear();
+                }
+                if copy.clicked() {
                     ui.ctx().copy_text(info.code.clone());
                 }
             });
@@ -293,7 +297,7 @@ fn studio_tab(ui: &mut egui::Ui, settings: &mut Settings, status: &Status) {
         None if settings.studio => small(ui, "Starting…", theme::MUTED),
         None => {}
     }
-    muted(ui, "Whoever has the code can run code in the game; it changes each time the Studio starts.");
+    muted(ui, "Whoever has the code can run code in the game: make a new one if someone should no longer have it.");
 }
 
 /// The address as a QR code, in a row like the settings': a tablet's or a

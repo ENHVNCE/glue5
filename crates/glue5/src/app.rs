@@ -730,7 +730,7 @@ impl App {
                 // Nothing stays pressed in the game behind a page.
                 input.release_all();
             }
-            if matches!(page_before, Some(Page::Settings | Page::Servers)) {
+            if matches!(page_before, Some(Page::Settings | Page::Servers | Page::Mods)) {
                 self.settings.save(&self.user_dir);
             }
         }
@@ -1118,15 +1118,21 @@ impl App {
         if self.settings.mods && glue5_mods::dir().is_none() {
             glue5_mods::open(&paths::mods_dir(&self.user_dir));
         }
-        let wanted = (self.settings.mods && glue5_mods::dir().is_some() && self.settings.studio).then_some(self.settings.studio_lan);
-        if self.studio.as_ref().map(|(s, _)| s.lan()) == wanted {
+        if self.settings.studio_code.is_empty() {
+            self.settings.studio_code = glue5_mods::studio::new_code();
+            self.settings.save(&self.user_dir);
+        }
+        let code = glue5_mods::studio::normalize(&self.settings.studio_code).unwrap_or_default();
+        let wanted = (self.settings.mods && glue5_mods::dir().is_some() && self.settings.studio)
+            .then(|| (self.settings.studio_lan, code.clone()));
+        if self.studio.as_ref().map(|(s, _)| (s.lan(), s.token().to_string())) == wanted {
             return;
         }
         self.studio = None;
-        if let Some(lan) = wanted {
+        if let Some((lan, code)) = wanted {
             // The usual port, else any (another app has it).
-            let started = glue5_mods::studio::Studio::start(glue5_mods::studio::PORT, lan)
-                .or_else(|_| glue5_mods::studio::Studio::start(0, lan));
+            let started = glue5_mods::studio::Studio::start(glue5_mods::studio::PORT, lan, &code)
+                .or_else(|_| glue5_mods::studio::Studio::start(0, lan, &code));
             match started {
                 Ok(studio) => {
                     let host = if lan {

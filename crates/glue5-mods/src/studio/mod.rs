@@ -36,12 +36,12 @@ pub struct Studio {
 
 impl Studio {
     /// Serves on `port` (0: any), on every interface when `lan`, else only
-    /// for this device.
-    pub fn start(port: u16, lan: bool) -> std::io::Result<Studio> {
+    /// for this device; `code` is the pairing code (see [`new_code`]).
+    pub fn start(port: u16, lan: bool, code: &str) -> std::io::Result<Studio> {
         let ip = if lan { Ipv4Addr::UNSPECIFIED } else { Ipv4Addr::LOCALHOST };
         let listener = TcpListener::bind(SocketAddr::from((ip, port)))?;
         let port = listener.local_addr()?.port();
-        let token = token();
+        let token = normalize(code).filter(|t| t.len() == 8).unwrap_or_else(new_code);
         let stop = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Server { token: token.clone(), failures: Mutex::new(Vec::new()) });
         let stopping = stop.clone();
@@ -76,6 +76,8 @@ impl Studio {
     }
 
     /// The code as people type it.
+    ///
+    /// (The code is the token.)
     pub fn pairing_code(&self) -> String {
         format!("{}-{}", &self.token[..4], &self.token[4..])
     }
@@ -103,7 +105,15 @@ impl Drop for Studio {
 }
 
 /// 8 characters of Crockford's base32: 40 bits.
-fn token() -> String {
+/// A code as typed (`abcd-1234`) as the token it is (`ABCD1234`).
+pub fn normalize(code: &str) -> Option<String> {
+    let t: String = code.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_uppercase();
+    (!t.is_empty()).then_some(t)
+}
+
+/// A new pairing code: 8 characters of Crockford's base32 (40 bits; the
+/// server takes no code for a minute after ten wrong ones).
+pub fn new_code() -> String {
     const ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
     let mut bytes = [0u8; 8];
     getrandom::fill(&mut bytes).expect("random");
