@@ -11,7 +11,9 @@ use serde_json::{Value, json};
 use super::{Socket, api, receive, send};
 use crate::files;
 
-pub fn run(mut ws: Socket) -> std::io::Result<()> {
+/// Serves one page until it goes or `stop` (the server stopped: the code
+/// changed, the Studio was turned off).
+pub fn run(mut ws: Socket, stop: &std::sync::atomic::AtomicBool) -> std::io::Result<()> {
     let hello = json!({
         "method": "hello",
         "params": {
@@ -37,13 +39,25 @@ pub fn run(mut ws: Socket) -> std::io::Result<()> {
     let mut menus = Value::Null;
     // Evaluations run on their own threads; their answers come back here.
     let (done_tx, done_rx) = mpsc::channel::<Value>();
+    // Evaluations running for this page (a few at a time).
+    let mut evaluating = 0;
     loop {
+        if stop.load(std::sync::atomic::Ordering::Acquire) {
+            let _ = ws.close(None);
+            let _ = ws.flush();
+            return Ok(());
+        }
         match receive(&mut ws) {
             Ok(Some(text)) => {
                 let Ok(msg) = serde_json::from_str::<Value>(&text) else { continue };
                 let id = msg["id"].clone();
                 let method = msg["method"].as_str().unwrap_or("").to_string();
                 if method == "eval" {
+                    if evaluating >= 4 {
+                        let _ = send(&mut ws, &json!({ "id": id, "error": "the game is still busy with the last ones" }));
+                        continue;
+                    }
+                    evaluating += 1;
                     let code = msg["params"]["code"].as_str().unwrap_or("").to_string();
                     let tx = done_tx.clone();
                     std::thread::spawn(move || {
@@ -70,6 +84,7 @@ pub fn run(mut ws: Socket) -> std::io::Result<()> {
             Err(()) => return Ok(()),
         }
         for reply in done_rx.try_iter() {
+            evaluating -= 1;
             if send(&mut ws, &reply).is_err() {
                 return Ok(());
             }

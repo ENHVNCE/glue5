@@ -178,6 +178,7 @@ pub fn run() -> Result<()> {
         stream_for: None,
         sharing: None,
         studio: None,
+        studio_failed: None,
         servers: Arc::default(),
         stream_waiting: None,
         last_failure: None,
@@ -332,6 +333,9 @@ struct App {
     /// GLUE 5 Studio, served while the game runs with mods and the setting
     /// is on, and what the mods page shows of it.
     studio: Option<(glue5_mods::studio::Studio, ui::StudioInfo)>,
+    /// The Studio could not start (both ports taken): when, and as what; not
+    /// tried again for a while.
+    studio_failed: Option<(Instant, (bool, String))>,
     /// Servers found on the network by the last search, and whether one runs.
     servers: Arc<Mutex<(bool, Vec<ui::FoundServer>)>>,
     /// Engine reads have waited for the server since then.
@@ -1118,14 +1122,24 @@ impl App {
         if self.settings.mods && glue5_mods::dir().is_none() {
             glue5_mods::open(&paths::mods_dir(&self.user_dir));
         }
-        if self.settings.studio_code.is_empty() {
-            self.settings.studio_code = glue5_mods::studio::new_code();
-            self.settings.save(&self.user_dir);
-        }
-        let code = glue5_mods::studio::normalize(&self.settings.studio_code).unwrap_or_default();
+        // None yet, "New" pressed, or not a code (an edited settings file).
+        let code = match glue5_mods::studio::normalize(&self.settings.studio_code) {
+            Some(code) => code,
+            None => {
+                self.settings.studio_code = glue5_mods::studio::new_code();
+                self.settings.save(&self.user_dir);
+                self.settings.studio_code.clone()
+            }
+        };
         let wanted = (self.settings.mods && glue5_mods::dir().is_some() && self.settings.studio)
             .then(|| (self.settings.studio_lan, code.clone()));
         if self.studio.as_ref().map(|(s, _)| (s.lan(), s.token().to_string())) == wanted {
+            return;
+        }
+        if let (Some((at, tried)), Some(w)) = (&self.studio_failed, &wanted)
+            && tried == w
+            && at.elapsed() < Duration::from_secs(10)
+        {
             return;
         }
         self.studio = None;
@@ -1146,8 +1160,12 @@ impl App {
                         lan,
                     };
                     self.studio = Some((studio, info));
+                    self.studio_failed = None;
                 }
-                Err(e) => log::warn!("studio: {e}"),
+                Err(e) => {
+                    log::warn!("studio: {e}");
+                    self.studio_failed = Some((Instant::now(), (lan, code)));
+                }
             }
         }
         self.ui.repaint();

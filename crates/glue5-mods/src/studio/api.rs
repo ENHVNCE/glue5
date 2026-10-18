@@ -249,10 +249,11 @@ fn mod_json(path: &str, text: Option<&str>) -> Value {
 /// disk when the checker has not got them.
 pub fn diagnostics(path: &str, text: Option<&str>) -> Value {
     let module = path.trim_start_matches('/');
-    if module.ends_with(".json") {
+    if module.ends_with("/mod.json") {
         return mod_json(module, text);
     }
     if !module.ends_with(".luau") {
+        // Other files are the mod's own business.
         return json!([]);
     }
     let result = Checker::with(|c| {

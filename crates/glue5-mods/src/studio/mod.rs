@@ -17,8 +17,8 @@ mod session;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 pub use api::GUIDE;
 
@@ -41,9 +41,9 @@ impl Studio {
         let ip = if lan { Ipv4Addr::UNSPECIFIED } else { Ipv4Addr::LOCALHOST };
         let listener = TcpListener::bind(SocketAddr::from((ip, port)))?;
         let port = listener.local_addr()?.port();
-        let token = normalize(code).filter(|t| t.len() == 8).unwrap_or_else(new_code);
+        let token = normalize(code).unwrap_or_else(new_code);
         let stop = Arc::new(AtomicBool::new(false));
-        let shared = Arc::new(Server { token: token.clone(), failures: Mutex::new(Vec::new()) });
+        let shared = Arc::new(Server { token: token.clone(), stop: stop.clone(), clients: AtomicU32::new(0) });
         let stopping = stop.clone();
         let thread = std::thread::Builder::new().name("studio".into()).spawn(move || {
             glue5_runtime::exit::panic_recoverable();
@@ -52,14 +52,29 @@ impl Studio {
                     break;
                 }
                 let Ok(stream) = stream else { continue };
+                // A thread each, a few at most (a browser opens about six).
+                if shared.clients.fetch_add(1, Ordering::AcqRel) >= MAX_CLIENTS {
+                    shared.clients.fetch_sub(1, Ordering::AcqRel);
+                    continue;
+                }
                 let server = shared.clone();
-                let _ = std::thread::Builder::new().name("studio client".into()).spawn(move || {
+                let spawned = std::thread::Builder::new().name("studio client".into()).spawn(move || {
                     // A panic here ends this connection, not the game.
                     glue5_runtime::exit::panic_recoverable();
+                    struct Leaving<'a>(&'a AtomicU32);
+                    impl Drop for Leaving<'_> {
+                        fn drop(&mut self) {
+                            self.0.fetch_sub(1, Ordering::AcqRel);
+                        }
+                    }
+                    let _leaving = Leaving(&server.clients);
                     if let Err(e) = server.serve(stream) {
                         log::debug!("studio: {e}");
                     }
                 });
+                if spawned.is_err() {
+                    shared.clients.fetch_sub(1, Ordering::AcqRel);
+                }
             }
         })?;
         log::info!("studio: serving on port {port}{}", if lan { " (network)" } else { " (this device)" });
@@ -105,16 +120,18 @@ impl Drop for Studio {
 }
 
 /// 8 characters of Crockford's base32: 40 bits.
-/// A code as typed (`abcd-1234`) as the token it is (`ABCD1234`).
+/// A code as typed (`abcd-1234`) as the token it is (`ABCD1234`), when it
+/// is one: 8 characters of the codes' alphabet.
 pub fn normalize(code: &str) -> Option<String> {
     let t: String = code.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_uppercase();
-    (!t.is_empty()).then_some(t)
+    (t.len() == 8 && t.bytes().all(|b| ALPHABET.contains(&b))).then_some(t)
 }
 
-/// A new pairing code: 8 characters of Crockford's base32 (40 bits; the
-/// server takes no code for a minute after ten wrong ones).
+const ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// A new pairing code: 8 characters of Crockford's base32 (40 bits; each
+/// wrong one costs a second, a few connections at a time).
 pub fn new_code() -> String {
-    const ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
     let mut bytes = [0u8; 8];
     getrandom::fill(&mut bytes).expect("random");
     bytes.iter().map(|b| ALPHABET[(b & 31) as usize] as char).collect()
@@ -136,9 +153,15 @@ fn checker_users(delta: i32) {
 
 struct Server {
     token: String,
-    /// Times of wrong tokens, for the rate limit.
-    failures: Mutex<Vec<Instant>>,
+    /// The server stopped (the Studio was turned off, or its code changed):
+    /// connections still open end too.
+    stop: Arc<AtomicBool>,
+    /// Connections being served.
+    clients: AtomicU32,
 }
+
+/// Connections served at once.
+const MAX_CLIENTS: u32 = 24;
 
 /// A request's head and body.
 pub(crate) struct Request {
@@ -147,6 +170,9 @@ pub(crate) struct Request {
     pub query: Vec<(String, String)>,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// The body's length (read only for requests that take one, once the
+    /// code is checked).
+    pub length: usize,
 }
 
 impl Request {
@@ -168,7 +194,21 @@ impl Server {
         let mut reader = BufReader::new(stream.try_clone()?);
         let mut out = stream;
         loop {
-            let Some(request) = read_request(&mut reader)? else { return Ok(()) };
+            if self.stop.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            let Some(mut request) = read_request(&mut reader)? else { return Ok(()) };
+            // A body only for those that take one, from whoever has the code.
+            if request.length > 0 {
+                let takes = request.method == "POST" && matches!(request.path.as_str(), "/mcp" | "/import");
+                if !takes || !self.authorized(&request) {
+                    return respond(&mut out, if takes { 401 } else { 413 }, "text/plain", b"pair with the game first", &[]);
+                }
+                (&mut reader).take(request.length as u64).read_to_end(&mut request.body)?;
+                if request.body.len() != request.length {
+                    return Ok(());
+                }
+            }
             let close = request.header("connection").is_some_and(|c| c.eq_ignore_ascii_case("close"));
             let upgrade = request.header("upgrade").is_some_and(|u| u.eq_ignore_ascii_case("websocket"));
             match (request.method.as_str(), request.path.as_str()) {
@@ -181,12 +221,18 @@ impl Server {
                     drop(reader);
                     let ws = accept(out, &request)?;
                     if request.path == "/lsp" {
+                        // Released when the last one goes, however it goes.
+                        struct User;
+                        impl Drop for User {
+                            fn drop(&mut self) {
+                                checker_users(-1);
+                            }
+                        }
                         checker_users(1);
-                        let r = lsp::run(ws);
-                        checker_users(-1);
-                        return r;
+                        let _user = User;
+                        return lsp::run(ws, &self.stop);
                     }
-                    return session::run(ws);
+                    return session::run(ws, &self.stop);
                 }
                 ("POST", "/mcp") => {
                     if !self.authorized(&request) || request.header("origin").is_some_and(|_| !same_origin(&request)) {
@@ -218,6 +264,15 @@ impl Server {
                             Ok(name) => respond(&mut out, 200, "application/json", format!("{{\"mod\":\"{name}\"}}").as_bytes(), &[])?,
                             Err(e) => respond(&mut out, 400, "text/plain; charset=utf-8", e.as_bytes(), &[])?,
                         }
+                    }
+                }
+                // Whether a code is the one (the page, to tell a game away
+                // from a changed code).
+                ("GET", "/check") => {
+                    if self.authorized(&request) {
+                        respond(&mut out, 200, "text/plain", b"ok", &[])?;
+                    } else {
+                        respond(&mut out, 401, "text/plain", b"wrong code", &[])?;
                     }
                 }
                 ("GET", "/natives.d.luau") => {
@@ -264,15 +319,13 @@ impl Server {
             .or_else(|| request.header("authorization").and_then(|a| a.strip_prefix("Bearer ")).map(str::to_string));
         let Some(given) = given else { return false };
         let given: String = given.chars().filter(|c| *c != '-' && *c != ' ').collect::<String>().to_ascii_uppercase();
-        let mut failures = crate::lock(&self.failures);
-        failures.retain(|t| t.elapsed() < Duration::from_secs(60));
-        if failures.len() >= 10 {
-            return false;
-        }
         let ok = given.len() == self.token.len()
             && given.bytes().zip(self.token.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0;
         if !ok {
-            failures.push(Instant::now());
+            // A wrong code costs this connection a second: guessing 40 bits
+            // takes ages, and a page elsewhere sending wrong ones locks no
+            // one out (a limit for everyone would).
+            std::thread::sleep(Duration::from_secs(1));
         }
         ok
     }
@@ -292,7 +345,9 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> std::io::Result<Option<Req
     let mut head = Vec::new();
     loop {
         let start = head.len();
-        if reader.read_until(b'\n', &mut head)? == 0 {
+        // Never more than the limit, even in one line.
+        let left = (MAX_HEAD + 1).saturating_sub(head.len()) as u64;
+        if reader.by_ref().take(left).read_until(b'\n', &mut head)? == 0 {
             return Ok(None);
         }
         if head.len() > MAX_HEAD {
@@ -328,13 +383,12 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> std::io::Result<Option<Req
         query,
         headers,
         body: Vec::new(),
+        length: 0,
     };
-    let len: usize = request.header("content-length").and_then(|l| l.trim().parse().ok()).unwrap_or(0);
-    if len > MAX_BODY {
+    request.length = request.header("content-length").and_then(|l| l.trim().parse().ok()).unwrap_or(0);
+    if request.length > MAX_BODY {
         return Err(std::io::Error::other("request body too large"));
     }
-    request.body.resize(len, 0);
-    reader.read_exact(&mut request.body)?;
     Ok(Some(request))
 }
 
@@ -399,8 +453,10 @@ fn accept(mut out: TcpStream, request: &Request) -> std::io::Result<Socket> {
         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
     )?;
     out.flush()?;
-    // Short reads let a session send while it waits for messages.
+    // Short reads let a session send while it waits for messages; a client
+    // that stops reading does not hold the thread for ever.
     out.set_read_timeout(Some(Duration::from_millis(50)))?;
+    out.set_write_timeout(Some(Duration::from_secs(10)))?;
     let config = tungstenite::protocol::WebSocketConfig::default().max_message_size(Some(MAX_BODY));
     Ok(tungstenite::WebSocket::from_raw_socket(out, tungstenite::protocol::Role::Server, Some(config)))
 }

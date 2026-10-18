@@ -933,10 +933,13 @@ whose own browser is no place to write mods).
   its menus, so the old run's going does not take the new run's.
 - The pairing code is kept in the settings: a browser (and Claude Code's
   MCP entry) paired once stays paired when the game starts again; the
-  Mods page makes a new one. When the code changes the page asks for
-  it and keeps its editor, tabs and history; nothing retries the old
-  code meanwhile (the server takes no code for a minute after ten wrong
-  ones).
+  Mods page makes a new one, which also closes the connections made with
+  the old one. A page that loses the game retries on its own; it asks
+  for a code only when the server says its code is wrong (`/check`),
+  and keeps its editor, tabs and history. A wrong code costs its
+  connection a second (no lockout that a page elsewhere could trigger);
+  bodies are read only from whoever has the code, a few connections at
+  a time.
 - Luau's indentation in the editor: a line leaving blocks or brackets
   open adds a level, however many (`f(x, function()` ... `end)`), and
   if-expressions open none.

@@ -91,6 +91,9 @@ struct Args {
     /// for this device only.
     #[arg(long, value_name = "PORT", requires = "mods")]
     studio: Option<u16>,
+    /// With --studio: its pairing code (8 characters; default: a new one).
+    #[arg(long, value_name = "CODE", requires = "studio")]
+    studio_code: Option<String>,
     /// Saves, settings and the pipeline cache (default: glue5-headless in
     /// the temporary directory).
     #[arg(long, value_name = "DIR")]
@@ -238,7 +241,7 @@ fn main() -> Result<()> {
     }
     let _studio = match args.studio {
         Some(port) => {
-            let studio = glue5_mods::studio::Studio::start(port, false, "")?;
+            let studio = glue5_mods::studio::Studio::start(port, false, args.studio_code.as_deref().unwrap_or(""))?;
             log::info!("studio: {} (code {})", studio.url("127.0.0.1"), studio.pairing_code());
             Some(studio)
         }

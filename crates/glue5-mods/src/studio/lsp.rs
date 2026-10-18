@@ -15,9 +15,15 @@ use crate::checker::Checker;
 /// again (`isIncomplete`), so a short list keeps phones quick.
 const MAX_ITEMS: usize = 150;
 
-pub fn run(mut ws: Socket) -> std::io::Result<()> {
+/// Serves one editor until it goes or `stop` (see session::run).
+pub fn run(mut ws: Socket, stop: &std::sync::atomic::AtomicBool) -> std::io::Result<()> {
     let mut docs: HashMap<String, String> = HashMap::new();
     loop {
+        if stop.load(std::sync::atomic::Ordering::Acquire) {
+            let _ = ws.close(None);
+            let _ = ws.flush();
+            break;
+        }
         let text = match receive(&mut ws) {
             Ok(Some(t)) => t,
             Ok(None) => continue,
@@ -38,6 +44,10 @@ pub fn run(mut ws: Socket) -> std::io::Result<()> {
                 "serverInfo": { "name": "glue5-luau", "version": env!("CARGO_PKG_VERSION") },
             })),
             "textDocument/didOpen" => {
+                // An editor has a handful open; this one is not an editor.
+                if docs.len() >= 64 && !docs.contains_key(&uri) {
+                    break;
+                }
                 docs.insert(uri.clone(), p["textDocument"]["text"].as_str().unwrap_or("").to_string());
                 publish(&mut ws, &uri, &docs)?;
                 None
