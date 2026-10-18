@@ -212,9 +212,9 @@ fn mods_tab(ui: &mut egui::Ui, page: &mut ModsPage, status: &Status) {
     // Before the game: which start with it.
     if !status.mods {
         for m in &mods {
-            let mut on = m.autostart;
+            let mut on = m.info.autostart;
             let note = if on { "Starts with the game" } else { "Not started with the game" };
-            setting(ui, &m.name, Control::Toggle, Some(note), |ui| {
+            setting(ui, &m.info.title, Control::Toggle, Some(note), |ui| {
                 if toggle(ui, &mut on).changed()
                     && let Err(e) = glue5_mods::set_autostart(&m.name, on)
                 {
@@ -229,14 +229,14 @@ fn mods_tab(ui: &mut egui::Ui, page: &mut ModsPage, status: &Status) {
             ModState::Running if m.waiting => "Waiting".to_owned(),
             ModState::Running => format!("Running · {:.1} ms per frame", m.cpu_ms),
             ModState::Error => format!("Error · {}", m.error.as_deref().unwrap_or("")),
-            ModState::Stopped if m.autostart => "Stopped · starts with the game".to_owned(),
+            ModState::Stopped if m.info.autostart => "Stopped · starts with the game".to_owned(),
             ModState::Stopped => "Stopped".to_owned(),
         };
         let dot = match m.state {
             ModState::Running => "• ",
             _ => "",
         };
-        setting(ui, &format!("{dot}{}", m.name), Control::Action, Some(&subtitle), |ui| {
+        setting(ui, &format!("{dot}{}", m.info.title), Control::Action, Some(&subtitle), |ui| {
             let running = m.state == ModState::Running;
             if action_button(ui, if running { "Stop" } else { "Start" }).clicked() {
                 if running {

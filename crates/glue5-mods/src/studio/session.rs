@@ -131,7 +131,56 @@ fn handle(method: &str, p: &Value) -> Result<Value, String> {
             Value::Null
         }
         "mods.autostart" => {
-            files::set_autostart(s("name")?, p["on"].as_bool().unwrap_or(false))?;
+            crate::set_autostart(s("name")?, p["on"].as_bool().unwrap_or(false))?;
+            Value::Null
+        }
+        // The mod's page: its info, what it stores.
+        "mods.info" => {
+            let name = s("name")?;
+            let info = files::info(name);
+            let stored = crate::stored(name);
+            let keys = serde_json::from_str::<serde_json::Map<String, Value>>(&stored).map_or(0, |m| m.len());
+            json!({
+                "title": info.title, "description": info.description, "author": info.author, "version": info.version,
+                "autostart": info.autostart, "restartOnSave": info.restart_on_save,
+                "stored": { "keys": keys, "bytes": if keys == 0 { 0 } else { stored.len() } },
+            })
+        }
+        "mods.setInfo" => {
+            let name = s("name")?;
+            let text = |k: &str| p["info"][k].as_str().unwrap_or("").to_string();
+            let info = crate::ModInfo {
+                title: text("title"),
+                description: text("description"),
+                author: text("author"),
+                version: text("version"),
+                autostart: p["info"]["autostart"].as_bool().unwrap_or(false),
+                restart_on_save: p["info"]["restartOnSave"].as_bool().unwrap_or(true),
+            };
+            files::set_info(name, &info)?;
+            Value::Null
+        }
+        "mods.delete" => {
+            let name = s("name")?;
+            // Stopped first (it would write its storage again as it ends).
+            if crate::mods().iter().any(|m| m.name == name && m.state == crate::ModState::Running) {
+                crate::stop(name);
+                let until = Instant::now() + Duration::from_secs(3);
+                while Instant::now() < until && crate::mods().iter().any(|m| m.name == name && m.state == crate::ModState::Running) {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            files::delete_mod(name)?;
+            Value::Null
+        }
+        "files.create" => {
+            files::create(s("path")?)?;
+            Value::Null
+        }
+        "storage.view" => Value::String(crate::stored(s("mod")?)),
+        "storage.clear" => {
+            crate::clear_stored(s("mod")?);
             Value::Null
         }
         "files.read" => json!({ "text": files::read(s("path")?)? }),

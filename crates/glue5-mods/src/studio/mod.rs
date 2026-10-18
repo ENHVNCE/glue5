@@ -188,6 +188,28 @@ impl Server {
                     }
                 }
                 ("GET" | "DELETE", "/mcp") => respond(&mut out, 405, "text/plain", b"POST only", &[("Allow", "POST")])?,
+                // A mod as a zip, to download; one from a zip, uploaded.
+                ("GET", "/export") => match request.param("mod").map(|m| m.to_string()) {
+                    Some(name) if self.authorized(&request) => match crate::files::export(&name) {
+                        Ok(zip) => {
+                            let disposition = format!("attachment; filename=\"{name}.zip\"");
+                            respond(&mut out, 200, "application/zip", &zip, &[("Content-Disposition", &disposition)])?;
+                        }
+                        Err(e) => respond(&mut out, 404, "text/plain", e.as_bytes(), &[])?,
+                    },
+                    _ => respond(&mut out, 401, "text/plain", b"pair with the game first", &[])?,
+                },
+                ("POST", "/import") => {
+                    if !self.authorized(&request) || request.header("origin").is_some_and(|_| !same_origin(&request)) {
+                        respond(&mut out, 401, "text/plain", b"pair with the game first", &[])?;
+                    } else {
+                        let hint = request.param("name").unwrap_or("mod").to_string();
+                        match crate::files::import(&request.body, &hint) {
+                            Ok(name) => respond(&mut out, 200, "application/json", format!("{{\"mod\":\"{name}\"}}").as_bytes(), &[])?,
+                            Err(e) => respond(&mut out, 400, "text/plain; charset=utf-8", e.as_bytes(), &[])?,
+                        }
+                    }
+                }
                 ("GET", "/natives.d.luau") => {
                     if self.authorized(&request) {
                         let defs = format!("{}{}", crate::world::definitions(), crate::natives::DEFINITIONS);

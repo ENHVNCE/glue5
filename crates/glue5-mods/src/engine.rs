@@ -241,6 +241,11 @@ impl Engine {
                 }
                 self.jobs.borrow_mut().push_back((code, reply));
             }
+            Command::ClearStorage(name) => {
+                if let Some(r) = self.running.iter().find(|r| r.name == name) {
+                    r.vm.clear_storage();
+                }
+            }
             Command::Stop(name) => {
                 if let Some(r) = self.running.iter_mut().find(|r| r.name == name) {
                     r.ending = true;

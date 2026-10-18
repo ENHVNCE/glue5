@@ -14,6 +14,7 @@ mod json;
 mod menus;
 pub mod natives;
 mod storage;
+mod zip;
 pub mod studio;
 mod vm;
 pub mod world;
@@ -42,10 +43,25 @@ impl ModState {
     }
 }
 
+/// What a mod says of itself: its `mod.json`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModInfo {
+    /// As people see it (the folder's name when it has none).
+    pub title: String,
+    pub description: String,
+    pub author: String,
+    pub version: String,
+    /// It starts with the game.
+    pub autostart: bool,
+    /// Saving one of its files restarts it while it runs.
+    pub restart_on_save: bool,
+}
+
 /// A mod, as the application shows it.
 #[derive(Clone, Debug)]
 pub struct Mod {
     pub name: String,
+    pub info: ModInfo,
     pub state: ModState,
     /// Why it stopped, when it failed.
     pub error: Option<String>,
@@ -53,8 +69,6 @@ pub struct Mod {
     pub cpu_ms: f32,
     /// Memory of its VM, in bytes.
     pub memory: usize,
-    /// It starts with the game.
-    pub autostart: bool,
     /// It waits (the engine counts the time).
     pub waiting: bool,
 }
@@ -82,6 +96,8 @@ enum Command {
     Start(String),
     Stop(String),
     Eval(String, Sender<EvalResult>),
+    /// Empties a running mod's storage.
+    ClearStorage(String),
 }
 
 struct State {
@@ -211,7 +227,7 @@ pub fn install(dir: &Path) {
     }
     let held = held_back();
     let autostart: Vec<String> =
-        mods().into_iter().filter(|m| m.autostart && !held.contains(&m.name)).map(|m| m.name).collect();
+        mods().into_iter().filter(|m| m.info.autostart && !held.contains(&m.name)).map(|m| m.name).collect();
     for name in autostart {
         start(&name);
     }
@@ -240,9 +256,26 @@ pub fn cannot_start() -> Option<&'static str> {
     (!installed()).then_some("mods run with the game, and it is not running with them: start it (mods on), or mark the mod to start with the game")
 }
 
+/// What mod `name` keeps in its storage, as JSON (`{}` when nothing).
+pub fn stored(name: &str) -> String {
+    dir()
+        .and_then(|d| std::fs::read_to_string(d.join(".glue5/storage").join(format!("{name}.json"))).ok())
+        .unwrap_or_else(|| "{}".into())
+}
+
+/// Empties mod `name`'s storage (a running mod's too).
+pub fn clear_stored(name: &str) {
+    if let Some(d) = dir() {
+        let _ = std::fs::remove_file(d.join(".glue5/storage").join(format!("{name}.json")));
+    }
+    command(Command::ClearStorage(name.to_string()));
+}
+
 /// Whether mod `name` starts with the game.
 pub fn set_autostart(name: &str, on: bool) -> Result<(), String> {
-    files::set_autostart(name, on)
+    let mut info = files::info(name);
+    info.autostart = on;
+    files::set_info(name, &info)
 }
 
 /// Reads the mods folder again (new or removed mods).
@@ -254,20 +287,20 @@ pub fn refresh() {
             let path = entry.path();
             if path.join("main.luau").is_file() {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                found.push((name, files::autostart(&path)));
+                found.push((name.clone(), files::info_at(&path, &name)));
             }
         }
     }
-    found.sort();
+    found.sort_by(|a, b| a.0.cmp(&b.0));
     let mut s = crate::lock(&SHARED.state);
     let before = s.mods.len();
     s.mods.retain(|m| m.state != ModState::Stopped || found.iter().any(|(n, _)| *n == m.name));
     let mut changed = before != s.mods.len();
-    for (name, autostart) in found {
+    for (name, info) in found {
         match s.mods.iter_mut().find(|m| m.name == name) {
             Some(m) => {
-                changed |= m.autostart != autostart;
-                m.autostart = autostart;
+                changed |= m.info != info;
+                m.info = info;
             }
             None => {
                 changed = true;
@@ -277,7 +310,7 @@ pub fn refresh() {
                     error: None,
                     cpu_ms: 0.0,
                     memory: 0,
-                    autostart,
+                    info,
                     waiting: false,
                 })
             }

@@ -527,6 +527,15 @@ fn short(x: f32) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
+impl Vm {
+    /// Empties the mod's storage.
+    pub fn clear_storage(&self) {
+        if let Some(storage) = &self.storage {
+            storage.clear_now();
+        }
+    }
+}
+
 impl Drop for Vm {
     /// The mod stops: its storage is written now.
     fn drop(&mut self) {

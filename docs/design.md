@@ -715,8 +715,18 @@ prompts, aim assist and menu behaviour:
 ## Mods
 
 Mods are Luau scripts (`crates/glue5-mods`) that call the game's script
-commands (natives). Each mod is a folder in the user directory's `mods`
-with a `main.luau` and an optional `mod.json` (`{"autostart": true}`).
+commands (natives). Each mod is a folder in the mods folder with a
+`main.luau` and an optional `mod.json`: its name as shown, description,
+author, version, whether it starts with the game and restarts when a
+file is saved. The Studio shows mod.json as the mod's page, not as a
+file. The mods folder is the user directory's `mods` on computers and
+beside the game's folder on phones (`Documents/mods` on iOS, where the
+Files app reaches it); one from before is moved there.
+
+The Studio exports a mod as a .zip (its files, not what it stored) and
+imports one (its files at the top or in one folder, with a main.luau;
+a name taken gets `-2`); an imported mod does not start with the game
+until the player says so.
 
 The Mods page holds them: the start page's Mods button, Settings › Game ›
 Mods, F7 in the game, and on touch screens a button beside the settings
