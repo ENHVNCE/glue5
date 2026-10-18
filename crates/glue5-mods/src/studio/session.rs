@@ -47,6 +47,7 @@ pub fn run(mut ws: Socket) -> std::io::Result<()> {
                     let code = msg["params"]["code"].as_str().unwrap_or("").to_string();
                     let tx = done_tx.clone();
                     std::thread::spawn(move || {
+                        glue5_runtime::exit::panic_recoverable();
                         let reply = match api::eval(&code, Duration::from_secs(10)) {
                             Ok(v) => json!({ "id": id, "result": v }),
                             Err(e) => json!({ "id": id, "error": e }),

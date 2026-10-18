@@ -10,16 +10,20 @@
 //! all stays on the engine's script update.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use glue5_game::{Env, Hooks, orig};
 use glue5_runtime::memory::Mem;
 
-use crate::vm::{Jobs, Step, Vm};
+use crate::vm::{Jobs, SLICE, Step, Vm};
 use crate::{Command, LogLevel, ModState, SHARED, log_line, natives};
+
+/// What all the mods together may take of a frame: each gets at most a
+/// slice, and while the budget lasts.
+const BUDGET: Duration = Duration::from_millis(4);
 
 /// The REPL's thread: `eval` runs there, as a mod of its own.
 const REPL: &str = "~eval";
@@ -71,6 +75,13 @@ struct Engine {
     /// that was last checked.
     catalog: bool,
     catalog_checked: Option<Instant>,
+    /// The frame (GET_FRAME_COUNT) and the time the mods took in it.
+    frame: i32,
+    spent: Duration,
+    /// Mods that found no budget left: in the last frame (they go first,
+    /// whatever is left, so that none starves) and in this one.
+    skipped: HashSet<String>,
+    skipping: HashSet<String>,
 }
 
 thread_local! {
@@ -81,7 +92,18 @@ unsafe extern "C" fn script_wait(env: *mut Env, info: u64) {
     let killed = ENGINE.with(|engine| {
         // A mod's native that waits would come back here: not for us then.
         let Ok(mut engine) = engine.try_borrow_mut() else { return false };
-        unsafe { engine.wait(env, info) }
+        // A panic must not cross into the engine (that aborts the game):
+        // it stops the mod it happened in.
+        let caught = glue5_runtime::exit::recoverable(|| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe { engine.wait(env, info) }))
+        });
+        match caught {
+            Ok(killed) => killed,
+            Err(panic) => {
+                engine.panicked(&*panic);
+                false
+            }
+        }
     });
     if !killed {
         unsafe { orig::script_wait(env, info) }
@@ -89,12 +111,29 @@ unsafe extern "C" fn script_wait(env: *mut Env, info: u64) {
 }
 
 impl Engine {
+    /// A panic was caught in `wait`: the mod running then fails and stops.
+    fn panicked(&mut self, panic: &(dyn std::any::Any + Send)) {
+        let what = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "a panic".into());
+        let name = std::mem::take(&mut *crate::lock(&crate::RUNNING_MOD));
+        log::error!("mods: GLUE 5 failed inside {}: {what}", if name.is_empty() { "the mods' update" } else { &name });
+        if let Some(r) = self.running.iter_mut().find(|r| r.name == name) {
+            let e = format!("GLUE 5 failed while running this mod ({what}); it was stopped");
+            log_line(&r.name, LogLevel::Error, &e);
+            set_state(&r.name, ModState::Error, Some(e));
+            r.ending = true;
+        }
+    }
+
     /// Returns whether the active thread was killed (WAIT must not run).
     unsafe fn wait(&mut self, env: *mut Env, info: u64) -> bool {
         let mem = unsafe { Mem::of(env) };
         let active = unsafe { orig::script_active_thread(env) };
         if SHARED.pending.swap(false, Ordering::Acquire) {
-            let commands = std::mem::take(&mut SHARED.state.lock().unwrap().commands);
+            let commands = std::mem::take(&mut crate::lock(&SHARED.state).commands);
             for command in commands {
                 unsafe { self.command(env, command) };
             }
@@ -129,12 +168,27 @@ impl Engine {
         if r.ending || mem.u32(active + THREAD_STATE) == STATE_WAITING {
             return false;
         }
+        // The frame's budget, shared by the mods.
+        let frame = unsafe { natives::call_int(env, "GET_FRAME_COUNT") }.unwrap_or(0);
+        if frame != self.frame {
+            self.frame = frame;
+            self.spent = Duration::ZERO;
+            self.skipped = std::mem::take(&mut self.skipping);
+        }
+        let slice = if self.skipped.contains(&r.name) { SLICE } else { BUDGET.saturating_sub(self.spent).min(SLICE) };
+        if slice < Duration::from_micros(100) {
+            // Next frame, first.
+            self.skipping.insert(r.name.clone());
+            return false;
+        }
         let start = Instant::now();
         let now = unsafe { natives::call_int(env, "GET_GAME_TIMER") }.unwrap_or(0) as u32 as u64;
-        *crate::RUNNING_MOD.lock().unwrap() = r.name.clone();
-        let step = natives::with_env(env, || r.vm.step(now));
-        crate::RUNNING_MOD.lock().unwrap().clear();
-        r.cpu = r.cpu * 0.9 + start.elapsed().as_secs_f32() * 1000.0 * 0.1;
+        *crate::lock(&crate::RUNNING_MOD) = r.name.clone();
+        let step = natives::with_env(env, || r.vm.step(now, slice));
+        crate::lock(&crate::RUNNING_MOD).clear();
+        let took = start.elapsed();
+        self.spent += took;
+        r.cpu = r.cpu * 0.9 + took.as_secs_f32() * 1000.0 * 0.1;
         let ms = match step {
             Step::Wait(ms) => {
                 if r.waiting != (ms > 0) {

@@ -16,7 +16,7 @@ use crate::{Menu, MenuInput, MenuItem, MenuKind, SHARED};
 pub type Handlers = Rc<RefCell<HashMap<u32, (Table, Option<Function>)>>>;
 
 fn next_id() -> u32 {
-    let mut s = SHARED.state.lock().unwrap();
+    let mut s = crate::lock(&SHARED.state);
     let id = s.next_menu_id;
     s.next_menu_id += 1;
     id
@@ -27,7 +27,7 @@ fn changed() {
 }
 
 fn with_item(module: &str, item: u32, f: impl FnOnce(&mut MenuItem)) {
-    let mut s = SHARED.state.lock().unwrap();
+    let mut s = crate::lock(&SHARED.state);
     if let Some(i) = s.menus.iter_mut().filter(|m| m.module == module).flat_map(|m| m.items.iter_mut()).find(|i| i.id == item) {
         f(i);
     }
@@ -37,7 +37,7 @@ fn with_item(module: &str, item: u32, f: impl FnOnce(&mut MenuItem)) {
 
 /// Mod `module`'s menus and what was done with them go (it stopped).
 pub fn remove_mod(module: &str) {
-    let mut s = SHARED.state.lock().unwrap();
+    let mut s = crate::lock(&SHARED.state);
     s.menus.retain(|m| m.module != module);
     s.inputs.retain(|(m, ..)| m != module);
     drop(s);
@@ -46,12 +46,12 @@ pub fn remove_mod(module: &str) {
 
 /// Whether mod `module` has a menu (then it stays, waiting for the player).
 pub fn has_menus(module: &str) -> bool {
-    SHARED.state.lock().unwrap().menus.iter().any(|m| m.module == module)
+    crate::lock(&SHARED.state).menus.iter().any(|m| m.module == module)
 }
 
 /// What was done with mod `module`'s menus since the last call.
 pub fn take_inputs(module: &str) -> Vec<(u32, MenuInput)> {
-    let mut s = SHARED.state.lock().unwrap();
+    let mut s = crate::lock(&SHARED.state);
     let mut out = Vec::new();
     s.inputs.retain(|(m, item, input)| {
         if m == module {
@@ -72,7 +72,7 @@ pub fn install(lua: &Lua, module: &str, handlers: Handlers) -> mlua::Result<()> 
         "notify",
         lua.create_function(move |_, text: String| {
             let text: String = text.chars().take(200).collect();
-            let mut s = SHARED.state.lock().unwrap();
+            let mut s = crate::lock(&SHARED.state);
             if s.notices.len() < 16 {
                 s.notices.push_back((m.clone(), text));
             }
@@ -84,7 +84,7 @@ pub fn install(lua: &Lua, module: &str, handlers: Handlers) -> mlua::Result<()> 
         "menu",
         lua.create_function(move |lua, title: String| {
             let id = next_id();
-            SHARED.state.lock().unwrap().menus.push(Menu {
+            crate::lock(&SHARED.state).menus.push(Menu {
                 module: m.clone(),
                 id,
                 title: title.chars().take(40).collect(),
@@ -111,7 +111,7 @@ fn menu_table(lua: &Lua, module: &str, menu: u32, handlers: Handlers) -> mlua::R
                 let id = next_id();
                 let item = MenuItem { id, label: label.chars().take(60).collect(), note, kind: kind.clone() };
                 {
-                    let mut s = SHARED.state.lock().unwrap();
+                    let mut s = crate::lock(&SHARED.state);
                     match s.menus.iter_mut().find(|x| x.id == menu) {
                         Some(m) if m.items.len() < 64 => m.items.push(item),
                         Some(_) => return Err(mlua::Error::runtime("a menu holds 64 items at most")),
@@ -207,7 +207,7 @@ fn menu_table(lua: &Lua, module: &str, menu: u32, handlers: Handlers) -> mlua::R
     t.set(
         "remove",
         lua.create_function(move |_, _: Table| {
-            SHARED.state.lock().unwrap().menus.retain(|m| m.id != menu);
+            crate::lock(&SHARED.state).menus.retain(|m| m.id != menu);
             changed();
             Ok(())
         })?,

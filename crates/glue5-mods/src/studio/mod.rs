@@ -46,6 +46,7 @@ impl Studio {
         let shared = Arc::new(Server { token: token.clone(), failures: Mutex::new(Vec::new()) });
         let stopping = stop.clone();
         let thread = std::thread::Builder::new().name("studio".into()).spawn(move || {
+            glue5_runtime::exit::panic_recoverable();
             for stream in listener.incoming() {
                 if stopping.load(Ordering::Acquire) {
                     break;
@@ -53,6 +54,8 @@ impl Studio {
                 let Ok(stream) = stream else { continue };
                 let server = shared.clone();
                 let _ = std::thread::Builder::new().name("studio client".into()).spawn(move || {
+                    // A panic here ends this connection, not the game.
+                    glue5_runtime::exit::panic_recoverable();
                     if let Err(e) = server.serve(stream) {
                         log::debug!("studio: {e}");
                     }
@@ -229,7 +232,7 @@ impl Server {
             .or_else(|| request.header("authorization").and_then(|a| a.strip_prefix("Bearer ")).map(str::to_string));
         let Some(given) = given else { return false };
         let given: String = given.chars().filter(|c| *c != '-' && *c != ' ').collect::<String>().to_ascii_uppercase();
-        let mut failures = self.failures.lock().unwrap();
+        let mut failures = crate::lock(&self.failures);
         failures.retain(|t| t.elapsed() < Duration::from_secs(60));
         if failures.len() >= 10 {
             return false;

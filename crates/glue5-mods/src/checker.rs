@@ -40,7 +40,7 @@ static CHECKER: Mutex<Option<Checker>> = Mutex::new(None);
 impl Checker {
     /// Runs `f` with the checker, made the first time.
     pub fn with<R>(f: impl FnOnce(&mut Checker) -> R) -> Result<R, String> {
-        let mut slot = CHECKER.lock().unwrap();
+        let mut slot = crate::lock(&CHECKER);
         if slot.is_none() {
             let (started, before) = (std::time::Instant::now(), glue5_runtime::memory::footprint().0);
             *slot = Some(Checker::new()?);
@@ -57,7 +57,7 @@ impl Checker {
 
     /// Drops the checker and its memory.
     pub fn release() {
-        CHECKER.lock().unwrap().take();
+        crate::lock(&CHECKER).take();
     }
 
     fn new() -> Result<Checker, String> {

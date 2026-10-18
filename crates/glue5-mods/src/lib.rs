@@ -166,7 +166,7 @@ pub fn note_failure() -> Option<String> {
 
 /// The mods kept from starting with the game this time, and why.
 pub fn held_back() -> Vec<String> {
-    HELD_BACK.lock().unwrap().clone()
+    crate::lock(&HELD_BACK).clone()
 }
 
 /// The mods folder `dir` (made if missing): its mods listed, their files
@@ -205,9 +205,9 @@ pub fn install(dir: &Path) {
         }
         if !names.is_empty() {
             let text = format!("{} did not start: the game stopped while it ran last time.", names.join(", "));
-            SHARED.state.lock().unwrap().notices.push_back(("mods".into(), text));
+            crate::lock(&SHARED.state).notices.push_back(("mods".into(), text));
         }
-        *HELD_BACK.lock().unwrap() = names;
+        *crate::lock(&HELD_BACK) = names;
     }
     let held = held_back();
     let autostart: Vec<String> =
@@ -215,6 +215,12 @@ pub fn install(dir: &Path) {
     for name in autostart {
         start(&name);
     }
+}
+
+/// A mutex's value, also after a panic while it was held (the panic was
+/// caught and its mod stopped; what it guards stays usable).
+pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The mods folder, once open.
@@ -253,7 +259,7 @@ pub fn refresh() {
         }
     }
     found.sort();
-    let mut s = SHARED.state.lock().unwrap();
+    let mut s = crate::lock(&SHARED.state);
     let before = s.mods.len();
     s.mods.retain(|m| m.state != ModState::Stopped || found.iter().any(|(n, _)| *n == m.name));
     let mut changed = before != s.mods.len();
@@ -285,7 +291,7 @@ pub fn refresh() {
 
 /// The mods and their state.
 pub fn mods() -> Vec<Mod> {
-    SHARED.state.lock().unwrap().mods.clone()
+    crate::lock(&SHARED.state).mods.clone()
 }
 
 /// Changes whenever [`mods`] would give something else (but the time and
@@ -324,26 +330,26 @@ fn command(c: Command) {
     if !installed() {
         return;
     }
-    SHARED.state.lock().unwrap().commands.push(c);
+    crate::lock(&SHARED.state).commands.push(c);
     SHARED.pending.store(true, Ordering::Release);
 }
 
 /// The log lines after `seq` (0: all kept), and the cursor to pass next.
 pub fn logs(seq: u64) -> (Vec<LogLine>, u64) {
-    let s = SHARED.state.lock().unwrap();
+    let s = crate::lock(&SHARED.state);
     let lines: Vec<LogLine> = s.log.iter().filter(|l| l.seq > seq).cloned().collect();
     (lines, s.next_seq - 1)
 }
 
 /// The files changed after `seq` (by any client), and the cursor to pass next.
 pub fn changes(seq: u64) -> (Vec<String>, u64) {
-    let s = SHARED.state.lock().unwrap();
+    let s = crate::lock(&SHARED.state);
     let paths = s.changes.iter().filter(|(n, _)| *n > seq).map(|(_, p)| p.clone()).collect();
     (paths, s.next_change - 1)
 }
 
 pub(crate) fn changed(path: &str) {
-    let mut s = SHARED.state.lock().unwrap();
+    let mut s = crate::lock(&SHARED.state);
     if s.changes.len() == 256 {
         s.changes.pop_front();
     }
@@ -390,18 +396,18 @@ pub enum MenuInput {
 
 /// The mods' menus.
 pub fn menus() -> Vec<Menu> {
-    SHARED.state.lock().unwrap().menus.clone()
+    crate::lock(&SHARED.state).menus.clone()
 }
 
 /// Whether a mod has a menu.
 pub fn has_menus() -> bool {
-    !SHARED.state.lock().unwrap().menus.is_empty()
+    !crate::lock(&SHARED.state).menus.is_empty()
 }
 
 /// The player changed or pressed an item: the menu shows it at once, the
 /// mod hears of it at its next turn.
 pub fn menu_input(module: &str, item: u32, input: MenuInput) {
-    let mut s = SHARED.state.lock().unwrap();
+    let mut s = crate::lock(&SHARED.state);
     for m in s.menus.iter_mut().filter(|m| m.module == module) {
         for i in m.items.iter_mut().filter(|i| i.id == item) {
             match (&mut i.kind, input) {
@@ -420,7 +426,7 @@ pub fn menu_input(module: &str, item: u32, input: MenuInput) {
 
 /// What the mods notified since the last call: (mod, text).
 pub fn take_notices() -> Vec<(String, String)> {
-    SHARED.state.lock().unwrap().notices.drain(..).collect()
+    crate::lock(&SHARED.state).notices.drain(..).collect()
 }
 
 /// Whether a native trapped: the game may now misbehave.
@@ -433,7 +439,7 @@ pub(crate) fn log_line(module: &str, level: LogLevel, text: &str) {
         LogLevel::Info => log::info!("mod {module}: {text}"),
         LogLevel::Error => log::error!("mod {module}: {text}"),
     }
-    let mut s = SHARED.state.lock().unwrap();
+    let mut s = crate::lock(&SHARED.state);
     if s.log.len() == LOG_LINES {
         s.log.pop_front();
     }

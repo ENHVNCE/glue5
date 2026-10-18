@@ -853,7 +853,14 @@ playing.
   - mods' script threads get stacks of their own (gameconfig.xml's MICRO
     stacks, 20 → 52);
   - when the game stops working, the failure names the mod and the native
-    that ran, and that mod does not start by itself next time.
+    that ran, and that mod does not start by itself next time;
+  - a panic in GLUE 5's code for a mod (a callback, a conversion) is
+    caught in the WAIT hook: that mod stops with an error, the game goes
+    on (a panic crossing into the engine would abort it); the Studio's
+    threads may panic without stopping the game either;
+  - a frame gives all the mods together 4 ms, each at most 2 ms (its main
+    code and tasks share it, taking turns going first); a mod that finds
+    the budget spent goes first in the next frame.
 
 ### GLUE 5 Studio
 
