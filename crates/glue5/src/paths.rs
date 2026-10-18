@@ -109,7 +109,7 @@ pub fn mods_dir(user_dir: &Path) -> PathBuf {
 /// Where a phone keeps the game's folder (its parent).
 fn beside_game() -> Option<PathBuf> {
     #[cfg(target_os = "ios")]
-    return sdl3::filesystem::get_user_folder(sdl3::filesystem::Folder::DOCUMENTS).ok();
+    return sdl3::filesystem::get_user_folder(sdl3::filesystem::Folder::DOCUMENTS).ok().map(Path::to_path_buf);
     #[cfg(target_os = "android")]
     return android_external_dir();
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
