@@ -168,10 +168,8 @@ pub(crate) fn close_tab(s: S, path: &str) {
 pub(crate) fn save(s: S, path: String) {
     let mut text = String::new();
     with_editor(|e| text = e.text(&path));
-    // As the mod's page says.
-    let restart = s.mods.with_untracked(|m| m.iter().any(|m| m.name == mod_of(&path) && m.restart_on_save));
     let t = text.clone();
-    request("files.write", json!({ "path": path, "text": text, "restart": restart }), move |r| match r {
+    request("files.write", json!({ "path": path, "text": text }), move |r| match r {
         Ok(_) => with_editor(|e| e.saved(&path, &t)),
         Err(e) => s.notice.set(Some(e)),
     });

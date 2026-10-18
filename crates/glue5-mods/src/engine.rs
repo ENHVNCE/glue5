@@ -156,7 +156,7 @@ impl Engine {
             let r = &self.running[i];
             if r.ending && r.thread != active {
                 unsafe { orig::script_kill_thread(env, r.thread_id) };
-                crate::menus::remove_mod(&r.name);
+                crate::menus::remove_instance(r.vm.instance());
                 self.running.remove(i);
             } else {
                 i += 1;

@@ -52,6 +52,8 @@ struct Sched {
     /// The game time of the current turn, ms.
     now: Rc<Cell<u64>>,
     handlers: menus::Handlers,
+    /// This run of the mod (its menus are its own).
+    instance: u64,
 }
 
 struct Task {
@@ -82,7 +84,7 @@ enum Outcome {
 impl Vm {
     /// Loads mod `name`'s `main.luau` from `dir`; `log` gets what it prints.
     pub fn new(name: &str, dir: &Path, log: Rc<dyn Fn(&str)>) -> mlua::Result<Vm> {
-        let sched = Sched::default();
+        let sched = Sched { instance: menus::next_instance(), ..Sched::default() };
         let (lua, deadline) = base(name, log, &sched)?;
         lua.globals().set("require", require(&lua, name, dir)?)?;
         let storage = Storage::open(name);
@@ -122,7 +124,7 @@ impl Vm {
 
     /// The REPL: runs `jobs`' snippets, as expressions when they are.
     pub fn repl(jobs: Jobs, log: Rc<dyn Fn(&str)>) -> mlua::Result<Vm> {
-        let sched = Sched::default();
+        let sched = Sched { instance: menus::next_instance(), ..Sched::default() };
         let (lua, deadline) = base("eval", log, &sched)?;
         let waiting: Rc<RefCell<HashMap<i64, Sender<EvalResult>>>> = Rc::default();
         let next = Cell::new(0i64);
@@ -211,7 +213,7 @@ impl Vm {
                 return failed;
             }
         }
-        let menus = menus::has_menus(&self.module);
+        let menus = menus::has_menus(self.sched.instance);
         let tasks = self.sched.tasks.borrow();
         if self.main.is_none() && tasks.is_empty() && !menus {
             return Step::Finished;
@@ -376,7 +378,7 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
             Ok(())
         })?,
     )?;
-    menus::install(&lua, name, sched.handlers.clone())?;
+    menus::install(&lua, name, sched.instance, sched.handlers.clone())?;
     json::install(&lua)?;
     // `world.vehicles()`..., the catalog's lists.
     let world = lua.create_table()?;
@@ -528,6 +530,11 @@ fn short(x: f32) -> String {
 }
 
 impl Vm {
+    /// This run of the mod.
+    pub fn instance(&self) -> u64 {
+        self.sched.instance
+    }
+
     /// Empties the mod's storage.
     pub fn clear_storage(&self) {
         if let Some(storage) = &self.storage {

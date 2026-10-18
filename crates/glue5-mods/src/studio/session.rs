@@ -187,13 +187,7 @@ fn handle(method: &str, p: &Value) -> Result<Value, String> {
         "files.write" => {
             let path = s("path")?;
             files::write(path, s("text")?)?;
-            if p["restart"].as_bool() == Some(true)
-                && let Some((name, _)) = path.split_once('/')
-                && crate::mods().iter().any(|m| m.name == name && m.state == crate::ModState::Running)
-            {
-                crate::restart(name);
-            }
-            Value::Null
+            json!({ "restarted": crate::saved(path) })
         }
         "files.delete" => {
             files::delete(s("path")?)?;

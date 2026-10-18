@@ -926,7 +926,11 @@ whose own browser is no place to write mods).
   `~console/input.luau`): highlighting and completions as in a file.
 - Files written by any client reach open editors (a WebSocket message),
   changing only what differs (the cursor stays); a tab with unsaved
-  changes keeps them and says so. Saving can restart the mod.
+  changes keeps them and says so. Saving a .luau file restarts its
+  running mod when its page says so (restartOnSave, on by default),
+  whoever saves it: the Studio or an agent's write_file, which then
+  answers with the new run's first log lines. Each run of a mod owns
+  its menus, so the old run's going does not take the new run's.
 - The pairing code is kept in the settings: a browser (and Claude Code's
   MCP entry) paired once stays paired when the game starts again; the
   Mods page makes a new one. When the code changes the page asks for

@@ -35,18 +35,26 @@ fn with_item(module: &str, item: u32, f: impl FnOnce(&mut MenuItem)) {
     changed();
 }
 
-/// Mod `module`'s menus and what was done with them go (it stopped).
-pub fn remove_mod(module: &str) {
+/// The menus of a run of a mod go (it stopped); not those of the mod's
+/// next run, which may be there already (a restart).
+pub fn remove_instance(instance: u64) {
     let mut s = crate::lock(&SHARED.state);
-    s.menus.retain(|m| m.module != module);
-    s.inputs.retain(|(m, ..)| m != module);
+    let items: Vec<u32> = s.menus.iter().filter(|m| m.instance == instance).flat_map(|m| m.items.iter().map(|i| i.id)).collect();
+    s.menus.retain(|m| m.instance != instance);
+    s.inputs.retain(|(_, item, _)| !items.contains(item));
     drop(s);
     changed();
 }
 
-/// Whether mod `module` has a menu (then it stays, waiting for the player).
-pub fn has_menus(module: &str) -> bool {
-    crate::lock(&SHARED.state).menus.iter().any(|m| m.module == module)
+/// Whether a run of a mod has a menu (then it stays, waiting for the player).
+pub fn has_menus(instance: u64) -> bool {
+    crate::lock(&SHARED.state).menus.iter().any(|m| m.instance == instance)
+}
+
+/// A number for each run of a mod.
+pub fn next_instance() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// What was done with mod `module`'s menus since the last call.
@@ -65,7 +73,7 @@ pub fn take_inputs(module: &str) -> Vec<(u32, MenuInput)> {
 }
 
 /// The `ui` table: `ui.menu(title)`, `ui.notify(text)`.
-pub fn install(lua: &Lua, module: &str, handlers: Handlers) -> mlua::Result<()> {
+pub fn install(lua: &Lua, module: &str, instance: u64, handlers: Handlers) -> mlua::Result<()> {
     let ui = lua.create_table()?;
     let m = module.to_string();
     ui.set(
@@ -86,6 +94,7 @@ pub fn install(lua: &Lua, module: &str, handlers: Handlers) -> mlua::Result<()> 
             let id = next_id();
             crate::lock(&SHARED.state).menus.push(Menu {
                 module: m.clone(),
+                instance,
                 id,
                 title: title.chars().take(40).collect(),
                 items: Vec::new(),

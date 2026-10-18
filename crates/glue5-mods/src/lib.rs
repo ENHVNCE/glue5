@@ -256,6 +256,21 @@ pub fn cannot_start() -> Option<&'static str> {
     (!installed()).then_some("mods run with the game, and it is not running with them: start it (mods on), or mark the mod to start with the game")
 }
 
+/// A mod's file was saved (`path`), from the Studio or by an agent: the
+/// mod restarts with it when it runs and its page says so ("Restart when a
+/// file is saved"). Whether it restarts.
+pub fn saved(path: &str) -> bool {
+    let Some((name, file)) = path.split_once('/') else { return false };
+    if !file.ends_with(".luau") {
+        return false;
+    }
+    let restarts = mods().iter().any(|m| m.name == name && m.state == ModState::Running && m.info.restart_on_save);
+    if restarts {
+        restart(name);
+    }
+    restarts
+}
+
 /// What mod `name` keeps in its storage, as JSON (`{}` when nothing).
 pub fn stored(name: &str) -> String {
     dir()
@@ -395,6 +410,9 @@ pub(crate) fn changed(path: &str) {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Menu {
     pub module: String,
+    /// The run of the mod that made it (a restarted mod's menus are its
+    /// new run's; the old run's go with it).
+    pub instance: u64,
     pub id: u32,
     pub title: String,
     pub items: Vec<MenuItem>,
