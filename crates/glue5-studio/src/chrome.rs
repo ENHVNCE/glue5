@@ -143,8 +143,18 @@ pub(crate) fn StatusBar(s: S) -> impl IntoView {
                 <span class="it errn">"A native failed: restart the game soon"</span>
             </Show>
             <span class="grow"></span>
-            <span class="it">{move || { let (l, c) = s.cursor.get(); format!("Ln {l}, Col {c}") }}</span>
-            <span class="it hide-t">"Luau"</span>
+            // The editor's, while it shows a file.
+            {move || s.active.get().filter(|p| mod_page(p).is_none()).map(|p| {
+                let language = match p.rsplit_once('.').map(|(_, e)| e) {
+                    Some("luau") => "Luau",
+                    Some("json") => "JSON",
+                    _ => "Plain Text",
+                };
+                view! {
+                    <span class="it">{move || { let (l, c) = s.cursor.get(); format!("Ln {l}, Col {c}") }}</span>
+                    <span class="it hide-t">{language}</span>
+                }
+            })}
             <span class="it">{move || {
                 let mods = s.mods.get();
                 let running: Vec<_> = mods.iter().filter(|m| m.state == "running").collect();

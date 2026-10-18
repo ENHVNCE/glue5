@@ -159,6 +159,8 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
 .file.new:hover { color: var(--text-2); }
 /* A mod's page (its mod.json), over the editor. */
 .mp { position: absolute; inset: 0; z-index: 2; overflow: auto; background: var(--editor-bg); }
+/* The editor's glass shows what is behind: not the file under a mod's page. */
+.code.page .editor-host { visibility: hidden; }
 .mp-in { max-width: 760px; margin: 0 auto; padding: 28px 32px 48px; display: grid; gap: 18px; }
 .mp-head { display: flex; align-items: center; gap: 14px; }
 .mp-head h1 { margin: 0; font: 700 34px/1 "Barlow Condensed"; color: var(--text); letter-spacing: .02em; overflow-wrap: anywhere; }
@@ -205,7 +207,10 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
 .notes { margin: 8px 0 0; color: var(--muted); font-size: 12.5px; white-space: pre-wrap; }
 
 /* editor column */
-.work { display: grid; grid-template-rows: 40px 40px minmax(0, 1fr) 230px; min-width: 0; min-height: 0; }
+.work { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 40px 40px minmax(0, 1fr) 230px; min-width: 0; min-height: 0; }
+/* Nothing open: no tab bar or toolbar over the welcome page. */
+.work.empty { grid-template-rows: minmax(0, 1fr) 230px; }
+.work.empty .tabs, .work.empty .toolbar { display: none; }
 .tabs { display: flex; align-items: flex-end; gap: 2px; padding: 0 8px; overflow-x: auto; scrollbar-width: none; background: var(--glass); border-bottom: 1px solid var(--line); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); }
 .tab { position: relative; flex: none; display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 6px 0 12px; border-radius: 9px 9px 0 0; color: var(--muted); cursor: pointer; white-space: nowrap; }
 .tab:hover { background: var(--hover); }
@@ -252,7 +257,7 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
 .welcome-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .hint code { display: inline-block; margin-top: 6px; font: 400 12px/1.5 var(--mono); color: var(--text-2); background: rgba(255,255,255,.05); padding: 6px 8px; border-radius: 6px; overflow-wrap: anywhere; user-select: all; }
 
-.panel { display: grid; grid-template-rows: 38px minmax(0, 1fr) auto; min-height: 0; background: var(--glass-strong); border-top: 1px solid var(--line-strong); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); }
+.panel { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 38px minmax(0, 1fr) auto; min-height: 0; background: var(--glass-strong); border-top: 1px solid var(--line-strong); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); }
 .ptabs { display: flex; align-items: center; gap: 4px; padding: 0 10px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
 .ptab { display: flex; align-items: center; gap: 7px; height: 28px; padding: 0 10px; border-radius: 7px; font: 700 13px/1 "Barlow Condensed"; letter-spacing: .06em; color: var(--muted); white-space: nowrap; }
 .ptab.on { background: var(--active); color: var(--text); }
@@ -283,6 +288,7 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
 .mcard header { display: flex; align-items: baseline; gap: 8px; padding: 8px 14px 6px; }
 .mcard header b { font: 700 16px/1 "Barlow Condensed"; letter-spacing: .05em; text-transform: uppercase; color: var(--text); }
 .mcard header span { color: var(--faint); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mcard .mempty { padding: 2px 14px 8px; color: var(--faint); font-size: 12.5px; }
 .mitem { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 40px; padding: 4px 14px; }
 .mitem:hover { background: var(--hover); }
 .mitem.label { min-height: 28px; color: var(--muted); }
@@ -301,6 +307,9 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
 .prompt .gt { color: var(--muted); pointer-events: none; }
 .repl-host { flex: 1; min-width: 0; max-height: 120px; overflow: auto; }
 .repl-host .cm-editor.cm-focused { outline: none; }
+/* Its example is cut, not wrapped, where it does not fit (and does not widen it). */
+.repl-host .cm-content { min-width: 0; }
+.repl-host .cm-placeholder { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: top; }
 .status { display: flex; align-items: center; gap: 2px; padding: 0 8px; background: var(--glass-strong); border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); overflow: hidden; white-space: nowrap; }
 .status .it { display: flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 5px; }
 .status .errn { color: var(--err); cursor: pointer; }
@@ -316,6 +325,7 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
   .sidebar { display: none; position: absolute; z-index: 20; left: 56px; top: 0; bottom: 0; width: 300px; background: rgba(16,17,19,.95); box-shadow: 24px 0 60px rgba(0,0,0,.5); }
   .app.drawer .sidebar { display: flex; }
   .work { grid-template-rows: 42px 42px minmax(0, 1fr) 200px; }
+  .work.empty { grid-template-rows: minmax(0, 1fr) 200px; }
   .act { width: 44px; height: 44px; }
   .btn { height: 32px; padding: 0 12px; }
 }
@@ -335,6 +345,7 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
   .activity { display: none; }
   .sidebar { position: static; display: none; width: auto; box-shadow: none; background: var(--glass); border: 0; }
   .work { grid-template-rows: 42px 44px minmax(0, 1fr); }
+  .work.empty { grid-template-rows: minmax(0, 1fr); }
   .panel { display: none; }
   .app.screen-mods .sidebar { display: flex; }
   .app.screen-mods .work { display: none; }
@@ -344,6 +355,10 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
   .app.screen-problems .tabs, .app.screen-problems .toolbar, .app.screen-problems .code,
   .app.screen-menus .tabs, .app.screen-menus .toolbar, .app.screen-menus .code { display: none; }
   .app.screen-console .panel, .app.screen-problems .panel, .app.screen-menus .panel { display: grid; border-top: 0; }
+  /* The bar below picks console, problems or menus: here only the console's filters. */
+  .ptab, .ptabs .grow { display: none; }
+  .app.screen-problems .ptabs, .app.screen-menus .ptabs { display: none; }
+  .app.screen-problems .panel, .app.screen-menus .panel { grid-template-rows: minmax(0, 1fr); }
   .menus { padding: 10px; }
   .mcard { flex-basis: 100%; }
   .mitem { min-height: 48px; }

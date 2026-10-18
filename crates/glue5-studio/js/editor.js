@@ -433,6 +433,8 @@ export class StudioEditor {
         extensions: [
           history(), drawSelection(), closeBrackets(), bracketMatching(), luau, syntaxHighlighting(highlight), theme,
           Prec.highest(replTheme),
+          // A long line goes on below, not off the side (a phone's prompt is narrow).
+          EditorView.lineWrapping,
           // Over the page: the panel's blur would clip them.
           tooltips({ parent: document.body }),
           completion,

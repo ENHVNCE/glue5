@@ -74,6 +74,9 @@ pub(crate) fn connect(s: S) {
         match msg["method"].as_str() {
             Some("hello") => s.hello.set(msg["params"].clone()),
             Some("mods") => {
+                if !s.listed.get_untracked() {
+                    s.listed.set(true);
+                }
                 if let Ok(mods) = serde_json::from_value::<Vec<ModInfo>>(msg["params"].clone())
                     && s.mods.with_untracked(|m| *m != mods)
                 {

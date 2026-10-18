@@ -66,17 +66,26 @@ pub(crate) fn linked(s: S, text: String) -> impl IntoView {
 #[component]
 pub(crate) fn Console(s: S) -> impl IntoView {
     let log_ref = NodeRef::<leptos::html::Div>::new();
-    // Follow the end, unless the person scrolled up to read.
+    // Follow the end, unless the person scrolled up to read; also while
+    // hidden (a phone's other screens), so it opens on the latest lines.
+    let follow = StoredValue::new(true);
     Effect::new(move |_| {
         s.rows.track();
         s.filter.track();
-        if let Some(el) = log_ref.get() {
-            let at_end = el.scroll_height() - el.scroll_top() - el.client_height() < 48;
-            if at_end {
-                set_timeout(move || el.set_scroll_top(el.scroll_height()), std::time::Duration::from_millis(0));
-            }
+        s.screen.track();
+        if let Some(el) = log_ref.get()
+            && follow.get_value()
+        {
+            set_timeout(move || el.set_scroll_top(el.scroll_height()), std::time::Duration::from_millis(0));
         }
     });
+    let scrolled = move |_| {
+        if let Some(el) = log_ref.get_untracked()
+            && el.client_height() > 0
+        {
+            follow.set_value(el.scroll_height() - el.scroll_top() - el.client_height() < 48);
+        }
+    };
     let shown = move || {
         let filter = s.filter.get();
         let current = s.active.get().map(|p| mod_of(&p).to_string());
@@ -101,7 +110,7 @@ pub(crate) fn Console(s: S) -> impl IntoView {
         });
     });
     view! {
-        <div class="log" node_ref=log_ref>
+        <div class="log" node_ref=log_ref on:scroll=scrolled>
             <For each=shown key=|(n, _)| *n let((_, row))>
                 {match row {
                     Row::Log(l) => view! {

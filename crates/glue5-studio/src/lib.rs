@@ -43,6 +43,7 @@ fn App() -> impl IntoView {
         connected: RwSignal::new(false),
         hello: RwSignal::new(Value::Null),
         mods: RwSignal::new(Vec::new()),
+        listed: RwSignal::new(false),
         menus: RwSignal::new(Vec::new()),
         rows: RwSignal::new(Vec::new()),
         tabs: RwSignal::new(Vec::new()),
@@ -200,10 +201,10 @@ fn Shell(s: S) -> impl IntoView {
                         Side::Natives => view! { <NativesView s=s/> }.into_any(),
                     }}
                 </aside>
-                <section class="work">
+                <section class=move || if s.tabs.with(|t| t.is_empty()) { "work empty" } else { "work" }>
                     <Tabs s=s/>
                     <Toolbar s=s/>
-                    <div class="code">
+                    <div class=move || if s.active.get().is_some_and(|p| mod_page(&p).is_some()) { "code page" } else { "code" }>
                         <div class="editor-host" node_ref=host_ref></div>
                         <Show when=move || s.tabs.with(|t| t.is_empty())>
                             <Welcome s=s/>

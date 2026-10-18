@@ -20,12 +20,14 @@ pub(crate) fn Tabs(s: S) -> impl IntoView {
                 let active = move || s.active.get().as_deref() == Some(p.as_str());
                 let page = mod_page(&t.path).map(str::to_string);
                 let (file, module) = match (&page, t.path.split_once('/')) {
+                    // Its name as it changes (on its page, elsewhere).
                     (Some(m), _) => {
-                        let title = s.mods.with_untracked(|ms| ms.iter().find(|x| &x.name == m).map(|x| x.title.clone())).unwrap_or_else(|| m.clone());
-                        (format!("⚙ {title}"), "mod".to_string())
+                        let m = m.clone();
+                        let title = move || s.mods.with(|ms| ms.iter().find(|x| x.name == m).map(|x| x.title.clone())).unwrap_or_else(|| m.clone());
+                        ((move || format!("⚙ {}", title())).into_any(), "mod".to_string())
                     }
-                    (None, Some((m, f))) => (f.to_string(), m.to_string()),
-                    (None, None) => (t.path.clone(), String::new()),
+                    (None, Some((m, f))) => (f.to_string().into_any(), m.to_string()),
+                    (None, None) => (t.path.clone().into_any(), String::new()),
                 };
                 let read_only = t.read_only && page.is_none();
                 view! {
@@ -102,7 +104,7 @@ pub(crate) fn Welcome(s: S) -> impl IntoView {
     view! {
         <div class="welcome">
             <h1>"GLUE 5 STUDIO"</h1>
-            <p>"Mods are Luau scripts that run in the game. Pick a file on the left, or make a mod with +."</p>
+            <p>"Mods are Luau scripts that run in the game. Pick a file in Mods, or make a mod with +."</p>
             <div class="welcome-actions">
                 <button class="btn" on:click=move |_| { s.side.set(Side::Mods); s.screen.set(Screen::Mods); }>"Mods"</button>
                 <button class="btn" on:click=move |_| open_file(s, "natives.d.luau".into())>"Every native's type"</button>

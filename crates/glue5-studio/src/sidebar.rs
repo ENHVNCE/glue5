@@ -52,7 +52,11 @@ pub(crate) fn ModsView(s: S) -> impl IntoView {
                 }><span class="ico" inner_html=icons::STOP></span></button>
             </div>
         </div>
-        <div class="section">"In the game"<span class="count">{move || format!("{} mods", s.mods.with(Vec::len))}</span></div>
+        <div class="section">"In the game"<span class="count">{move || match s.mods.with(Vec::len) {
+                _ if !s.listed.get() => String::new(),
+                1 => "1 mod".to_string(),
+                n => format!("{n} mods"),
+            }}</span></div>
         <div class="tree">
             // Keyed by what a row shows but its time: rows stay (with their
             // hover and clicks) while the figures change.
@@ -120,7 +124,7 @@ pub(crate) fn ModsView(s: S) -> impl IntoView {
                     </Show>
                 }
             }}</For>
-            <Show when=move || s.mods.with(Vec::is_empty)>
+            <Show when=move || s.listed.get() && s.mods.with(Vec::is_empty)>
                 <p class="empty">"No mods yet. Make one with +, or have Claude Code make one through MCP."</p>
             </Show>
         </div>

@@ -106,6 +106,8 @@ pub(crate) struct S {
     pub(crate) connected: RwSignal<bool>,
     pub(crate) hello: RwSignal<Value>,
     pub(crate) mods: RwSignal<Vec<ModInfo>>,
+    /// The game told which mods it has (until then the list is unknown, not empty).
+    pub(crate) listed: RwSignal<bool>,
     pub(crate) menus: RwSignal<Vec<MenuInfo>>,
     pub(crate) rows: RwSignal<Vec<(u64, Row)>>,
     pub(crate) tabs: RwSignal<Vec<Tab>>,

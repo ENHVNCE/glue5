@@ -102,7 +102,9 @@ pub(crate) fn ModPage(s: S, name: String) -> impl IntoView {
                         <div class="sub">{
                             let name = name.clone();
                             move || {
-                                let mut parts = vec![name.clone()];
+                                // Its folder, unless the name says it already.
+                                let mut parts = Vec::new();
+                                if !title.get().eq_ignore_ascii_case(&name) { parts.push(name.clone()); }
                                 if !version.get().is_empty() { parts.push(format!("version {}", version.get())); }
                                 if !author.get().is_empty() { parts.push(format!("by {}", author.get())); }
                                 parts.join(" · ")
@@ -120,7 +122,7 @@ pub(crate) fn ModPage(s: S, name: String) -> impl IntoView {
                     })}
                 </div>
                 // Why it stopped, when it failed (a phone has no hover for the list's).
-                {move || failed().map(|e| view! { <div class="mp-error">{e}</div> })}
+                {move || failed().map(|e| view! { <div class="mp-error">{crate::panel::linked(s, e)}</div> })}
                 <div class="mp-card">
                     <h2>"MOD"</h2>
                     {field("Name", "As the game's Mods page shows it", title, false, 40)}
@@ -157,7 +159,7 @@ pub(crate) fn ModPage(s: S, name: String) -> impl IntoView {
                             }}</b>
                             <small>"What it keeps between sessions (storage), for this player only"</small>
                         </div>
-                        <button class="btn" on:click=move |_| {
+                        <button class="btn" disabled=move || stored.get().0 == 0 && view_data.get().is_none() on:click=move |_| {
                             if view_data.get_untracked().is_some() { view_data.set(None); return; }
                             request("storage.view", json!({ "mod": n_view.clone() }), move |r| if let Ok(Value::String(t)) = r {
                                 let pretty = serde_json::from_str::<Value>(&t).ok().and_then(|v| serde_json::to_string_pretty(&v).ok()).unwrap_or(t);
