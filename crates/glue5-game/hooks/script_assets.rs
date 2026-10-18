@@ -4,6 +4,10 @@
     // as the request reads it: a bank this game data lacks counts as loaded.
     ("script_bank_request", "audScriptAudioEntity::RequestScriptBank(unsigned int, bool, unsigned int)"),
     ("bank_loading_status", "rage::audWaveSlot::GetBankLoadingStatus(unsigned int) const"),
+    // The same request by the bank's name (REQUEST_MISSION_AUDIO_BANK...):
+    // a name the sound factory does not know counts as loaded too.
+    ("script_named_bank_request", "audScriptAudioEntity::RequestScriptBank(char const*, bool, unsigned int, bool)"),
+    ("bank_index_from_name", "rage::audSoundFactory::GetBankIndexFromName(char const*) const"),
     // HAS_STREAMED_TEXTURE_DICT_LOADED: a dictionary this game data lacks
     // counts as loaded. The hash names the dictionary in the store.
     ("script_txd_loaded", "graphics_commands::HasStreamedTxdLoaded(char const*)"),
@@ -16,6 +20,16 @@
     // archetype is looked up by hash).
     ("script_model_loaded", "streaming_commands::HasModelLoaded(int)"),
     ("archetype_from_hash", "rage::fwArchetypeManager::GetArchetypeFromHashKey(unsigned int, unsigned int*)"),
+    // CREATE_OBJECT and CREATE_OBJECT_NO_OFFSET: a model this game data
+    // lacks makes a hidden stand-in, its visibility and collision turned off.
+    ("create_object", "object_commands::SetupScriptCommands()::scrWrapped_CREATE_OBJECT::Call(rage::scrThread::Info&)"),
+    ("create_object_no_offset", "object_commands::SetupScriptCommands()::scrWrapped_CREATE_OBJECT_NO_OFFSET::Call(rage::scrThread::Info&)"),
+    ("set_entity_visible", "entity_commands::CommandSetEntityVisible(int, bool, bool)"),
+    ("set_entity_collision", "entity_commands::CommandSetEntityCollision(int, bool, bool)"),
+    // GET_INTERIOR_AT_COORDS_WITH_TYPE: for a type this game data lacks, the
+    // interior at those coordinates (an earlier version of the place).
+    ("interior_of_type", "interior_commands::CommandGetInteriorAtCoordsOfType(rage::scrVector const&, char const*)"),
+    ("interior_at", "interior_commands::CommandGetInteriorAtCoords(rage::scrVector const&)"),
     // HAS_THIS_ADDITIONAL_TEXT_LOADED: a text block asked for whose load
     // ended without it (this data lacks it) counts as loaded. The requests
     // and freed slots say what each slot was asked for.

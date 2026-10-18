@@ -11,6 +11,10 @@
 //!   interaction animations (the quick action, pointing...) wait for the
 //!   snacks bank with sprint, attacks, the weapon wheel and the phone
 //!   disabled until the player dies.
+//!   A bank named by a later update (an apartment shower's
+//!   `dlc_EXEC1/MP_APARTMENT_SHOWER_01`) is not even in the bank list: the
+//!   request by name answers "not yet" for good, and a player who spawns in
+//!   the shower waits in the sky.
 //! - Texture dictionaries (GTA Online's `MPShopSale`): one the streaming
 //!   store has no slot for is never loaded, so the interaction menu, which
 //!   waits for it with its other assets, opens without ever being drawn.
@@ -20,6 +24,21 @@
 //!
 //! Each counts as loaded for the scripts here: they go on without those
 //! sounds, textures, models or texts.
+//!
+//! Objects of later updates are created by scripts that wait for them to
+//! exist: an apartment's front door (`hei_heist_apart2_door`, the heists'),
+//! which the apartment's script creates again every frame, its other
+//! players waiting for it. A model the data lacks makes a stand-in here,
+//! hidden and without collision: the script has its object, the player
+//! sees the place as this data built it.
+//!
+//! Interiors that later updates rebuilt: GTA Online's high-end apartments
+//! became `hei_dlc_apart_high_new*` with the heists, and the scripts look
+//! for the apartment by that type. This data has the earlier apartment at
+//! the same place, under another name, so the lookup finds nothing and a
+//! player who owns one, spawning there, waits in the sky forever ("Joining
+//! GTA Online"). A type the data lacks finds the interior at those
+//! coordinates here, whatever its type.
 //!
 //! Whole places are missing too: GTA Online's "simple interiors" (the
 //! casino, bunkers, hangars, nightclubs, the arcade...), DLC from 2016 on.
@@ -86,6 +105,32 @@ pub(crate) unsafe extern "C" fn bank_request(env: *mut Env, bank: u32, over_netw
     loaded
 }
 
+/// The sound factory (`audSoundFactory`), whose banks requests name.
+const SOUND_FACTORY: u64 = 12033216;
+/// Bank indices above this are none (not found).
+const LAST_BANK: u32 = 65534;
+
+/// Hook for `audScriptAudioEntity::RequestScriptBank(char const*, bool,
+/// unsigned int, bool)`: yes for a name no bank has.
+pub(crate) unsafe extern "C" fn named_bank_request(env: *mut Env, name: u64, over_network: u32, players: u32, hint: u32) -> u32 {
+    let loaded = unsafe { orig::script_named_bank_request(env, name, over_network, players, hint) };
+    if loaded != 0 || name == 0 { loaded } else { !bank_known(env, &unsafe { Mem::of(env) }.str(name)) as u32 }
+}
+
+/// Whether the sound factory has a bank of this name, looked up as the
+/// request does: with backslashes, then under `SCRIPT\`.
+fn bank_known(env: *mut Env, name: &str) -> bool {
+    let name = name.replace('/', "\\");
+    [name.clone(), format!("SCRIPT\\{name}")].iter().any(|n| {
+        let Ok(top) = (unsafe { exports::emscripten_stack_get_current(env) }) else { return true };
+        let Ok(at) = (unsafe { exports::_emscripten_stack_alloc(env, n.len() as u64 + 1) }) else { return true };
+        unsafe { Mem::of(env) }.write_str(at, n, n.len() + 1);
+        let index = unsafe { orig::bank_index_from_name(env, SOUND_FACTORY, at) };
+        let _ = unsafe { exports::_emscripten_stack_restore(env, top) };
+        index <= LAST_BANK
+    })
+}
+
 /// Hook for `rage::audWaveSlot::GetBankLoadingStatus(unsigned int) const`.
 pub(crate) unsafe extern "C" fn bank_loading_status(env: *mut Env, slot: u64, bank: u32) -> u32 {
     let status = unsafe { orig::bank_loading_status(env, slot, bank) };
@@ -133,11 +178,80 @@ pub(crate) unsafe extern "C" fn model_loaded(env: *mut Env, hash: u32) -> u32 {
     if unsafe { orig::script_model_loaded(env, hash) } != 0 {
         return 1;
     }
-    let Ok(top) = (unsafe { exports::emscripten_stack_get_current(env) }) else { return 0 };
-    let Ok(id) = (unsafe { exports::_emscripten_stack_alloc(env, 16) }) else { return 0 };
+    !has_archetype(env, hash) as u32
+}
+
+/// What stands in for a model the data lacks: a small one of the base game.
+const STAND_IN: &str = "prop_golf_ball";
+
+/// The engine's name hash (`rage::atStringHash`, Jenkins' one-at-a-time
+/// over the lowercase name).
+const fn name_hash(name: &str) -> u32 {
+    let bytes = name.as_bytes();
+    let mut h: u32 = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        h = h.wrapping_add(bytes[i].to_ascii_lowercase() as u32);
+        h = h.wrapping_add(h << 10);
+        h ^= h >> 6;
+        i += 1;
+    }
+    h = h.wrapping_add(h << 3);
+    h ^= h >> 11;
+    h.wrapping_add(h << 15)
+}
+
+/// A script's object creation (its model the first parameter, the object
+/// the result): a model no archetype has becomes `STAND_IN`, hidden.
+fn create_object(env: *mut Env, info: u64, create: impl FnOnce()) {
+    let m = unsafe { Mem::of(env) };
+    let model = m.u64(info + 16);
+    let lacking = !has_archetype(env, m.u32(model));
+    if lacking {
+        if !has_archetype(env, name_hash(STAND_IN)) {
+            return create();
+        }
+        m.set_u32(model, name_hash(STAND_IN));
+    }
+    create();
+    let object = m.u32(m.u64(info));
+    if lacking && object != 0 {
+        unsafe {
+            orig::set_entity_visible(env, object, 0, 0);
+            orig::set_entity_collision(env, object, 0, 0);
+        }
+    }
+}
+
+/// Hook for `scrWrapped_CREATE_OBJECT::Call(rage::scrThread::Info&)`.
+pub(crate) unsafe extern "C" fn create_object_offset(env: *mut Env, info: u64) {
+    create_object(env, info, || unsafe { orig::create_object(env, info) });
+}
+
+/// Hook for `scrWrapped_CREATE_OBJECT_NO_OFFSET::Call(rage::scrThread::Info&)`.
+pub(crate) unsafe extern "C" fn create_object_no_offset(env: *mut Env, info: u64) {
+    create_object(env, info, || unsafe { orig::create_object_no_offset(env, info) });
+}
+
+/// Hook for `interior_commands::CommandGetInteriorAtCoordsOfType(rage::
+/// scrVector const&, char const*)`: GET_INTERIOR_AT_COORDS_WITH_TYPE, the
+/// interior at those coordinates for a type no archetype has (see above).
+pub(crate) unsafe extern "C" fn interior_of_type(env: *mut Env, coords: u64, kind: u64) -> u32 {
+    let interior = unsafe { orig::interior_of_type(env, coords, kind) };
+    if interior != 0 || kind == 0 {
+        return interior;
+    }
+    let hash = unsafe { orig::hash_string(env, 0, kind) };
+    if has_archetype(env, hash) { interior } else { unsafe { orig::interior_at(env, coords) } }
+}
+
+/// Whether an archetype (a model, an interior) has this name hash.
+fn has_archetype(env: *mut Env, hash: u32) -> bool {
+    let Ok(top) = (unsafe { exports::emscripten_stack_get_current(env) }) else { return true };
+    let Ok(id) = (unsafe { exports::_emscripten_stack_alloc(env, 16) }) else { return true };
     let archetype = unsafe { orig::archetype_from_hash(env, hash, id) };
     let _ = unsafe { exports::_emscripten_stack_restore(env, top) };
-    (archetype == 0) as u32
+    archetype != 0
 }
 
 /// The additional text slots (CTextFile's 23) and the block each was last
@@ -305,11 +419,15 @@ pub(crate) fn hooks(hooks: &mut glue5_game::Hooks) {
     hooks.as_function_invoke = Some(as_function_invoke);
     hooks.user_function_invoke = Some(user_function_invoke);
     hooks.script_model_loaded = Some(model_loaded);
+    hooks.interior_of_type = Some(interior_of_type);
+    hooks.create_object = Some(create_object_offset);
+    hooks.create_object_no_offset = Some(create_object_no_offset);
     hooks.additional_text_loaded = Some(additional_text_loaded);
     hooks.text_request = Some(text_request);
     hooks.text_free = Some(text_free);
     hooks.script_bank_request = Some(bank_request);
     hooks.bank_loading_status = Some(bank_loading_status);
+    hooks.script_named_bank_request = Some(named_bank_request);
     hooks.script_txd_loaded = Some(txd_loaded);
     hooks.script_request = Some(script_request);
     hooks.script_loaded = Some(script_loaded);
@@ -367,6 +485,13 @@ mod tests {
         for _ in 0..100 {
             assert!(nested(|| ()));
         }
+    }
+
+    #[test]
+    fn names_hash_as_the_engine_does() {
+        // The heists' apartment door, as the apartment's script asks for it.
+        assert_eq!(name_hash("hei_heist_apart2_door"), 34120519);
+        assert_eq!(name_hash("HEI_HEIST_APART2_DOOR"), 34120519);
     }
 
     #[test]
