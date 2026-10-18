@@ -37,7 +37,7 @@ pub fn resolve(path: &str) -> Result<PathBuf, String> {
 
 /// The files of mod `name`, as `<mod>/<file>` paths, sorted.
 pub fn list(name: &str) -> Vec<String> {
-    let Some(dir) = crate::dir() else { return Vec::new() };
+    let Some(dir) = crate::dir().filter(|_| valid_name(name)) else { return Vec::new() };
     let mut out = Vec::new();
     fn walk(root: &Path, at: &Path, out: &mut Vec<String>, depth: usize) {
         let Ok(entries) = std::fs::read_dir(at) else { return };
@@ -132,7 +132,7 @@ pub fn info_at(dir: &Path, name: &str) -> ModInfo {
 
 /// Mod `name`'s info.
 pub fn info(name: &str) -> ModInfo {
-    match crate::dir() {
+    match crate::dir().filter(|_| valid_name(name)) {
         Some(dir) => info_at(&dir.join(name), name),
         None => ModInfo::default(),
     }

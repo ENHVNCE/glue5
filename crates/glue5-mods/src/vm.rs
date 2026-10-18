@@ -54,6 +54,8 @@ struct Sched {
     handlers: menus::Handlers,
     /// This run of the mod (its menus are its own).
     instance: u64,
+    /// The coroutine the scheduler is running (`Thread::to_pointer`).
+    resumed: Rc<Cell<*const std::ffi::c_void>>,
 }
 
 struct Task {
@@ -179,7 +181,7 @@ impl Vm {
             .call((take, reply))?;
         lua.sandbox(true)?;
         let main = lua.create_thread(main)?;
-        Ok(Vm { lua, module: "~eval".into(), main: Some(main), main_wake: 0, main_busy: Duration::ZERO, sched, deadline, turn_end: Cell::new(Instant::now()), main_first: Cell::new(false), storage: None })
+        Ok(Vm { lua, module: "eval".into(), main: Some(main), main_wake: 0, main_busy: Duration::ZERO, sched, deadline, turn_end: Cell::new(Instant::now()), main_first: Cell::new(false), storage: None })
     }
 
     /// A turn at game time `now` (ms): what the player did with the menus
@@ -294,6 +296,7 @@ impl Vm {
         }
         let start = Instant::now();
         self.deadline.set(self.turn_end.get());
+        self.sched.resumed.set(thread.to_pointer());
         let result = thread.resume::<MultiValue>(args);
         let spent = start.elapsed();
         let outcome = match result {
@@ -431,8 +434,22 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
 
     let deadline = Rc::new(Cell::new(Instant::now() + SLICE));
     let interrupt_deadline = deadline.clone();
-    lua.set_interrupt(move |_| {
-        Ok(if Instant::now() >= interrupt_deadline.get() { VmState::Yield } else { VmState::Continue })
+    let resumed = sched.resumed.clone();
+    lua.set_interrupt(move |lua| {
+        let late = Instant::now().saturating_duration_since(interrupt_deadline.get());
+        if late.is_zero() {
+            return Ok(VmState::Continue);
+        }
+        // Only the coroutine the scheduler resumed yields back to it; one
+        // the mod made itself (coroutine.wrap) would hand its resume an
+        // empty result. That one runs on, up to the runaway limit.
+        if lua.current_thread().to_pointer() == resumed.get() {
+            Ok(VmState::Yield)
+        } else if late >= RUNAWAY {
+            Err(mlua::Error::runtime(runaway()))
+        } else {
+            Ok(VmState::Continue)
+        }
     });
     Ok((lua, deadline))
 }
@@ -533,6 +550,13 @@ impl Vm {
     /// This run of the mod.
     pub fn instance(&self) -> u64 {
         self.sched.instance
+    }
+
+    /// Writes what the mod stored, now.
+    pub fn flush_storage(&self) {
+        if let Some(storage) = &self.storage {
+            storage.flush(true);
+        }
     }
 
     /// Empties the mod's storage.

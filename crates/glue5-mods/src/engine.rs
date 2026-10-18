@@ -58,8 +58,19 @@ struct Running {
     /// Lua ended (or failed): the thread is killed from the next wait
     /// outside it.
     ending: bool,
+    /// The game ended its thread itself: nothing to kill.
+    gone: bool,
     cpu: f32,
     waiting: bool,
+}
+
+impl Running {
+    /// It ends: its thread is killed from the next wait outside it. What it
+    /// stored is written now (a restart's new run reads it next).
+    fn end(&mut self) {
+        self.ending = true;
+        self.vm.flush_storage();
+    }
 }
 
 #[derive(Default)]
@@ -120,11 +131,11 @@ impl Engine {
             .unwrap_or_else(|| "a panic".into());
         let name = std::mem::take(&mut *crate::lock(&crate::RUNNING_MOD));
         log::error!("mods: GLUE 5 failed inside {}: {what}", if name.is_empty() { "the mods' update" } else { &name });
-        if let Some(r) = self.running.iter_mut().find(|r| r.name == name) {
+        if let Some(r) = self.running.iter_mut().find(|r| r.name == name && !r.ending) {
             let e = format!("GLUE 5 failed while running this mod ({what}); it was stopped");
             log_line(&r.name, LogLevel::Error, &e);
             set_state(&r.name, ModState::Error, Some(e));
-            r.ending = true;
+            r.end();
         }
     }
 
@@ -150,31 +161,50 @@ impl Engine {
                 crate::world::set_catalog(unsafe { crate::world::read_catalog(env) });
             }
         }
+        // Once a frame: threads the game ended itself (TERMINATE_THREAD, a
+        // session that starts again) take their mods with them.
+        let frame = unsafe { natives::call_int(env, "GET_FRAME_COUNT") }.unwrap_or(0);
+        if frame != self.frame {
+            self.frame = frame;
+            self.spent = Duration::ZERO;
+            self.skipped = std::mem::take(&mut self.skipping);
+            for r in self.running.iter_mut().filter(|r| !r.ending) {
+                if unsafe { orig::script_get_thread(env, r.thread_id) } != r.thread {
+                    log_line(&display(&r.name), LogLevel::Error, "its script thread was ended by the game");
+                    set_state(&r.name, ModState::Stopped, None);
+                    r.end();
+                    r.gone = true;
+                }
+            }
+        }
         // Ended mods' threads, from outside them.
         let mut i = 0;
         while i < self.running.len() {
             let r = &self.running[i];
             if r.ending && r.thread != active {
-                unsafe { orig::script_kill_thread(env, r.thread_id) };
+                if !r.gone {
+                    unsafe { orig::script_kill_thread(env, r.thread_id) };
+                }
                 crate::menus::remove_instance(r.vm.instance());
-                self.running.remove(i);
+                let r = self.running.remove(i);
+                if r.name == REPL {
+                    // Snippets still queued get an answer.
+                    for (_, reply) in self.jobs.borrow_mut().drain(..) {
+                        let _ = reply.send(Err("the console's script stopped; try again".into()));
+                    }
+                }
             } else {
                 i += 1;
             }
         }
-        let Some(r) = self.running.iter_mut().find(|r| r.thread == active) else { return false };
+        // A pooled thread object may have gone to another script.
+        let Some(r) = self.running.iter_mut().find(|r| r.thread == active && !r.gone) else { return false };
         // WAIT runs every frame while the thread waits; the mod runs when
         // it is about to start one.
         if r.ending || mem.u32(active + THREAD_STATE) == STATE_WAITING {
             return false;
         }
         // The frame's budget, shared by the mods.
-        let frame = unsafe { natives::call_int(env, "GET_FRAME_COUNT") }.unwrap_or(0);
-        if frame != self.frame {
-            self.frame = frame;
-            self.spent = Duration::ZERO;
-            self.skipped = std::mem::take(&mut self.skipping);
-        }
         let slice = if self.skipped.contains(&r.name) { SLICE } else { BUDGET.saturating_sub(self.spent).min(SLICE) };
         if slice < Duration::from_micros(100) {
             // Next frame, first.
@@ -198,23 +228,21 @@ impl Engine {
                 ms
             }
             Step::Finished => {
-                log_line(&r.name, LogLevel::Info, "finished");
+                log_line(&display(&r.name), LogLevel::Info, "finished");
                 set_state(&r.name, ModState::Stopped, None);
-                r.ending = true;
+                r.end();
                 0
             }
             Step::Failed(e) => {
-                log_line(&r.name, LogLevel::Error, &e);
+                log_line(&display(&r.name), LogLevel::Error, &e);
                 set_state(&r.name, ModState::Error, Some(e));
-                r.ending = true;
+                r.end();
                 0
             }
         };
         // WAIT's argument, in the thread's stack.
         mem.set_i32(mem.u64(info + 16), ms.min(i32::MAX as u32) as i32);
-        if let Ok(mut s) = SHARED.state.lock()
-            && let Some(m) = s.mods.iter_mut().find(|m| m.name == r.name)
-        {
+        if let Some(m) = crate::lock(&SHARED.state).mods.iter_mut().find(|m| m.name == r.name) {
             m.cpu_ms = r.cpu;
             m.memory = r.vm.memory();
         }
@@ -242,13 +270,13 @@ impl Engine {
                 self.jobs.borrow_mut().push_back((code, reply));
             }
             Command::ClearStorage(name) => {
-                if let Some(r) = self.running.iter().find(|r| r.name == name) {
+                if let Some(r) = self.running.iter().find(|r| r.name == name && !r.ending) {
                     r.vm.clear_storage();
                 }
             }
             Command::Stop(name) => {
-                if let Some(r) = self.running.iter_mut().find(|r| r.name == name) {
-                    r.ending = true;
+                if let Some(r) = self.running.iter_mut().find(|r| r.name == name && !r.ending) {
+                    r.end();
                     log_line(&name, LogLevel::Info, "stopped");
                     set_state(&name, ModState::Stopped, None);
                 }
@@ -278,6 +306,7 @@ impl Engine {
             thread,
             vm,
             ending: false,
+            gone: false,
             cpu: 0.0,
             waiting: false,
         });
@@ -355,9 +384,7 @@ unsafe fn wasm_string(env: *mut Env, s: &str) -> u64 {
 }
 
 fn set_state(name: &str, state: ModState, error: Option<String>) {
-    if let Ok(mut s) = SHARED.state.lock()
-        && let Some(m) = s.mods.iter_mut().find(|m| m.name == name)
-    {
+    if let Some(m) = crate::lock(&SHARED.state).mods.iter_mut().find(|m| m.name == name) {
         m.state = state;
         m.error = error;
         m.waiting = false;
@@ -369,10 +396,13 @@ fn set_state(name: &str, state: ModState, error: Option<String>) {
 }
 
 fn set_waiting(name: &str, waiting: bool) {
-    if let Ok(mut s) = SHARED.state.lock()
-        && let Some(m) = s.mods.iter_mut().find(|m| m.name == name)
-    {
+    if let Some(m) = crate::lock(&SHARED.state).mods.iter_mut().find(|m| m.name == name) {
         m.waiting = waiting;
         SHARED.generation.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// The name a mod's log lines go under (the console's is "eval").
+fn display(name: &str) -> String {
+    if name == REPL { "eval".to_string() } else { name.to_string() }
 }

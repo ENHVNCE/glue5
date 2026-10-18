@@ -273,6 +273,9 @@ pub fn saved(path: &str) -> bool {
 
 /// What mod `name` keeps in its storage, as JSON (`{}` when nothing).
 pub fn stored(name: &str) -> String {
+    if !files::valid_name(name) {
+        return "{}".into();
+    }
     dir()
         .and_then(|d| std::fs::read_to_string(d.join(".glue5/storage").join(format!("{name}.json"))).ok())
         .unwrap_or_else(|| "{}".into())
@@ -280,6 +283,9 @@ pub fn stored(name: &str) -> String {
 
 /// Empties mod `name`'s storage (a running mod's too).
 pub fn clear_stored(name: &str) {
+    if !files::valid_name(name) {
+        return;
+    }
     if let Some(d) = dir() {
         let _ = std::fs::remove_file(d.join(".glue5/storage").join(format!("{name}.json")));
     }
@@ -331,9 +337,45 @@ pub fn refresh() {
             }
         }
     }
-    s.mods.sort_by(|a, b| a.name.cmp(&b.name));
+    // As people read them: by the name shown, numbers as numbers.
+    s.mods.sort_by(|a, b| natural(&a.info.title, &b.info.title).then_with(|| a.name.cmp(&b.name)));
     if changed {
         SHARED.generation.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Text compared as people expect: case aside, digits as numbers
+/// (`filler-2` before `filler-10`).
+fn natural(a: &str, b: &str) -> std::cmp::Ordering {
+    let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (a.peek().copied(), b.peek().copied()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, _) => return std::cmp::Ordering::Less,
+            (_, None) => return std::cmp::Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let number = |it: &mut std::iter::Peekable<std::str::Chars>| {
+                    let mut n = 0u64;
+                    while let Some(d) = it.peek().and_then(|c| c.to_digit(10)) {
+                        n = n.saturating_mul(10).saturating_add(u64::from(d));
+                        it.next();
+                    }
+                    n
+                };
+                let ord = number(&mut a).cmp(&number(&mut b));
+                if ord.is_ne() {
+                    return ord;
+                }
+            }
+            (Some(x), Some(y)) => {
+                let ord = x.to_lowercase().cmp(y.to_lowercase());
+                if ord.is_ne() {
+                    return ord;
+                }
+                a.next();
+                b.next();
+            }
+        }
     }
 }
 
@@ -350,12 +392,17 @@ pub fn generation() -> u64 {
 
 /// Starts mod `name` (again, if it ran before).
 pub fn start(name: &str) {
-    command(Command::Start(name.to_string()));
+    // A folder of the mods folder, nothing else.
+    if files::valid_name(name) {
+        command(Command::Start(name.to_string()));
+    }
 }
 
 /// Stops mod `name`: its thread ends, with what it created.
 pub fn stop(name: &str) {
-    command(Command::Stop(name.to_string()));
+    if files::valid_name(name) {
+        command(Command::Stop(name.to_string()));
+    }
 }
 
 /// Stops mod `name` if it runs, then starts it.
@@ -459,16 +506,30 @@ pub fn has_menus() -> bool {
 /// mod hears of it at its next turn.
 pub fn menu_input(module: &str, item: u32, input: MenuInput) {
     let mut s = crate::lock(&SHARED.state);
+    // What the mod hears is what the menu shows: the value checked against
+    // the item, nothing for an item that is gone or of another kind.
+    let mut checked = None;
     for m in s.menus.iter_mut().filter(|m| m.module == module) {
         for i in m.items.iter_mut().filter(|i| i.id == item) {
-            match (&mut i.kind, input) {
-                (MenuKind::Toggle(on), MenuInput::Toggle(v)) => *on = v,
-                (MenuKind::Slider { value, min, max, .. }, MenuInput::Value(v)) => *value = v.clamp(*min, *max),
-                (MenuKind::Choice { options, index }, MenuInput::Choose(v)) if v < options.len() => *index = v,
-                _ => {}
-            }
+            checked = match (&mut i.kind, input) {
+                (MenuKind::Toggle(on), MenuInput::Toggle(v)) => {
+                    *on = v;
+                    Some(input)
+                }
+                (MenuKind::Slider { value, min, max, .. }, MenuInput::Value(v)) if v.is_finite() => {
+                    *value = v.clamp(*min, *max);
+                    Some(MenuInput::Value(*value))
+                }
+                (MenuKind::Choice { options, index }, MenuInput::Choose(v)) if v < options.len() => {
+                    *index = v;
+                    Some(input)
+                }
+                (MenuKind::Button, MenuInput::Press) => Some(input),
+                _ => None,
+            };
         }
     }
+    let Some(input) = checked else { return };
     s.inputs.push((module.to_string(), item, input));
     drop(s);
     SHARED.pending.store(true, Ordering::Release);

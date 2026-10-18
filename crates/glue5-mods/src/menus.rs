@@ -195,8 +195,8 @@ fn menu_table(lua: &Lua, module: &str, menu: u32, handlers: Handlers) -> mlua::R
             if options.is_empty() {
                 return Err(mlua::Error::runtime("choice: give it options"));
             }
+            let options: Vec<String> = options.into_iter().take(32).map(|o| o.chars().take(30).collect()).collect();
             let index = index.unwrap_or(1).clamp(1, options.len()) - 1;
-            let options = options.into_iter().take(32).map(|o| o.chars().take(30).collect()).collect();
             a(lua, label, None, MenuKind::Choice { options, index }, cb)
         })?,
     )?;
@@ -269,10 +269,7 @@ pub fn apply(lua: &Lua, handlers: &Handlers, item: u32, input: MenuInput) -> mlu
         }
         MenuInput::Choose(i) => {
             obj.set("value", i as i64 + 1)?;
-            let label = SHARED
-                .state
-                .lock()
-                .unwrap()
+            let label = crate::lock(&SHARED.state)
                 .menus
                 .iter()
                 .flat_map(|m| m.items.iter())
