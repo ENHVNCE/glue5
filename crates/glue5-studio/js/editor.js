@@ -345,7 +345,8 @@ export class StudioEditor {
       isJson ? json : luau, syntaxHighlighting(highlight), theme, search({ top: true }), phrases,
       this.readOnly.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
       keymap.of([
-        { key: "Mod-s", preventDefault: true, run: () => { this.saveHandler(path); return true; } },
+        // Save: a file's, not the read-only definitions'.
+        { key: "Mod-s", preventDefault: true, run: () => { if (!readOnly) this.saveHandler(path); return true; } },
         ...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap,
         ...lintKeymap, indentWithTab,
       ]),
@@ -444,7 +445,12 @@ export class StudioEditor {
 
   // Shows `path` (made from `text` the first time).
   open(path, text, readOnly) {
-    if (this.current && this.files.has(this.current)) this.files.get(this.current).state = this.view.state;
+    if (this.current && this.files.has(this.current)) {
+      const was = this.files.get(this.current);
+      was.state = this.view.state;
+      // Where it was scrolled to, for when it shows again.
+      was.scroll = this.view.scrollSnapshot();
+    }
     let file = this.files.get(path);
     if (!file) {
       file = { state: EditorState.create({ doc: text, extensions: this.extensions(path, readOnly) }), saved: text, diagnostics: "" };
@@ -452,6 +458,7 @@ export class StudioEditor {
     }
     this.current = path;
     this.view.setState(file.state);
+    if (file.scroll) this.view.dispatch({ effects: file.scroll });
     const head = file.state.selection.main.head, line = file.state.doc.lineAt(head);
     this.cursorHandler(line.number, head - line.from + 1);
   }
@@ -491,6 +498,8 @@ export class StudioEditor {
     if (!file) return;
     const state = this.stateOf(path);
     const old = state.doc.toString();
+    // Typed into since the reload was asked for: that stays (it was dirty).
+    if (old !== file.saved) return;
     file.saved = text;
     if (old !== text) {
       let from = 0;

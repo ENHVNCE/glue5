@@ -26,14 +26,7 @@ pub(crate) fn close_mod(s: S, name: &str) {
         t.iter().filter(|t| t.path == page || t.path.starts_with(&prefix)).map(|t| t.path.clone()).collect()
     });
     for path in &gone {
-        with_editor(|e| e.close(path));
-    }
-    s.tabs.update(|t| t.retain(|t| !gone.contains(&t.path)));
-    if s.active.get_untracked().is_some_and(|a| gone.contains(&a)) {
-        s.active.set(s.tabs.with_untracked(|t| t.last().map(|t| t.path.clone())));
-        if let Some(p) = s.active.get_untracked().filter(|p| mod_page(p).is_none()) {
-            with_editor(|e| e.open(&p, "", false));
-        }
+        forget_tab(s, path);
     }
 }
 
@@ -66,12 +59,25 @@ pub(crate) fn rename_file(s: S, path: &str) {
         return;
     }
     let (from, to) = (path.to_string(), format!("{name}/{new}"));
+    // Unsaved changes go first (the renamed file opens from disk).
+    if s.tabs.with_untracked(|t| t.iter().any(|t| t.path == from && t.dirty)) {
+        let mut text = String::new();
+        with_editor(|e| text = e.text(&from));
+        let (f, t) = (from.clone(), to.clone());
+        request("files.write", json!({ "path": from, "text": text }), move |r| match r {
+            Ok(_) => rename_now(s, f, t),
+            Err(e) => s.notice.set(Some(e)),
+        });
+        return;
+    }
+    rename_now(s, from, to);
+}
+
+fn rename_now(s: S, from: String, to: String) {
     request("files.rename", json!({ "from": from, "to": to }), move |r| match r {
         Ok(_) => {
-            let was_open = s.tabs.with_untracked(|t| t.iter().any(|t| t.path == from));
-            if was_open {
-                with_editor(|e| e.close(&from));
-                s.tabs.update(|t| t.retain(|t| t.path != from));
+            if s.tabs.with_untracked(|t| t.iter().any(|t| t.path == from)) {
+                forget_tab(s, &from);
                 open_file(s, to.clone());
             }
         }
@@ -89,13 +95,7 @@ pub(crate) fn delete_file(s: S, path: &str) {
     }
     let p = path.to_string();
     request("files.delete", json!({ "path": p }), move |r| match r {
-        Ok(_) => {
-            with_editor(|e| e.close(&p));
-            s.tabs.update(|t| t.retain(|t| t.path != p));
-            if s.active.get_untracked().as_deref() == Some(p.as_str()) {
-                s.active.set(s.tabs.with_untracked(|t| t.last().map(|t| t.path.clone())));
-            }
-        }
+        Ok(_) => forget_tab(s, &p),
         Err(e) => s.notice.set(Some(e)),
     });
 }
@@ -118,19 +118,35 @@ pub(crate) fn import(s: S) {
 }
 
 pub(crate) fn open_file(s: S, path: String) {
+    open_file_at(s, path, None);
+}
+
+/// Opens a file, and puts the cursor at (line, column) once it shows (not
+/// before: on a slow link the file is read later).
+pub(crate) fn open_file_at(s: S, path: String, at: Option<(u32, u32)>) {
     s.screen.set(Screen::Editor);
     s.drawer.set(false);
+    let reveal = move || {
+        if let Some((line, column)) = at {
+            with_editor(|e| e.reveal(line, column));
+        }
+    };
     if s.tabs.with_untracked(|t| t.iter().any(|t| t.path == path)) {
         s.active.set(Some(path.clone()));
         with_editor(|e| e.open(&path, "", false));
+        reveal();
         return;
     }
     let read_only = path == "natives.d.luau";
     let p = path.clone();
     let shown = move |text: String| {
+        // Asked twice (a double tap) before the first answer: one tab.
+        if !s.tabs.with_untracked(|t| t.iter().any(|t| t.path == p)) {
+            s.tabs.update(|t| t.push(Tab { path: p.clone(), dirty: false, read_only }));
+        }
         with_editor(|e| e.open(&p, &text, read_only));
-        s.tabs.update(|t| t.push(Tab { path: p.clone(), dirty: false, read_only }));
         s.active.set(Some(p.clone()));
+        reveal();
     };
     if read_only {
         // The definitions, as served (not a mod's file).
@@ -145,6 +161,25 @@ pub(crate) fn open_file(s: S, path: String) {
     }
 }
 
+/// A tab goes (closed, its file deleted or renamed, its mod gone): out of
+/// the editor and the problems; the last tab left shows instead.
+pub(crate) fn forget_tab(s: S, path: &str) {
+    if mod_page(path).is_none() {
+        with_editor(|e| e.close(path));
+    }
+    s.tabs.update(|t| t.retain(|t| t.path != path));
+    s.diags.update(|d| {
+        d.remove(path);
+    });
+    if s.active.get_untracked().as_deref() == Some(path) {
+        let next = s.tabs.with_untracked(|t| t.last().map(|t| t.path.clone()));
+        s.active.set(next.clone());
+        if let Some(n) = next.filter(|n| mod_page(n).is_none()) {
+            with_editor(|e| e.open(&n, "", false));
+        }
+    }
+}
+
 pub(crate) fn close_tab(s: S, path: &str) {
     let dirty = s.tabs.with_untracked(|t| t.iter().any(|t| t.path == path && t.dirty));
     if dirty
@@ -154,18 +189,31 @@ pub(crate) fn close_tab(s: S, path: &str) {
     {
         return;
     }
-    with_editor(|e| e.close(path));
-    s.tabs.update(|t| t.retain(|t| t.path != path));
-    if s.active.get_untracked().as_deref() == Some(path) {
-        let next = s.tabs.with_untracked(|t| t.last().map(|t| t.path.clone()));
-        s.active.set(next.clone());
-        if let Some(n) = next {
-            with_editor(|e| e.open(&n, "", false));
-        }
+    forget_tab(s, path);
+}
+
+/// Code into the open file at the cursor; with no file open (or a mod's
+/// page shown), it says so rather than typing into nothing.
+pub(crate) fn insert_code(s: S, code: &str) {
+    let writable = active_file(s).filter(|p| s.tabs.with_untracked(|t| t.iter().any(|t| &t.path == p && !t.read_only)));
+    if writable.is_none() {
+        s.notice.set(Some("Open one of the mod's files first: it goes in at the cursor".into()));
+        return;
     }
+    s.screen.set(Screen::Editor);
+    with_editor(|e| e.insert(code));
+}
+
+/// The open file, when the active tab is one (not a mod's page).
+pub(crate) fn active_file(s: S) -> Option<String> {
+    s.active.get_untracked().filter(|p| mod_page(p).is_none())
 }
 
 pub(crate) fn save(s: S, path: String) {
+    // The definitions and mods' pages are not files to write.
+    if mod_page(&path).is_some() || s.tabs.with_untracked(|t| t.iter().any(|t| t.path == path && t.read_only)) {
+        return;
+    }
     let mut text = String::new();
     with_editor(|e| text = e.text(&path));
     let t = text.clone();

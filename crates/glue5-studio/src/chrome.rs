@@ -3,6 +3,7 @@
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
+use crate::actions::insert_code;
 use crate::icons;
 use crate::net::request;
 use crate::state::*;
@@ -36,8 +37,7 @@ pub(crate) fn TitleBar(s: S) -> impl IntoView {
     let insert = move |n: &Value| {
         let call = format!("{}(", n["name"].as_str().unwrap_or(""));
         close();
-        with_editor(|e| e.insert(&call));
-        s.screen.set(Screen::Editor);
+        insert_code(s, &call);
     };
     // Ctrl/Cmd+K from anywhere.
     let shortcut = window_event_listener(leptos::ev::keydown, move |ev| {

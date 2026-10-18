@@ -20,7 +20,10 @@ pub(crate) fn Tabs(s: S) -> impl IntoView {
                 let active = move || s.active.get().as_deref() == Some(p.as_str());
                 let page = mod_page(&t.path).map(str::to_string);
                 let (file, module) = match (&page, t.path.split_once('/')) {
-                    (Some(m), _) => (format!("⚙ {m}"), "mod".to_string()),
+                    (Some(m), _) => {
+                        let title = s.mods.with_untracked(|ms| ms.iter().find(|x| &x.name == m).map(|x| x.title.clone())).unwrap_or_else(|| m.clone());
+                        (format!("⚙ {title}"), "mod".to_string())
+                    }
                     (None, Some((m, f))) => (f.to_string(), m.to_string()),
                     (None, None) => (t.path.clone(), String::new()),
                 };
@@ -36,7 +39,7 @@ pub(crate) fn Tabs(s: S) -> impl IntoView {
                         {if read_only { view! { <span class="ico lock" inner_html=icons::LOCK></span> }.into_any() }
                          else if t.dirty { view! { <span class="unsaved"></span> }.into_any() }
                          else { ().into_any() }}
-                        <button class="x" on:click=move |ev| { ev.stop_propagation(); close_tab(s, &p3); }>"×"</button>
+                        <button class="x" aria-label="Close" title="Close" on:click=move |ev| { ev.stop_propagation(); close_tab(s, &p3); }>"×"</button>
                     </div>
                 }
             }).collect_view()}

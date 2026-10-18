@@ -37,7 +37,21 @@ pub(crate) fn ModPage(s: S, name: String) -> impl IntoView {
             });
         }
     };
-    load();
+    // Again when its mod.json changes elsewhere (Claude Code, the game's
+    // Mods page, another browser): the page shows what is saved.
+    {
+        let name = name.clone();
+        let load = load.clone();
+        let saved = move || {
+            s.mods.with(|m| {
+                m.iter().find(|x| x.name == name).map(|x| (x.title.clone(), x.description.clone(), x.autostart, x.restart_on_save))
+            })
+        };
+        Effect::new(move |_| {
+            saved();
+            load();
+        });
+    }
     // Each change is written at once (a field when it is left).
     let save = {
         let name = name.clone();
@@ -55,12 +69,13 @@ pub(crate) fn ModPage(s: S, name: String) -> impl IntoView {
         }
     };
     let (save_a, save_r, save_d, save_f) = (save.clone(), save.clone(), save.clone(), save.clone());
-    let field = move |label: &'static str, hint: &'static str, value: RwSignal<String>, narrow: bool| {
+    // At most what mod.json keeps (files::info_at).
+    let field = move |label: &'static str, hint: &'static str, value: RwSignal<String>, narrow: bool, max: u32| {
         let save = save_f.clone();
         view! {
             <div class="mp-row">
                 <div class="lab"><b>{label}</b>{(!hint.is_empty()).then(|| view! { <small>{hint}</small> })}</div>
-                <input class=if narrow { "f narrow" } else { "f" } spellcheck="false" prop:value=move || value.get()
+                <input class=if narrow { "f narrow" } else { "f" } spellcheck="false" maxlength=max prop:value=move || value.get()
                     on:input=move |ev| value.set(event_target_value(&ev))
                     on:change=move |_| save()/>
             </div>
@@ -69,6 +84,10 @@ pub(crate) fn ModPage(s: S, name: String) -> impl IntoView {
     let state = {
         let name = name.clone();
         move || s.mods.with(|m| m.iter().find(|m| m.name == name).cloned())
+    };
+    let failed = {
+        let state = state.clone();
+        move || state().and_then(|m| m.error)
     };
     let token = TOKEN.with(|t| t.borrow().clone());
     let export = format!("/export?mod={name}&token={token}");
@@ -100,17 +119,19 @@ pub(crate) fn ModPage(s: S, name: String) -> impl IntoView {
                         view! { <span class=class>{text}</span> }
                     })}
                 </div>
+                // Why it stopped, when it failed (a phone has no hover for the list's).
+                {move || failed().map(|e| view! { <div class="mp-error">{e}</div> })}
                 <div class="mp-card">
                     <h2>"MOD"</h2>
-                    {field("Name", "As the game's Mods page shows it", title, false)}
+                    {field("Name", "As the game's Mods page shows it", title, false, 40)}
                     <div class="mp-row">
                         <div class="lab"><b>"Description"</b><small>"One or two lines"</small></div>
-                        <textarea class="f" prop:value=move || description.get()
+                        <textarea class="f" maxlength="300" prop:value=move || description.get()
                             on:input=move |ev| description.set(event_target_value(&ev))
                             on:change=move |_| save_d()></textarea>
                     </div>
-                    {field("Author", "", author, false)}
-                    {field("Version", "", version, true)}
+                    {field("Author", "", author, false, 60)}
+                    {field("Version", "", version, true, 20)}
                 </div>
                 <div class="mp-card">
                     <h2>"RUNNING"</h2>

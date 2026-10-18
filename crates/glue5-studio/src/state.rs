@@ -122,6 +122,8 @@ pub(crate) struct S {
     pub(crate) found: RwSignal<Vec<Value>>,
     pub(crate) palette: RwSignal<bool>,
     pub(crate) notice: RwSignal<Option<String>>,
+    /// The code typed did not work.
+    pub(crate) pair_failed: RwSignal<bool>,
 }
 
 thread_local! {
@@ -131,6 +133,10 @@ thread_local! {
     pub(crate) static NEXT_ID: Cell<u64> = const { Cell::new(1) };
     pub(crate) static EDITOR: RefCell<Option<StudioEditor>> = const { RefCell::new(None) };
     pub(crate) static NEXT_ROW: Cell<u64> = const { Cell::new(1) };
+    /// The console's "run this" callback, made once.
+    pub(crate) static REPL_RUN: RefCell<Option<wasm_bindgen::closure::Closure<dyn FnMut(String)>>> = const { RefCell::new(None) };
+    /// The page was paired with the game once (a lost connection is retried).
+    pub(crate) static PAIRED: Cell<bool> = const { Cell::new(false) };
 }
 
 pub(crate) fn with_editor(f: impl FnOnce(&StudioEditor)) {

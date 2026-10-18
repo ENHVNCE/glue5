@@ -3,7 +3,7 @@
 use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 
-use crate::actions::{eval, open_file};
+use crate::actions::{eval, open_file_at};
 use crate::icons;
 use crate::menus::Menus;
 use crate::state::*;
@@ -54,7 +54,7 @@ pub(crate) fn linked(s: S, text: String) -> impl IntoView {
             let (before, link, after) = (text[..a].to_string(), text[a..b].to_string(), text[b..].to_string());
             view! {
                 {before}
-                <a class="link" on:click=move |_| { open_file(s, path.clone()); let l = line; set_timeout(move || with_editor(|e| e.reveal(l, 1)), std::time::Duration::from_millis(150)); }>{link}</a>
+                <a class="link" href="#" on:click=move |ev| { ev.prevent_default(); open_file_at(s, path.clone(), Some((line, 1))); }>{link}</a>
                 {after}
             }
             .into_any()
@@ -66,12 +66,15 @@ pub(crate) fn linked(s: S, text: String) -> impl IntoView {
 #[component]
 pub(crate) fn Console(s: S) -> impl IntoView {
     let log_ref = NodeRef::<leptos::html::Div>::new();
-    // Follow the end.
+    // Follow the end, unless the person scrolled up to read.
     Effect::new(move |_| {
         s.rows.track();
         s.filter.track();
         if let Some(el) = log_ref.get() {
-            set_timeout(move || el.set_scroll_top(el.scroll_height()), std::time::Duration::from_millis(0));
+            let at_end = el.scroll_height() - el.scroll_top() - el.client_height() < 48;
+            if at_end {
+                set_timeout(move || el.set_scroll_top(el.scroll_height()), std::time::Duration::from_millis(0));
+            }
         }
     });
     let shown = move || {
@@ -90,9 +93,12 @@ pub(crate) fn Console(s: S) -> impl IntoView {
     let input_ref = NodeRef::<leptos::html::Div>::new();
     Effect::new(move |_| {
         let Some(el) = input_ref.get() else { return };
-        let on_run = Closure::<dyn FnMut(String)>::new(move |code: String| eval(s, code));
-        with_editor(|e| e.repl(&el, &on_run));
-        on_run.forget();
+        // One callback for the page's life (the console mounts again and again).
+        REPL_RUN.with(|r| {
+            let mut r = r.borrow_mut();
+            let on_run = r.get_or_insert_with(|| Closure::<dyn FnMut(String)>::new(move |code: String| eval(s, code)));
+            with_editor(|e| e.repl(&el, on_run));
+        });
     });
     view! {
         <div class="log" node_ref=log_ref>
@@ -145,7 +151,7 @@ pub(crate) fn Problems(s: S) -> impl IntoView {
                     let (p, line, col) = (path.clone(), d.line, d.column);
                     view! {
                         <div class=if d.severity == "error" { "problem err" } else { "problem warn" }
-                            on:click=move |_| { open_file(s, p.clone()); set_timeout(move || with_editor(|e| e.reveal(line, col)), std::time::Duration::from_millis(150)); }>
+                            on:click=move |_| open_file_at(s, p.clone(), Some((line, col)))>
                             <span class="ico small" inner_html=if d.severity == "error" { icons::ERROR } else { icons::WARNING }></span>
                             <span class="msg">{d.message.clone()}</span>
                             <span class="where">{format!("{path}:{}:{}", d.line, d.column)}</span>

@@ -3,7 +3,7 @@
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
-use crate::actions::{delete_file, import, new_file, open_file, open_mod_page, rename_file};
+use crate::actions::{delete_file, import, insert_code, new_file, open_file, open_mod_page, rename_file};
 use crate::icons;
 use crate::net::request;
 use crate::state::*;
@@ -77,7 +77,9 @@ pub(crate) fn ModsView(s: S) -> impl IntoView {
                 let files = m.files.clone();
                 let open2 = open.clone();
                 view! {
-                    <div class=move || if selected() { "mod sel" } else { "mod" } on:click=page title=m.error.clone().unwrap_or_else(|| m.description.clone())>
+                    <div class=move || if selected() { "mod sel" } else { "mod" } role="button" tabindex="0" on:click=page
+                        on:keydown={ let n = name.clone(); move |ev| if ev.key() == "Enter" { open_mod_page(s, &n) } }
+                        title=m.error.clone().unwrap_or_else(|| m.description.clone())>
                         <span class="chev" on:click=toggle>{move || if open() { "▾" } else { "▸" }}</span>
                         <span class=state_class(&m)></span>
                         <span class="name">{m.title.clone()}{(m.title != m.name).then(|| view! { <small>{m.name.clone()}</small> })}</span>
@@ -95,7 +97,9 @@ pub(crate) fn ModsView(s: S) -> impl IntoView {
                             let p3 = path.clone();
                             let errs = move || s.diags.with(|d| d.get(&p3).map_or(0, |v| v.iter().filter(|d| d.severity == "error").count()));
                             view! {
-                                <div class=move || if active() { "file on" } else { "file" } on:click={ let p = path.clone(); move |_| open_file(s, p.clone()) }>
+                                <div class=move || if active() { "file on" } else { "file" } role="button" tabindex="0"
+                                    on:click={ let p = path.clone(); move |_| open_file(s, p.clone()) }
+                                    on:keydown={ let p = path.clone(); move |ev| if ev.key() == "Enter" { open_file(s, p.clone()) } }>
                                     <span class="ico small" inner_html=icons::FILE></span>
                                     <span class="fname">{shown}</span>
                                     <span class="err-count">{move || match errs() { 0 => String::new(), n => n.to_string() }}</span>
@@ -195,7 +199,7 @@ pub(crate) fn NativesView(s: S) -> impl IntoView {
                         <div class="sig">{n["signature"].as_str().unwrap_or("").to_string()}</div>
                         <div class="native-foot">
                             <small>{n["native"].as_str().unwrap_or("").to_string()}</small>
-                            <button class="chip" on:click=move |ev| { ev.stop_propagation(); with_editor(|e| e.insert(&insert)); s.screen.set(Screen::Editor); }>"Insert"</button>
+                            <button class="chip" on:click=move |ev| { ev.stop_propagation(); insert_code(s, &insert); }>"Insert"</button>
                         </div>
                         {move || detail.get().map(|d| view! { <p class="notes">{d}</p> })}
                     </div>

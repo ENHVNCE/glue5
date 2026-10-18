@@ -59,6 +59,7 @@ fn App() -> impl IntoView {
         found: RwSignal::new(Vec::new()),
         palette: RwSignal::new(false),
         notice: RwSignal::new(None),
+        pair_failed: RwSignal::new(false),
     };
     // The code: from the address (the game's QR code), else remembered.
     let page = web_sys::window().map(|w| w.location());
@@ -76,10 +77,21 @@ fn App() -> impl IntoView {
         }
     }
     connect(s);
+    // A notice shows 5 s from when it came (an older one's timer does not
+    // take a newer one).
+    let shown_at = StoredValue::new(0u32);
     Effect::new(move |_| {
-        if let Some(n) = s.notice.get() {
-            let _ = n;
-            set_timeout(move || s.notice.set(None), std::time::Duration::from_secs(5));
+        if s.notice.get().is_some() {
+            let mine = shown_at.get_value().wrapping_add(1);
+            shown_at.set_value(mine);
+            set_timeout(
+                move || {
+                    if shown_at.get_value() == mine {
+                        s.notice.set(None);
+                    }
+                },
+                std::time::Duration::from_secs(5),
+            );
         }
     });
 
@@ -110,6 +122,9 @@ fn Pair(s: S) -> impl IntoView {
             <div class="pair-card">
                 <div class="brand big"><img src="/logo.png" alt=""/><b>"GLUE 5"</b><span>"STUDIO"</span></div>
                 <p>"Enter the code shown in the game, under Mods › Studio."</p>
+                <Show when=move || s.pair_failed.get()>
+                    <p class="pair-error">"That code did not work: check it in the game (it changes when someone presses New)."</p>
+                </Show>
                 <input class="code-input" placeholder="ABCD-1234" autocomplete="off" autocapitalize="characters" spellcheck="false"
                     prop:value=move || code.get()
                     on:input=move |ev| code.set(event_target_value(&ev))
@@ -136,6 +151,10 @@ fn Shell(s: S) -> impl IntoView {
         }
         let editor = StudioEditor::new(&el, &lsp);
         let on_change = Closure::<dyn FnMut(String, bool)>::new(move |path: String, dirty: bool| {
+            // Only when it changes: not the whole tab strip at each key.
+            if s.tabs.with_untracked(|t| t.iter().any(|t| t.path == path && t.dirty == dirty)) {
+                return;
+            }
             s.tabs.update(|t| {
                 if let Some(t) = t.iter_mut().find(|t| t.path == path) {
                     t.dirty = dirty;
@@ -197,7 +216,7 @@ fn Shell(s: S) -> impl IntoView {
             </div>
             <StatusBar s=s/>
             <PhoneNav s=s/>
-            {move || s.notice.get().map(|n| view! { <div class="toast">{n}</div> })}
+            {move || s.notice.get().map(|n| view! { <div class="toast" title="Close" on:click=move |_| s.notice.set(None)>{n}</div> })}
         </div>
     }
 }
