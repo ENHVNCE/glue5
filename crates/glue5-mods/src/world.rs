@@ -203,11 +203,16 @@ pub fn set_catalog(c: Catalog) {
     *slot = Some(c);
     drop(slot);
     *crate::lock(&ALIASES) = None;
-    if let Some(dir) = crate::dir() {
-        let _ = std::fs::create_dir_all(dir.join(".glue5"));
-        let _ = std::fs::write(dir.join(".glue5/world.d.luau"), text);
-    }
-    crate::checker::Checker::release();
+    // The rest off the caller's thread (the engine's): a file to write, and
+    // the Studio's type checker to wait for (busy for a while at times).
+    let dir = crate::dir().map(std::path::Path::to_path_buf);
+    let _ = std::thread::Builder::new().name("mods catalog".into()).spawn(move || {
+        if let Some(dir) = dir {
+            let _ = std::fs::create_dir_all(dir.join(".glue5"));
+            let _ = std::fs::write(dir.join(".glue5/world.d.luau"), text);
+        }
+        crate::checker::Checker::release();
+    });
 }
 
 /// The catalog saved by an earlier session.

@@ -440,16 +440,16 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
         if late.is_zero() {
             return Ok(VmState::Continue);
         }
+        // Past the runaway limit whatever runs: a yield where Luau cannot
+        // (a metamethod, a sort's comparator, a module `require` runs) is
+        // dropped, so a loop there would never give the game back.
+        if late >= RUNAWAY {
+            return Err(mlua::Error::runtime(runaway()));
+        }
         // Only the coroutine the scheduler resumed yields back to it; one
         // the mod made itself (coroutine.wrap) would hand its resume an
         // empty result. That one runs on, up to the runaway limit.
-        if lua.current_thread().to_pointer() == resumed.get() {
-            Ok(VmState::Yield)
-        } else if late >= RUNAWAY {
-            Err(mlua::Error::runtime(runaway()))
-        } else {
-            Ok(VmState::Continue)
-        }
+        if lua.current_thread().to_pointer() == resumed.get() { Ok(VmState::Yield) } else { Ok(VmState::Continue) }
     });
     Ok((lua, deadline))
 }
@@ -556,6 +556,14 @@ impl Vm {
     pub fn flush_storage(&self) {
         if let Some(storage) = &self.storage {
             storage.flush(true);
+        }
+    }
+
+    /// Writes what the mod stored when it is time (every couple of
+    /// seconds), also while it waits long between its turns.
+    pub fn flush_storage_due(&self) {
+        if let Some(storage) = &self.storage {
+            storage.flush(false);
         }
     }
 

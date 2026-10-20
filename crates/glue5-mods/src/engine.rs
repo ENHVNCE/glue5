@@ -32,13 +32,16 @@ pub(crate) fn hooks(h: &mut Hooks) {
     h.script_wait = Some(script_wait);
 }
 
-/// The program registry's slots (`scrProgram::GetProgram`): 176 u64.
+/// The program registry's slots (`scrProgram::GetProgram`): 176 u64, and
+/// its free list's first slot (176: none left, where `Insert` traps).
 const PROGRAMS: u64 = 15406680;
 const PROGRAM_SLOTS: u64 = 176;
-/// The program size we copy from a loaded one; the fields set below are
-/// all the engine reads to start and run a thread.
+const PROGRAMS_FREE: u64 = 15406464;
+/// `sizeof(scrProgram)`; the fields set below are all the engine reads to
+/// start and run a thread.
 const PROGRAM_SIZE: u64 = 128;
 /// scrThread fields.
+const THREAD_ID: u64 = 24;
 const THREAD_STATE: u64 = 32;
 const STATE_WAITING: u32 = 1;
 /// The stack size of the mods' threads, one of gameconfig.xml's
@@ -169,6 +172,7 @@ impl Engine {
             self.spent = Duration::ZERO;
             self.skipped = std::mem::take(&mut self.skipping);
             for r in self.running.iter_mut().filter(|r| !r.ending) {
+                r.vm.flush_storage_due();
                 if unsafe { orig::script_get_thread(env, r.thread_id) } != r.thread {
                     log_line(&display(&r.name), LogLevel::Error, "its script thread was ended by the game");
                     set_state(&r.name, ModState::Stopped, None);
@@ -187,8 +191,9 @@ impl Engine {
                 }
                 crate::menus::remove_instance(r.vm.instance());
                 let r = self.running.remove(i);
-                if r.name == REPL {
-                    // Snippets still queued get an answer.
+                // Snippets still queued get an answer (unless a new console
+                // started meanwhile: they are its own).
+                if r.name == REPL && !self.running.iter().any(|x| x.name == REPL && !x.ending) {
                     for (_, reply) in self.jobs.borrow_mut().drain(..) {
                         let _ = reply.send(Err("the console's script stopped; try again".into()));
                     }
@@ -197,8 +202,15 @@ impl Engine {
                 i += 1;
             }
         }
-        // A pooled thread object may have gone to another script.
-        let Some(r) = self.running.iter_mut().find(|r| r.thread == active && !r.gone) else { return false };
+        // A pooled thread object may have gone to another script (in this
+        // very frame, before the check above): its id says.
+        let Some(r) = self
+            .running
+            .iter_mut()
+            .find(|r| r.thread == active && !r.gone && mem.u32(active + THREAD_ID) == r.thread_id)
+        else {
+            return false;
+        };
         // WAIT runs every frame while the thread waits; the mod runs when
         // it is about to start one.
         if r.ending || mem.u32(active + THREAD_STATE) == STATE_WAITING {
@@ -291,7 +303,11 @@ impl Engine {
         let vm = if name == REPL { Vm::repl(self.jobs.clone(), log) } else { Vm::new(name, &dir, log) }
             .map_err(|e| e.to_string())?;
         let program = unsafe { self.program(env, name)? };
-        let thread_name = unsafe { wasm_string(env, &format!("glue5:{name}")) };
+        // The program's name, kept (not a copy more at each start).
+        let thread_name = match unsafe { orig::script_get_program(env, program) } {
+            0 => return Err("its program is gone".into()),
+            p => unsafe { Mem::of(env) }.u64(p + 96),
+        };
         let thread_id = unsafe { orig::script_start_program(env, program, 0, 0, STACK as i32 as u32, thread_name) };
         if thread_id == 0 {
             return Err("the game has no free script thread for it".into());
@@ -344,9 +360,16 @@ impl Engine {
                 (pages, natives)
             }
         };
+        if u64::from(mem.u8(PROGRAMS_FREE)) >= PROGRAM_SLOTS {
+            return Err("the game's program registry is full".into());
+        }
         let id = natives::joaat(&format!("glue5:{name}"));
         let program = unsafe { malloc(env, PROGRAM_SIZE)? };
-        mem.bytes_mut(program, PROGRAM_SIZE as usize).copy_from_slice(mem.bytes(template, PROGRAM_SIZE as usize));
+        // A program of its own from nothing but the class (the template's
+        // vtable): none of the loaded one's resource (its page map at +8,
+        // globals, breakpoints), which only that one may ever free.
+        mem.bytes_mut(program, PROGRAM_SIZE as usize).fill(0);
+        mem.set_u64(program, mem.u64(template));
         mem.set_u64(program + 16, pages); // code pages
         mem.set_u32(program + 28, 13); // code size
         mem.set_u32(program + 36, 0); // statics
