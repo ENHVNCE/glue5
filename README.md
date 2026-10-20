@@ -10,10 +10,20 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/iPhone%20%C2%B7%20iPad%20%C2%B7%20Mac-playable-brightgreen" alt="iPhone, iPad and Mac: playable">
-  <img src="https://img.shields.io/badge/Android%20%C2%B7%20Windows%20%C2%B7%20Linux%20%C2%B7%20Apple%20TV-early-orange" alt="Android, Windows, Linux and Apple TV: early">
-  <img src="https://img.shields.io/badge/game%20files-not%20included-lightgrey" alt="Game files not included">
-  <a href="https://github.com/mempage4k/glue5/stargazers"><img src="https://img.shields.io/github/stars/mempage4k/glue5?style=flat" alt="GitHub stars"></a>
+  <img src="https://img.shields.io/badge/iOS-000000?style=for-the-badge&amp;logo=apple&amp;logoColor=white" alt="iOS">
+  <img src="https://img.shields.io/badge/iPadOS-000000?style=for-the-badge&amp;logo=apple&amp;logoColor=white" alt="iPadOS">
+  <img src="https://img.shields.io/badge/macOS-000000?style=for-the-badge&amp;logo=apple&amp;logoColor=white" alt="macOS">
+  <img src="https://img.shields.io/badge/tvOS-000000?style=for-the-badge&amp;logo=appletv&amp;logoColor=white" alt="tvOS">
+  <img src="https://img.shields.io/badge/Android-3DDC84?style=for-the-badge&amp;logo=android&amp;logoColor=white" alt="Android">
+  <img src="https://img.shields.io/badge/Windows-0078D6?style=for-the-badge&amp;logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCc%2BPHBhdGggZmlsbD0nd2hpdGUnIGQ9J00wIDBoMTEuNHYxMS40SDB6TTEyLjYgMEgyNHYxMS40SDEyLjZ6TTAgMTIuNmgxMS40VjI0SDB6TTEyLjYgMTIuNkgyNFYyNEgxMi42eicvPjwvc3ZnPg%3D%3D" alt="Windows">
+  <img src="https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&amp;logo=linux&amp;logoColor=black" alt="Linux">
+</p>
+
+<p align="center">
+  <a href="https://github.com/mempage4k/glue5/stargazers"><img src="https://img.shields.io/github/stars/mempage4k/glue5?style=for-the-badge&amp;logo=github&amp;color=yellow" alt="GitHub stars"></a>
+  <a href="https://github.com/mempage4k/glue5/forks"><img src="https://img.shields.io/github/forks/mempage4k/glue5?style=for-the-badge&amp;logo=github" alt="GitHub forks"></a>
+  <a href="https://github.com/mempage4k/glue5/commits/next"><img src="https://img.shields.io/github/last-commit/mempage4k/glue5/next?style=for-the-badge&amp;logo=github" alt="Last commit"></a>
+  <img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&amp;logo=rust&amp;logoColor=white" alt="Rust">
 </p>
 
 <!-- Hero image: GLUE 5 on a MacBook Pro, an iPad, an iPhone and an Android phone (docs/images/hero.jpg, to come). -->
