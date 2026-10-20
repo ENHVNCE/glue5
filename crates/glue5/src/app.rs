@@ -138,10 +138,17 @@ pub fn run() -> Result<()> {
         // iOS sends it also while the app is only inactive (Control Center,
         // a system alert): suspended is when it did go to the background.
         Event::AppWillEnterBackground { .. } => life.background.store(true, Ordering::Relaxed),
-        Event::AppDidEnterBackground { .. } => life.suspended.store(true, Ordering::Relaxed),
+        Event::AppDidEnterBackground { .. } => {
+            life.suspended.store(true, Ordering::Relaxed);
+            // Android lets the game run on unseen (iOS suspends it).
+            #[cfg(target_os = "android")]
+            glue5_runtime::frame_pace::set_background(true);
+        }
         Event::AppDidEnterForeground { .. } => {
             life.background.store(false, Ordering::Relaxed);
             life.came_back.store(true, Ordering::Relaxed);
+            #[cfg(target_os = "android")]
+            glue5_runtime::frame_pace::set_background(false);
         }
         _ => {}
     });
@@ -161,6 +168,8 @@ pub fn run() -> Result<()> {
         events: sdl.event_pump().map_err(|e| anyhow!("SDL events: {e}"))?,
         sdl,
         window,
+        #[cfg(target_os = "android")]
+        asked_rate: None,
         text_input,
         typing: None,
         typing_rect: None,
@@ -295,6 +304,9 @@ impl Typing {
 struct App {
     sdl: sdl3::Sdl,
     window: sdl3::video::Window,
+    /// The display rate asked of Android for the window's surface.
+    #[cfg(target_os = "android")]
+    asked_rate: Option<u32>,
     events: sdl3::EventPump,
     mouse: sdl3::mouse::MouseUtil,
     text_input: sdl3::keyboard::TextInputUtil,
@@ -662,6 +674,11 @@ impl App {
         self.presentation.set_metal_hud(self.settings.overlay == PerfOverlay::MetalHud);
         glue5_gpu::perf::set_on(in_game && self.settings.overlay == PerfOverlay::Glue5);
         self.presentation.set_frame_rate(self.settings.max_fps);
+        #[cfg(target_os = "android")]
+        if self.asked_rate != Some(self.settings.max_fps) {
+            self.asked_rate = Some(self.settings.max_fps);
+            ask_frame_rate(&self.window, self.settings.max_fps);
+        }
         self.presentation.set_upscaler(upscaler(&self.settings));
         self.presentation.set_sharpness(self.settings.sharpness);
         self.presentation.set_frame_generation(self.settings.frame_generation);
@@ -1036,7 +1053,10 @@ impl App {
         // Android gave the window a new native surface (SDL has updated the
         // window's handle to it already).
         #[cfg(target_os = "android")]
-        self.replace_surface();
+        {
+            self.replace_surface();
+            self.asked_rate = None;
+        }
         // iOS may take back a suspended app's listening sockets: the Studio
         // starts again (on the next update) on a new one. Not after it was
         // only inactive (its browsers would lose their connections).
@@ -1477,6 +1497,17 @@ fn wait_event(events: &mut sdl3::EventPump, timeout: Duration) -> Option<Event> 
 }
 
 /// The refresh rate of the window's display (60 if unknown).
+/// Asks Android to refresh the window's surface at the frame cap.
+#[cfg(target_os = "android")]
+fn ask_frame_rate(window: &sdl3::video::Window, fps: u32) {
+    use sdl3::sys::properties::SDL_GetPointerProperty;
+    use sdl3::sys::video::{SDL_GetWindowProperties, SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER};
+    let native = unsafe {
+        SDL_GetPointerProperty(SDL_GetWindowProperties(window.raw()), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, std::ptr::null_mut())
+    };
+    glue5_runtime::qos::ask_frame_rate(native, fps);
+}
+
 fn window_refresh_rate(window: &sdl3::video::Window) -> f32 {
     let rate = window.get_display().ok().and_then(|d| d.get_mode().ok()).map_or(0.0, |m| m.refresh_rate);
     if rate > 0.0 { rate } else { 60.0 }

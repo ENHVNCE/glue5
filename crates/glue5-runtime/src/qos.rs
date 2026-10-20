@@ -50,6 +50,28 @@ pub fn end() {
     hint::end();
 }
 
+/// Asks Android to refresh the window `native` (an `ANativeWindow`) at the
+/// frame cap `fps` (0: no preference; Android 11+, looked up at run time):
+/// a 120 Hz panel otherwise stays at 120 for a game capped at 60, its frames
+/// going out 1 or 2 refreshes apart, and nothing holding them to 60.
+/// Compatibility "default", which also keeps touch from raising the rate.
+#[cfg(target_os = "android")]
+pub fn ask_frame_rate(native: *mut std::ffi::c_void, fps: u32) {
+    type SetFrameRate = unsafe extern "C" fn(*mut std::ffi::c_void, f32, i8) -> i32;
+    static SET: std::sync::OnceLock<Option<SetFrameRate>> = std::sync::OnceLock::new();
+    let set = SET.get_or_init(|| unsafe {
+        let lib = libc::dlopen(c"libandroid.so".as_ptr(), libc::RTLD_NOW);
+        let p = if lib.is_null() { std::ptr::null_mut() } else { libc::dlsym(lib, c"ANativeWindow_setFrameRate".as_ptr()) };
+        (!p.is_null()).then(|| std::mem::transmute::<*mut libc::c_void, SetFrameRate>(p))
+    });
+    if let Some(set) = set
+        && !native.is_null()
+    {
+        let status = unsafe { set(native, fps as f32, 0) };
+        log::debug!("display: {fps} fps asked ({status})");
+    }
+}
+
 /// Android's performance hints (ADPF, Android 13+; looked up at run time).
 /// Without them the system's defaults keep the big cores' clocks low for a
 /// game that never fully loads one thread, as the engine's pipeline does.
