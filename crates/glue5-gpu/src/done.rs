@@ -64,8 +64,11 @@ pub struct OcclusionResult {
 }
 
 pub enum Copy {
+    /// `len` bytes from `skip` in the staging buffer (copies start on a
+    /// 4-byte boundary).
     Bytes {
         to: u64,
+        skip: usize,
         len: usize,
     },
     /// Rows of a texture copy (`bpr`-aligned) to the engine's pitches.
@@ -194,7 +197,7 @@ fn finish(device: &wgpu::Device, mem: Mem, pool: &StagingPool, work: Work) {
         Work::Readback { staging, copy, flag } => {
             if let Some(data) = mapped(device, &staging) {
                 match copy {
-                    Copy::Bytes { to, len } => mem.bytes_mut(to, len).copy_from_slice(&data[..len]),
+                    Copy::Bytes { to, skip, len } => mem.bytes_mut(to, len).copy_from_slice(&data[skip..skip + len]),
                     Copy::Rows { to, rows, row_bytes, bpr, row_pitch, depth, slice_pitch, pick } => {
                         for z in 0..depth {
                             for row in 0..rows {

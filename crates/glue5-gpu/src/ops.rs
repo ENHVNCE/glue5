@@ -895,13 +895,14 @@ impl Gpu {
             let from = if has_box { bx[0] as u64 } else { 0 };
             let len =
                 if has_box { (bx[3] - bx[0]) as u64 } else { (size as u64).min(bytes) }.min(bytes.saturating_sub(from));
-            let staging = self.staging.get(&self.device, len.next_multiple_of(4).max(4));
+            // Copies go 4 bytes at a time: from the word the box starts in.
+            let skip = from & 3;
+            let copied = (skip + len).next_multiple_of(4).max(4);
+            let staging = self.staging.get(&self.device, copied);
             self.objs.buf(src).unwrap().used.set(epoch);
-            self.encoder().copy_buffer_to_buffer(&g, base + (from & !3), &staging, 0, len.next_multiple_of(4).max(4));
-            self.maps.push((
-                staging,
-                Box::new(move |s| Work::Readback { staging: s, copy: Copy::Bytes { to, len: len as usize }, flag }),
-            ));
+            self.encoder().copy_buffer_to_buffer(&g, base + (from - skip), &staging, 0, copied);
+            let (skip, len) = (skip as usize, len as usize);
+            self.maps.push((staging, Box::new(move |s| Work::Readback { staging: s, copy: Copy::Bytes { to, skip, len }, flag })));
             return;
         }
         let Some(t) = self.objs.tex(src) else {
@@ -916,6 +917,13 @@ impl Gpu {
         let pick = match t.upload {
             format::Upload::Direct => None,
             format::Upload::A8 => Some(3),
+            format::Upload::Unorm16 => {
+                crate::log_once("rb-unorm16", || "readback of 16-bit normalized texels kept as half floats skipped".into());
+                if flag != 0 {
+                    self.works.push(done(flag));
+                }
+                return;
+            }
             format::Upload::Bc(_) => {
                 crate::log_once("rb-bc", || "readback of a decoded BC texture skipped".into());
                 if flag != 0 {

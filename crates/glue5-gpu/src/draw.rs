@@ -449,11 +449,12 @@ impl Gpu {
                     let ok = self.objs.state(id).is_some_and(|s| s.sampler.is_some() && s.comparison == *comparison);
                     key.push(if ok { id } else { 0 });
                 }
-                Kind::Texture { dim, .. } => {
+                Kind::Texture { dim, sample, .. } => {
                     let slot = b.binding - shader::SRVS;
                     let id = self.s.srv[st][slot as usize];
-                    let res =
-                        self.objs.srv(id).filter(|v| !v.is_buffer && !self.reads_target(prog, stage, slot, v, *dim));
+                    let res = self.objs.srv(id).filter(|v| {
+                        !v.is_buffer && !self.reads_target(prog, stage, slot, v, *dim) && !self.compares_depth_target(v, *sample, stage)
+                    });
                     match res.and_then(|v| self.objs.tex(v.res)) {
                         Some(t) => {
                             t.used.set(epoch);
@@ -558,7 +559,8 @@ impl Gpu {
                 }
                 Kind::Texture { sample, dim, multisampled } => {
                     let id = self.s.srv[st][(b.binding - shader::SRVS) as usize];
-                    let target = self.objs.srv(id).is_some_and(|v| self.is_target(v, *dim));
+                    let target =
+                        self.objs.srv(id).is_some_and(|v| self.is_target(v, *dim) || self.compares_depth_target(v, *sample, stage));
                     match if target { None } else { self.srv_view(id, *dim, *sample) } {
                         Some(v) => Res::View(v),
                         None => Res::View(self.dummies.texture(&self.device, *dim, *sample, *multisampled)),
@@ -700,6 +702,15 @@ impl Gpu {
         }
         let ro = self.s.ds_flags & 3;
         ro & 1 != 0 && (ro & 2 != 0 || !format.has_stencil_aspect())
+    }
+
+    /// Whether a comparison (`texture_depth`) read is of the pass's depth
+    /// attachment while that is written: unbound for the draw, as D3D11
+    /// does (float reads go through a copy instead, see `for_bound_formats`).
+    fn compares_depth_target(&self, srv: &View, sample: Sample, stage: Stage) -> bool {
+        sample == Sample::Depth
+            && self.pass.is_some()
+            && self.objs.tex(srv.res).is_some_and(|t| format::is_depth(t.format) && !self.may_sample_depth(srv.res, t.format, stage))
     }
 
     /// Whether a texture SRV reads what the open render pass draws into.

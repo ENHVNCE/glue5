@@ -947,6 +947,22 @@ impl Gpu {
                 converted = out;
                 (&converted[..], w * 4, h, h, (w, h), w * 4)
             }
+            Upload::Unorm16 => {
+                let row = w * format::block(t.format).0;
+                let mut out = Vec::with_capacity((row * h * d) as usize);
+                for layer in 0..d {
+                    for r in 0..h {
+                        let src = (layer * rows.max(h) * bpr + r * bpr) as usize;
+                        let line = data.get(src..).unwrap_or_default();
+                        for i in 0..row as usize / 2 {
+                            let v = line.get(2 * i..2 * i + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
+                            out.extend_from_slice(&half::f16::from_f32(f32::from(v) / 65535.0).to_le_bytes());
+                        }
+                    }
+                }
+                converted = out;
+                (&converted[..], row, h, h, (w, h), row)
+            }
             Upload::Bc(_) => unreachable!("decoded on another thread"),
         };
         let extent = wgpu::Extent3d { width, height, depth_or_array_layers: d };
