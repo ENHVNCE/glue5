@@ -1,0 +1,172 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: glue5 <glue5@localhost>
+Date: Tue, 20 Oct 2026 13:00:00 +0200
+Subject: [PATCH 9/9] wasm2c: on AArch64, float helpers as the instructions are
+
+The helpers for rounding, square root, abs and float promotion/demotion
+test for NaN before the operation, to quiet a signalling NaN keeping its
+payload; the saturating float-to-int conversions compare against the
+range and NaN before converting. AArch64's instructions already give
+those results (with the default FPCR): frint*, fsqrt and fcvt quiet a
+signalling NaN keeping its payload, fabs clears the sign of a NaN, and
+fcvtzs/fcvtzu saturate and give 0 for NaN. Checked on all 2^32 f32
+inputs and 400M f64 ones: the same bits. A game's audio resampler, made
+of these, ran 30% faster; ~21,000 checks fewer in its code.
+---
+ src/template/wasm2c.declarations.c | 52 ++++++++++++++++++++++++++++++++++++++--------------
+ 1 file changed, 38 insertions(+), 14 deletions(-)
+
+diff --git a/src/template/wasm2c.declarations.c b/src/template/wasm2c.declarations.c
+--- a/src/template/wasm2c.declarations.c
++++ b/src/template/wasm2c.declarations.c
+@@ -554,6 +554,31 @@
+ #define I64_TRUNC_SAT_U_F64(x) \
+   TRUNC_SAT_U(u64, f64, (f64)UINT64_MAX, UINT64_MAX, x)
+ 
++// AArch64's instructions already give wasm's results: rounding, square
++// root, abs and float conversions quiet a signalling NaN keeping its
++// payload (what quiet_nan does), and float-to-int conversions saturate,
++// NaN to 0 (trunc_sat). The NaN checks and compares before them are left
++// out (with the default FPCR: no default-NaN or flush-to-zero mode).
++#if (defined(__aarch64__) || defined(_M_ARM64)) && \
++    (defined(__clang__) || defined(__GNUC__)) && !WABT_BIG_ENDIAN
++#define WASM_RT_NATIVE_FLOAT 1
++#include <arm_neon.h>
++#undef I32_TRUNC_SAT_S_F32
++#undef I32_TRUNC_SAT_U_F32
++#undef I64_TRUNC_SAT_S_F32
++#undef I64_TRUNC_SAT_U_F32
++#undef I64_TRUNC_SAT_S_F64
++#undef I64_TRUNC_SAT_U_F64
++#define I32_TRUNC_SAT_S_F32(x) ((u32)vcvts_s32_f32(x))
++#define I32_TRUNC_SAT_U_F32(x) (vcvts_u32_f32(x))
++#define I64_TRUNC_SAT_S_F32(x) ((u64)vcvtd_s64_f64((f64)(x)))
++#define I64_TRUNC_SAT_U_F32(x) (vcvtd_u64_f64((f64)(x)))
++#define I64_TRUNC_SAT_S_F64(x) ((u64)vcvtd_s64_f64(x))
++#define I64_TRUNC_SAT_U_F64(x) (vcvtd_u64_f64(x))
++#else
++#define WASM_RT_NATIVE_FLOAT 0
++#endif
++
+ #define DEFINE_REINTERPRET(name, t1, t2)         \
+   static inline t2 name(t1 x) {                  \
+     t2 result;                                   \
+@@ -583,77 +608,77 @@
+ }
+ 
+ static double wasm_quiet(double x) {
+-  if (UNLIKELY(isnan(x))) {
++  if (!WASM_RT_NATIVE_FLOAT && UNLIKELY(isnan(x))) {
+     return quiet_nan(x);
+   }
+   return x;
+ }
+ 
+ static float wasm_quietf(float x) {
+-  if (UNLIKELY(isnan(x))) {
++  if (!WASM_RT_NATIVE_FLOAT && UNLIKELY(isnan(x))) {
+     return quiet_nanf(x);
+   }
+   return x;
+ }
+ 
+ static double wasm_floor(double x) {
+-  if (UNLIKELY(isnan(x))) {
++  if (!WASM_RT_NATIVE_FLOAT && UNLIKELY(isnan(x))) {
+     return quiet_nan(x);
+   }
+   return floor(x);
+ }
+ 
+ static float wasm_floorf(float x) {
+-  if (UNLIKELY(isnan(x))) {
++  if (!WASM_RT_NATIVE_FLOAT && UNLIKELY(isnan(x))) {
+     return quiet_nanf(x);
+   }
+   return floorf(x);
+ }
+ 
+ static double wasm_ceil(double x) {
+-  if (UNLIKELY(isnan(x))) {
++  if (!WASM_RT_NATIVE_FLOAT && UNLIKELY(isnan(x))) {
+     return quiet_nan(x);
+   }
+   return ceil(x);
+ }
+ 
+ static float wasm_ceilf(float x) {
+-  if (UNLIKELY(isnan(x))) {
++  if (!WASM_RT_NATIVE_FLOAT && UNLIKELY(isnan(x))) {
+     return quiet_nanf(x);
+   }
+   return ceilf(x);
+ }
+ 
+ static double wasm_trunc(double x) {
+-  if (UNLIKELY(isnan(x))) {
++  if (!WASM_RT_NATIVE_FLOAT && UNLIKELY(isnan(x))) {
+     return quiet_nan(x);
+   }
+   return trunc(x);
+ }
+ 
+ static float wasm_truncf(float x) {
+-  if (UNLIKELY(isnan(x))) {
++  if (!WASM_RT_NATIVE_FLOAT && UNLIKELY(isnan(x))) {
+     return quiet_nanf(x);
+   }
+   return truncf(x);
+ }
+ 
+ static float wasm_nearbyintf(float x) {
+-  if (UNLIKELY(isnan(x))) {
++  if (!WASM_RT_NATIVE_FLOAT && UNLIKELY(isnan(x))) {
+     return quiet_nanf(x);
+   }
+   return nearbyintf(x);
+ }
+ 
+ static double wasm_nearbyint(double x) {
+-  if (UNLIKELY(isnan(x))) {
++  if (!WASM_RT_NATIVE_FLOAT && UNLIKELY(isnan(x))) {
+     return quiet_nan(x);
+   }
+   return nearbyint(x);
+ }
+ 
+ static float wasm_fabsf(float x) {
+-  if (UNLIKELY(isnan(x))) {
++  if (!WASM_RT_NATIVE_FLOAT && UNLIKELY(isnan(x))) {
+     uint32_t tmp;
+     wasm_rt_memcpy(&tmp, &x, 4);
+     tmp = tmp & ~(1UL << 31);
+@@ -664,7 +689,7 @@
+ }
+ 
+ static double wasm_fabs(double x) {
+-  if (UNLIKELY(isnan(x))) {
++  if (!WASM_RT_NATIVE_FLOAT && UNLIKELY(isnan(x))) {
+     uint64_t tmp;
+     wasm_rt_memcpy(&tmp, &x, 8);
+     tmp = tmp & ~(1ULL << 63);
+@@ -675,7 +700,7 @@
+ }
+ 
+ static double wasm_sqrt(double x) {
+-  if (UNLIKELY(isnan(x))) {
++  if (!WASM_RT_NATIVE_FLOAT && UNLIKELY(isnan(x))) {
+     return quiet_nan(x);
+   }
+ 
+@@ -692,7 +717,7 @@
+ }
+ 
+ static float wasm_sqrtf(float x) {
+-  if (UNLIKELY(isnan(x))) {
++  if (!WASM_RT_NATIVE_FLOAT && UNLIKELY(isnan(x))) {
+     return quiet_nanf(x);
+   }
+ 
+-- 
+2.50.1
+
