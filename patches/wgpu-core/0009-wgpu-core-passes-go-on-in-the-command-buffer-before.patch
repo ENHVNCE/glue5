@@ -155,7 +155,7 @@ index 0a8382c..82d9cd1 100644
 -        .map_pass_err(pass_scope)?;
 +    // glue5: what may have to run before the pass besides barriers: clears
 +    // of discarded surfaces, query resets, indirect draws' validation.
-+    let only_barriers_before = timestamp_writes.is_none()
++    let only_barriers_before = parent_state.raw_encoder.raw.transitions_are_noops() && timestamp_writes.is_none()
 +        && !parent_state.texture_memory_actions.has_discards()
 +        && !base.commands.iter().any(|command| match command {
 +            ArcRenderCommand::BeginOcclusionQuery { .. }
