@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="docs/assets/glue5-logo.png" alt="GLUE 5" width="128" height="128">
+  <img src="docs/images/hero.webp" alt="GLUE 5: GTA V on an iPhone, an Android phone, a MacBook Pro and an iPad" width="100%">
 </p>
-
-<h1 align="center">GLUE 5</h1>
 
 <p align="center">
   <b>GTA V, running natively on your iPhone, iPad, Mac, Android phone and PC.</b><br>
@@ -25,8 +23,6 @@
   <a href="https://github.com/mempage4k/glue5/commits/next"><img src="https://img.shields.io/github/last-commit/mempage4k/glue5/next?style=for-the-badge&amp;logo=github" alt="Last commit"></a>
   <img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&amp;logo=rust&amp;logoColor=white" alt="Rust">
 </p>
-
-<!-- Hero image: GLUE 5 on a MacBook Pro, an iPad, an iPhone and an Android phone (docs/images/hero.jpg, to come). -->
 
 > [!IMPORTANT]
 > GLUE 5 contains **no game files**. It turns files you supply, from GTA V's
@@ -58,16 +54,8 @@
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/iphone-touch.jpg" alt="Driving through Del Perro on an iPhone with the on-screen controls"></td>
-    <td width="50%"><img src="docs/images/gameplay-vespucci.jpg" alt="Sunset over Vespucci Beach"></td>
-  </tr>
-  <tr>
-    <td><img src="docs/images/gameplay-vinewood.jpg" alt="Vinewood Boulevard at night"></td>
-    <td><img src="docs/images/gameplay-maze-bank.jpg" alt="The roof of the Maze Bank Tower at sunset"></td>
-  </tr>
-  <tr>
-    <td><img src="docs/images/app-start.jpg" alt="The start page: story mode, GTA Online, sandbox and benchmark"></td>
-    <td><img src="docs/images/studio.jpg" alt="GLUE 5 Studio editing a mod, with its menu live from the game"></td>
+    <td width="50%" align="center"><img src="docs/images/app-start.webp" alt="The start page on a MacBook Pro: story mode, GTA Online, sandbox and benchmark"><br><sub>The start page: story mode, GTA Online, sandbox, benchmark</sub></td>
+    <td width="50%" align="center"><img src="docs/images/studio.webp" alt="GLUE 5 Studio on a tablet, editing a mod with its menu live from the game"><br><sub>GLUE 5 Studio: a mod, its menu live from the game</sub></td>
   </tr>
 </table>
 

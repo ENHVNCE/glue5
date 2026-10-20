@@ -1,7 +1,7 @@
 # Playing
 
 <p align="center">
-  <img src="images/app-start.jpg" alt="The start page on a Mac" width="100%">
+  <img src="images/app-start.webp" alt="The start page on a Mac" width="100%">
 </p>
 
 ## The start page
