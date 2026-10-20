@@ -1172,33 +1172,44 @@ impl Gpu {
         ));
     }
 
-    /// Pipeline recipes and the driver's pipeline cache, for the next run.
+    /// Pipeline recipes and the driver's pipeline cache, for the next run,
+    /// written by a compile thread: the driver's cache is megabytes to get
+    /// and write, and files may take long (the ring stood still meanwhile).
     pub fn save_caches(&mut self) {
         self.last_save = Instant::now();
         let Some(dir) = self.settings.cache_dir.clone() else {
             return;
         };
-        if !self.recipes_new.is_empty() {
-            use std::io::Write;
-            let lines: String = self.recipes_new.drain(..).map(|r| r.to_json().to_string() + "\n").collect();
-            let path = dir.join("pipelines.jsonl");
-            let result = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .and_then(|mut f| f.write_all(lines.as_bytes()));
-            if let Err(e) = result {
-                log::warn!("gpu: saving {}: {e}", path.display());
-            }
-        }
+        let recipes = std::mem::take(&mut self.recipes_new);
+        // The driver's cache only when pipelines were added.
         let compiled = self.compiler.compiled.load(std::sync::atomic::Ordering::Relaxed);
-        if compiled != self.saved_compiled {
-            // Off the command thread: the driver's cache is megabytes to get
-            // and write (the ring stood still meanwhile).
-            let (compiler, adapter) = (self.compiler.clone(), self.adapter.clone());
-            self.pool.background(move || crate::save_pipeline_cache(&compiler, &adapter, &dir));
-            self.saved_compiled = compiled;
+        let driver = (compiled != self.saved_compiled).then(|| (self.compiler.clone(), self.adapter.clone()));
+        self.saved_compiled = compiled;
+        if recipes.is_empty() && driver.is_none() {
+            return;
         }
+        self.pool.background(move || {
+            if !recipes.is_empty() {
+                append_recipes(&dir.join("pipelines.jsonl"), &recipes);
+            }
+            if let Some((compiler, adapter)) = driver {
+                crate::save_pipeline_cache(&compiler, &adapter, &dir);
+            }
+        });
+    }
+}
+
+/// Recipes added to the file of those recorded, a line each.
+fn append_recipes(path: &Path, recipes: &[Arc<crate::pipeline::Recipe>]) {
+    use std::io::Write;
+    let lines: String = recipes.iter().map(|r| r.to_json().to_string() + "\n").collect();
+    let result = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut f| f.write_all(lines.as_bytes()));
+    if let Err(e) = result {
+        log::warn!("gpu: saving {}: {e}", path.display());
     }
 }
 
