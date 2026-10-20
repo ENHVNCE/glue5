@@ -1,8 +1,8 @@
 //! The command thread: executes the engine's ring in order, mirroring the
 //! D3D11 device state onto wgpu.
 
-use std::sync::{Arc, Mutex};
 use std::sync::mpsc::TryRecvError;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use glue5_runtime::gpu::{Command, GpuRing, Reader, op};
@@ -1264,13 +1264,15 @@ impl Gpu {
         self.perf.reset();
         let [textures, buffers] = self.gpu_bytes();
         let memory = format!(
-            "textures {} MiB, buffers {} MiB (small ones {} MiB in {} MiB of slabs), constants {} MiB; {} reused",
+            "textures {} MiB, buffers {} MiB (small ones {} MiB in {} MiB of slabs), constants {} MiB; {} reused; uploads {} MiB, staging chunks +{}",
             textures >> 20,
             buffers >> 20,
             self.slabs.used >> 20,
             self.slabs.bytes() >> 20,
             self.uniforms.bytes_allocated() >> 20,
-            std::mem::take(&mut self.recycler.reused)
+            std::mem::take(&mut self.recycler.reused),
+            std::mem::take(&mut self.uploads.bytes) >> 20,
+            std::mem::take(&mut self.uploads.made),
         );
         let mut frames_line = frame_times(st.frame_ms) + &on_screen(crate::present::take_on_screen());
         if let Some(ms) = crate::present::take_upscaling() {
