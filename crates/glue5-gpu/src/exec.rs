@@ -1,7 +1,7 @@
 //! The command thread: executes the engine's ring in order, mirroring the
 //! D3D11 device state onto wgpu.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 
@@ -152,6 +152,11 @@ pub struct Stats {
     /// Present-to-present intervals, in milliseconds.
     pub frame_ms: Vec<f32>,
     pub errors: u64,
+    /// Flushes held up by BC decodes their batch needed: in all, the
+    /// longest, and decodes run on the command thread.
+    pub decode_wait: Duration,
+    pub decode_wait_max: Duration,
+    pub decoded_here: u64,
 }
 
 pub struct Gpu {
@@ -261,8 +266,10 @@ pub struct Gpu {
 /// A texture upload being decoded: copied in when its batch is handed over
 /// (a batch's uploads go before its commands anyway).
 pub struct Decode {
+    /// The decoding, until a decode thread starts it.
+    job: Arc<Mutex<Option<DecodeJob>>>,
     data: std::sync::mpsc::Receiver<Vec<u8>>,
-    /// The texture's object, and the texture it was when the data came.
+    /// The texture's object, and its texture.
     id: u32,
     texture: wgpu::Texture,
     level: u32,
@@ -272,6 +279,15 @@ pub struct Decode {
     rows: u32,
     extent: wgpu::Extent3d,
     row_bytes: u32,
+}
+
+type DecodeJob = Box<dyn FnOnce() -> Vec<u8> + Send>;
+
+impl Drop for Decode {
+    /// Not wanted (its texture was destroyed): not decoded if not started.
+    fn drop(&mut self) {
+        self.job.lock().unwrap().take();
+    }
 }
 
 /// Recorded work waits this long for more before an idle ring submits it.
@@ -908,13 +924,21 @@ impl Gpu {
             };
             let (texture, src) = (t.tex.clone(), data.to_vec());
             t.uploaded.set(self.epoch);
-            let (tx, rx) = std::sync::mpsc::channel();
             let bpr = bpr as usize;
-            self.decoder.get_or_insert_with(|| Pool::new("gpu decode", 2)).urgent(move || {
+            let job: DecodeJob = Box::new(move || {
                 let texels = crate::bc::decode(bc, &src, bpr, src_rows, cols as usize, block_rows as usize, d as usize);
-                let _ = tx.send(if etc2 { crate::bc::etc2_rgba(texels, cols * 4, block_rows * 4 * d) } else { texels });
+                if etc2 { crate::bc::etc2_rgba(texels, cols * 4, block_rows * 4 * d) } else { texels }
+            });
+            let (job, (tx, rx)) = (Arc::new(Mutex::new(Some(job))), std::sync::mpsc::channel());
+            let queued = job.clone();
+            self.decoder.get_or_insert_with(|| Pool::new("gpu decode", 2)).urgent(move || {
+                let job = queued.lock().unwrap().take();
+                if let Some(job) = job {
+                    let _ = tx.send(job());
+                }
             });
             self.decodes.push(Decode {
+                job,
                 data: rx,
                 id,
                 texture,
@@ -985,21 +1009,29 @@ impl Gpu {
     /// Copies in the textures decoded so far. One still decoding waits for
     /// a later flush, unless the commands being handed over use its texture:
     /// the frame waits only for the textures it draws (streaming brings
-    /// hundreds of decodes at once, hundreds of milliseconds on a phone).
-    /// A texture's regions go in the order they came.
+    /// hundreds of decodes at once, hundreds of milliseconds on a phone),
+    /// and not behind the decodes queued before them: one not started is
+    /// decoded here. A texture's regions go in the order they came.
     fn finish_decodes(&mut self) {
         let mut later: Vec<Decode> = Vec::new();
         // The textures with a region waiting (a set: hundreds wait at times).
         let mut waiting = rustc_hash::FxHashSet::default();
+        let mut held = Duration::ZERO;
         for d in std::mem::take(&mut self.decodes) {
-            let Some(t) = self.objs.tex(d.id).filter(|t| t.tex == d.texture) else {
-                continue; // destroyed meanwhile
-            };
+            let Some(t) = self.objs.tex(d.id) else { continue };
             let used_now = t.used.get() == self.epoch;
             let texels = if waiting.contains(&d.id) {
                 None
             } else if used_now {
-                let Ok(texels) = d.data.recv() else { continue };
+                let t0 = Instant::now();
+                let job = d.job.lock().unwrap().take();
+                self.stats.decoded_here += job.is_some() as u64;
+                let texels = match job {
+                    Some(job) => Ok(job()),
+                    None => d.data.recv(),
+                };
+                held += t0.elapsed();
+                let Ok(texels) = texels else { continue };
                 Some(texels)
             } else {
                 match d.data.try_recv() {
@@ -1022,6 +1054,8 @@ impl Gpu {
             self.uploads.texture(target, &texels, d.bpr, d.src_rows, d.rows, d.extent, d.row_bytes);
         }
         self.decodes = later;
+        self.stats.decode_wait += held;
+        self.stats.decode_wait_max = self.stats.decode_wait_max.max(held);
     }
 
     fn create_shader(&mut self, c: &Command) {
@@ -1102,6 +1136,9 @@ impl Gpu {
             self.pdirty = true;
         }
         self.clears.retain(|c| c.tex != id);
+        // Its decodes are not needed (nor copied into a texture made later
+        // from its memory).
+        self.decodes.retain(|d| d.id != id);
         // Memory goes right after the next submit: batches handed over
         // earlier may still be waiting for theirs. Cached bind groups must
         // not keep it.
@@ -1243,9 +1280,18 @@ impl Gpu {
         let per_frame = |d: Duration| d.as_secs_f64() * 1000.0 / frames as f64;
         let mut skipped: Vec<_> = st.skipped.iter().map(|(k, n)| format!("{k} {n}")).collect();
         skipped.sort();
+        let decoding = match self.decoder {
+            Some(_) => format!(
+                ", BC decodes held flushes {:.0} ms (longest {:.1}, {} decoded on the command thread)",
+                st.decode_wait.as_secs_f64() * 1000.0,
+                st.decode_wait_max.as_secs_f64() * 1000.0,
+                st.decoded_here,
+            ),
+            None => String::new(),
+        };
         let c = &self.compiler;
         log::info!(
-            "gpu: {:.1} fps ({frames_line}), {} draws/frame, {} dispatches, {:.1} passes/frame (ended by {}), {:.1} submits/frame ({}), recording {:.0}% ({:.1} ms/frame), encoding {:.1} ms/frame, submitting {:.1}, presenting {:.1}, releasing {:.1}, waiting for the GPU {:.1}, for a drawable {:.1}; pipelines {} ({} failed, {:.0} ms compiling), draws waiting for one {}, skipped [{}], clamped {}, bind groups +{} ({} cached), objects {} ({memory}), errors +{}",
+            "gpu: {:.1} fps ({frames_line}), {} draws/frame, {} dispatches, {:.1} passes/frame (ended by {}), {:.1} submits/frame ({}), recording {:.0}% ({:.1} ms/frame), encoding {:.1} ms/frame, submitting {:.1}, presenting {:.1}, releasing {:.1}, waiting for the GPU {:.1}, for a drawable {:.1}; pipelines {} ({} failed, {:.0} ms compiling), draws waiting for one {}, skipped [{}], clamped {}, bind groups +{} ({} cached){decoding}, objects {} ({memory}), errors +{}",
             st.presents as f64 / secs,
             st.draws / frames,
             st.dispatches / frames,
