@@ -116,6 +116,22 @@ pub(crate) unsafe extern "C" fn native_bind(env: *mut Env, socket: u64) -> u32 {
     1
 }
 
+/// Hook for `rage::netSocket::NativeShutdown()`: its port goes with it
+/// (each session search makes a socket of its own: its queue, and the
+/// late answers queued there, would stay for good).
+pub(crate) unsafe extern "C" fn native_shutdown(env: *mut Env, socket: u64) {
+    let m = unsafe { Mem::of(env) };
+    if let Ok(handle) = u32::try_from(m.u64(socket + SOCKET_HANDLE) as i64) {
+        let mut sockets = SOCKETS.lock().unwrap();
+        if let Some(port) = sockets.ports.remove(&handle)
+            && !sockets.ports.values().any(|&p| p == port)
+        {
+            sockets.queues.remove(&port);
+        }
+    }
+    unsafe { orig::socket_shutdown(env, socket) }
+}
+
 /// Hook for `rage::netSocket::Send(netSocketAddress const&, void const*,
 /// unsigned int, netSocketError*)`.
 pub(crate) unsafe extern "C" fn socket_send(
@@ -250,6 +266,7 @@ pub(crate) fn hooks(hooks: &mut glue5_game::Hooks) {
     hooks.profiler_push = Some(profiler_push);
     hooks.create_socket = Some(create_socket);
     hooks.socket_bind = Some(native_bind);
+    hooks.socket_shutdown = Some(native_shutdown);
     hooks.socket_send = Some(socket_send);
     hooks.socket_receive = Some(socket_receive);
     hooks.socket_select = Some(socket_select);

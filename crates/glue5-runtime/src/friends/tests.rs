@@ -195,6 +195,13 @@ fn game_events_arrive_once_through_losses() {
     let mut now = Instant::now();
     let (mut a, mut b) = (Player::new("Ann", 1), Player::new("Bob", 2));
     befriend(&mut a, &mut b, true, &mut now);
+    // Not kept while Bob is not in GTA Online.
+    let mut out = Out::default();
+    assert!(a.s.send_game(2000, "{\"stale\":1}", now, &mut out));
+    let from = a.addr;
+    run(&mut [&mut a, &mut b], out, from, &mut now, 4, &keep);
+    assert!(b.s.events.is_empty());
+    b.s.local.playing = Playing::Online;
     let mut out = Out::default();
     assert!(a.s.send_game(2000, "{\"invite\":1}", now, &mut out));
     assert!(!a.s.send_game(7, "nobody", now, &mut out));
@@ -224,6 +231,7 @@ fn messages_after_a_restart_are_not_repeats() {
     let mut now = Instant::now();
     let (mut a, mut b) = (Player::new("Ann", 1), Player::new("Bob", 2));
     befriend(&mut a, &mut b, true, &mut now);
+    b.s.local.playing = Playing::Online;
     // Ann starts again, Bob does not: her messages still reach him.
     for round in 0..2 {
         if round == 1 {
@@ -520,6 +528,7 @@ fn game_events_as_large_as_the_game_s_arrive() {
     let mut now = Instant::now();
     let (mut a, mut b) = (Player::new("Ann", 1), Player::new("Bob", 2));
     befriend(&mut a, &mut b, true, &mut now);
+    b.s.local.playing = Playing::Online;
     let long = format!("{{\"x\":\"{}\"}}", "a".repeat(1000));
     let mut out = Out::default();
     assert!(a.s.send_game(2000, &long, now, &mut out));

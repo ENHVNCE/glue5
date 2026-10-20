@@ -524,7 +524,9 @@ pub(crate) struct Saving {
 }
 
 impl Saving {
-    /// Writes the file, unless newer content was written already.
+    /// Writes the file, unless newer content was written already. When it
+    /// could not (a full disk), the changes are saved again later: else they
+    /// would wait for some other change, and be lost at exit.
     fn write(self) {
         let mut written = self.written.lock().unwrap();
         if self.version <= *written {
@@ -533,7 +535,11 @@ impl Saving {
         let temp = self.path.with_file_name(format!("{FILE}.new"));
         match write_private(&temp, &self.bytes).and_then(|()| std::fs::rename(&temp, &self.path)) {
             Ok(()) => *written = self.version,
-            Err(e) => log::warn!("friends: saving {}: {e}", self.path.display()),
+            Err(e) => {
+                log::warn!("friends: saving {}: {e}", self.path.display());
+                drop(written);
+                with(|s, _| s.save());
+            }
         }
     }
 }
@@ -1404,6 +1410,10 @@ impl Service {
             }
             Owner::Asker(_) => {
                 if self.blocked.contains(&key) {
+                    // Declined before: told again (that answer is sent once,
+                    // and lost it would have them ask for ever).
+                    let mut t = t;
+                    out.push(t.addr, seal(&mut t, &Message::Decline));
                     return;
                 }
                 if self.friends.contains_key(&key) {
@@ -1490,6 +1500,7 @@ impl Service {
     }
 
     fn on_friend(&mut self, key: Key, message: Message, now: Instant, out: &mut Out) {
+        let online = self.local.playing == Playing::Online;
         let Some(f) = self.friends.get_mut(&key) else { return };
         match message {
             Message::Presence(p) => {
@@ -1497,6 +1508,10 @@ impl Service {
                 let taken = self.id_taken(p.id, &key);
                 let Some(f) = self.friends.get_mut(&key) else { return };
                 if f.presence.as_ref() != Some(&p) {
+                    // Out of GTA Online: its invite is to a session it left.
+                    if p.playing != Playing::Online && f.invited.take().is_some() {
+                        self.generation += 1;
+                    }
                     if !p.name.is_empty() && p.name != f.name {
                         f.name = p.name.clone();
                     }
@@ -1514,12 +1529,17 @@ impl Service {
                 }
             }
             Message::Game { seq, text } => {
-                if !f.first_time(seq, out) || text.len() > game::MAX_EVENT {
+                // For GTA Online's session: none kept while the player is
+                // elsewhere (they would all come at once, stale, later).
+                if !f.first_time(seq, out) || text.len() > game::MAX_EVENT || !online {
                     return;
                 }
                 log::info!("friends: a game event from {}", f.name);
                 self.events.push_back(GameEvent { from: f.id, name: f.name.clone(), text });
-                self.events.truncate(32);
+                // The newest kept.
+                if self.events.len() > 32 {
+                    self.events.pop_front();
+                }
             }
             Message::Invite { seq, lobby, session } => {
                 if !f.first_time(seq, out) || f.invited.as_ref().is_some_and(|i| now - i.at < INVITE_AGAIN) {
@@ -1804,6 +1824,7 @@ pub(crate) fn set_playing(playing: Playing) {
         s.local.playing = playing;
         if playing != Playing::Online {
             s.local.session = None;
+            s.events.clear();
         }
     });
 }

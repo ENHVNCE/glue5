@@ -322,7 +322,14 @@ impl Dht {
         let Some(Value::Dict(msg)) = Value::decode(data) else { return };
         let Some(Value::Bytes(t)) = msg.get(&b"t"[..]) else { return };
         let Ok(t) = <[u8; 2]>::try_from(t.as_slice()) else { return };
-        let Some((key, d, _)) = self.pending.remove(&u16::from_be_bytes(t)) else { return };
+        let tid = u16::from_be_bytes(t);
+        let Some(&(key, d, _)) = self.pending.get(&tid) else { return };
+        // A datagram from elsewhere with the query's (guessable) id leaves
+        // it waiting for the node's answer.
+        if self.lookups.get(&key).and_then(|l| l.nodes.get(&d)).is_some_and(|n| n.addr != from) {
+            return;
+        }
+        self.pending.remove(&tid);
         let Some(Value::Dict(r)) = msg.get(&b"r"[..]) else { return };
         let Some(lookup) = self.lookups.get_mut(&key) else { return };
         // The node, under its real id now.
@@ -337,8 +344,17 @@ impl Dht {
         if let Some(Value::Bytes(ip)) = msg.get(&b"ip"[..])
             && let Some(seen) = compact_addr(ip)
         {
-            if self.told.is_some_and(|(a, by)| a == seen && by != *from.ip()) {
-                self.external = Some(seen);
+            // Dropped once two in a row say otherwise: the player moved to
+            // another network (Wi-Fi to mobile data), whose NAT may give
+            // each node another address, so that none agree again.
+            if let Some((a, by)) = self.told
+                && by != *from.ip()
+            {
+                if a == seen {
+                    self.external = Some(seen);
+                } else if self.external.is_some_and(|e| e != seen && e != a) {
+                    self.external = None;
+                }
             }
             self.told = Some((seen, *from.ip()));
         }
@@ -499,8 +515,10 @@ impl Value {
             b'0'..=b'9' => {
                 let colon = *at + d[*at..].iter().position(|&c| c == b':')?;
                 let len: usize = std::str::from_utf8(&d[*at..colon]).ok()?.parse().ok()?;
-                let b = d.get(colon + 1..colon + 1 + len)?.to_vec();
-                *at = colon + 1 + len;
+                // (A length from the network: no overflow.)
+                let end = (colon + 1).checked_add(len)?;
+                let b = d.get(colon + 1..end)?.to_vec();
+                *at = end;
                 Some(Value::Bytes(b))
             }
             _ => None,

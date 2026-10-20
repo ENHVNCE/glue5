@@ -399,14 +399,49 @@ fn is_broadcast(ip: u32) -> bool {
 
 /// This device's address on its local network (the one its Internet
 /// traffic leaves from), when the network is a private one. Connecting a
-/// UDP socket sends nothing.
+/// UDP socket sends nothing. Not a phone's mobile data, whose private
+/// addresses are the carrier's (its /24 holds strangers, not players).
 pub(crate) fn lan_address() -> Option<Ipv4Addr> {
     let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)).ok()?;
     socket.connect(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 9)).ok()?;
     match socket.local_addr().ok()? {
-        SocketAddr::V4(a) if a.ip().is_private() => Some(*a.ip()),
+        SocketAddr::V4(a) if a.ip().is_private() && on_broadcast_network(*a.ip()) => Some(*a.ip()),
         _ => None,
     }
+}
+
+/// Whether `ip` is on a network with neighbours (Wi-Fi, Ethernet): its
+/// interface broadcasts and is not point-to-point, as mobile data's are.
+#[cfg(unix)]
+fn on_broadcast_network(ip: Ipv4Addr) -> bool {
+    let mut found = false;
+    // SAFETY: the list is walked as getifaddrs made it, then freed.
+    unsafe {
+        let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut list) != 0 {
+            return true;
+        }
+        let mut at = list;
+        while !at.is_null() {
+            let a = (*at).ifa_addr;
+            if !a.is_null() && (*a).sa_family as i32 == libc::AF_INET {
+                let sin = &*(a as *const libc::sockaddr_in);
+                if Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr)) == ip {
+                    let flags = (*at).ifa_flags;
+                    found = flags & libc::IFF_BROADCAST as u32 != 0 && flags & libc::IFF_POINTOPOINT as u32 == 0;
+                    break;
+                }
+            }
+            at = (*at).ifa_next;
+        }
+        libc::freeifaddrs(list);
+    }
+    found
+}
+
+#[cfg(not(unix))]
+fn on_broadcast_network(_: Ipv4Addr) -> bool {
+    true
 }
 
 impl P2p {
