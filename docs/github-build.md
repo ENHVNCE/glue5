@@ -61,8 +61,8 @@ you what to do: open it and read the message.
   Privacy & Security** and press **Open Anyway**.
 - **Linux** (`Glue5-linux-….AppImage`): make it executable and run it.
 
-Then put the game's files on the device: see the
-[README](../README.md#platforms).
+Then put the game's files on the device: see
+[Getting started](getting-started.md#3-install-it-and-add-the-files).
 
 ## Get a new version
 

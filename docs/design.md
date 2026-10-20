@@ -1026,10 +1026,13 @@ whose own browser is no place to write mods).
   by a test (`cargo test -r -p glue5-gpu -- --ignored`). Doing it on the
   parsed module and handing wgpu the IR would be sturdier against a new
   game build's shaders.
-- **macOS app bundle**: the desktop build is a bare executable. As a
-  `.app` with `LSApplicationCategoryType = public.app-category.games` it
-  would get Game Mode in full screen (iOS has it already, through the same
-  key and `GCSupportsGameMode`), and could be signed and notarized for
-  distribution.
+- **Give freed wasm memory back to the system.** The wasm memory is only
+  reserved (16 GiB of address space); its pages count once the engine
+  writes them, and then for good: wasm has no `munmap` or `madvise`, so
+  memory the engine frees stays in the footprint. Hooks on
+  `rage::sysMemGrowBuddyAllocator::Free` and on large frees of the game's
+  malloc could hand whole freed pages back (`MADV_FREE_REUSABLE` on Apple
+  platforms, `MADV_DONTNEED` elsewhere): a resource heap grown past its
+  budget keeps up to 256 MB touched but free.
 
 [egui]: https://github.com/emilk/egui
