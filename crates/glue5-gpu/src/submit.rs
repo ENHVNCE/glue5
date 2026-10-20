@@ -216,7 +216,8 @@ fn run(
         done.after(submission.clone(), works);
         stats.submit_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let generated = frames.len() > 1;
-        if let (false, Some(out)) = (frames.is_empty(), output.as_mut()) {
+        let shown = !frames.is_empty();
+        if let (true, Some(out)) = (shown, output.as_mut()) {
             let t = Instant::now();
             for frame in frames {
                 out.show(&device, &queue, frame, generated);
@@ -227,6 +228,17 @@ fn run(
             if let Some(last) = last_shown.replace(now) {
                 glue5_runtime::qos::frame(now - last, out.frame_budget());
             }
+        }
+        // A frame for a window that gave no image (hidden, minimised, an
+        // Android surface gone): nothing waits for the display then, and
+        // frames nobody sees came as fast as the engine made them (~270 a
+        // second in menus). They keep the pace shown ones would.
+        if let (false, Some(_), Some(out)) = (shown, &batch.present, output.as_ref().filter(|o| o.has_display())) {
+            let due = last_shown.map_or_else(Instant::now, |last| last + out.frame_budget());
+            if let Some(wait) = due.checked_duration_since(Instant::now()) {
+                std::thread::sleep(wait);
+            }
+            last_shown = Some(Instant::now());
         }
         // Destroying takes wgpu's device-wide resource lock for writing: it
         // waits for the encoding threads, which hold it through a whole

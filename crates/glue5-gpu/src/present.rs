@@ -795,6 +795,11 @@ impl Output {
         &self.presentation
     }
 
+    /// Whether it shows frames in a window (not offscreen).
+    pub fn has_display(&self) -> bool {
+        self.display.is_some()
+    }
+
     /// How long a frame may take: at the frame rate set, or 60 a second.
     pub fn frame_budget(&self) -> Duration {
         let fps = self.presentation.0.frame_rate.load(Ordering::Relaxed);
