@@ -292,6 +292,9 @@ impl Drop for Decode {
 
 /// Recorded work waits this long for more before an idle ring submits it.
 const IDLE_BATCH: Duration = Duration::from_millis(4);
+/// A command this large (256 KiB) gives its ring space back as soon as it
+/// is executed.
+const LARGE_COMMAND_WORDS: usize = 1 << 16;
 
 impl Gpu {
     pub fn run(mut self) {
@@ -323,10 +326,13 @@ impl Gpu {
     fn execute_until(&mut self, reader: &mut Reader, head: u32) {
         let mut n = 0u32;
         while let Some(c) = reader.next(head) {
+            let large = c.payload.len() >= LARGE_COMMAND_WORDS;
             self.execute(c);
             n += 1;
-            if n.is_multiple_of(512) {
-                // Every command copies what it needs: the space can be reused.
+            // Every command copies what it needs: the space can be reused.
+            // A large one's at once (texture data: the engine may be
+            // waiting for room), else every so often (it takes a syscall).
+            if large || n.is_multiple_of(512) {
                 reader.release();
             }
         }
