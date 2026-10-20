@@ -424,6 +424,12 @@ pub(crate) mod responder {
                 multicast(socket, me, |addresses| reply(&all, me, addresses, None));
             }
             let Ok((n, from)) = socket.recv_from(&mut buf) else { continue };
+            // Only the local network's (RFC 6762, 11): a query from elsewhere
+            // (spoofed, say) would make this a reflector, and learn the
+            // device's name and addresses.
+            if !on_local_network(from.ip()) {
+                continue;
+            }
             let Some(query) = Query::read(&buf[..n], from, me) else { continue };
             if query.unicast {
                 let _ = socket.send_to(&reply(&query.asked, me, &me.near(from), Some(&query)), from);
@@ -433,6 +439,20 @@ pub(crate) mod responder {
         }
         // Goodbye: the records with a lifetime of 0 (RFC 6762, 10.1).
         multicast(socket, me, |addresses| reply(&all, me, addresses, Some(&Query::goodbye())));
+    }
+
+    /// Whether `ip` is a local network's: private, link-local, this device,
+    /// or a VPN's shared space (100.64/10, Tailscale's).
+    fn on_local_network(ip: std::net::IpAddr) -> bool {
+        match ip {
+            std::net::IpAddr::V4(v) => {
+                v.is_private()
+                    || v.is_link_local()
+                    || v.is_loopback()
+                    || (v.octets()[0] == 100 && v.octets()[1] & 0xc0 == 64)
+            }
+            std::net::IpAddr::V6(v) => v.is_loopback() || v.is_unicast_link_local(),
+        }
     }
 
     /// The same addresses, in any order.

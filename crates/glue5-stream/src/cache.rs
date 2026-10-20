@@ -96,7 +96,12 @@ impl Cache {
     pub fn open(root: &Path, catalog: &Catalog) -> Result<Cache> {
         fs::create_dir_all(root)?;
         sys::raise_open_file_limit();
-        let old = load_index(&root.join("index")).unwrap_or_default();
+        let index = load_index(&root.join("index"));
+        // A partial copy from before (its marker is written below): what it
+        // holds that its index does not vouch for is counted nowhere, so
+        // eviction could never take it back.
+        let (partial, lost) = (root.join(MARKER).exists(), index.is_none());
+        let old = index.unwrap_or_default();
         let session = old.session.wrapping_add(1);
         let (mut kept, mut used) = (0usize, 0u64);
         let mut slots = Vec::with_capacity(catalog.entries.len());
@@ -113,6 +118,8 @@ impl Cache {
                 present = o.bits.iter().map(|&w| AtomicU64::new(w)).collect();
                 last_used = o.last_used;
                 kept += 1;
+            } else if partial && (lost || old.files.contains_key(&e.path)) && crate::catalog::safe_path(&e.path) {
+                let _ = fs::remove_file(root.join(&e.path));
             }
             let slot = Slot {
                 path: e.path.clone(),
@@ -221,6 +228,22 @@ impl Cache {
     /// How many of the blocks `first..=last` of file `id` are here.
     pub fn count(&self, id: u32, first: u64, last: u64) -> u64 {
         count_set(&self.slots[id as usize].present, first, last)
+    }
+
+    /// The first block of `first..=last` of file `id` not here (`last + 1`:
+    /// none), a word of the bitmap at a time.
+    pub fn first_missing(&self, id: u32, first: u64, last: u64) -> u64 {
+        let bits = &self.slots[id as usize].present;
+        let mut b = first;
+        while b <= last {
+            let Some(word) = bits.get((b / 64) as usize) else { break };
+            let ones = (word.load(Ordering::Acquire) >> (b % 64)).trailing_ones() as u64;
+            if ones < 64 - b % 64 {
+                return (b + ones).min(last + 1);
+            }
+            b = (b / 64 + 1) * 64;
+        }
+        last + 1
     }
 
     pub fn has_block(&self, id: u32, block: u64) -> bool {
@@ -332,6 +355,11 @@ impl Cache {
             return Ok(Handle::Kept(f));
         }
         let f = self.open_file(id)?;
+        // A pack's member is read whole, once: no room kept for it (the
+        // budget is for the archives read thousands of times).
+        if s.pack {
+            return Ok(Handle::Once(f));
+        }
         if self.kept.fetch_add(1, Ordering::Relaxed) < self.keep_at_most {
             Ok(Handle::Kept(s.file.get_or_init(|| f)))
         } else {
@@ -344,10 +372,18 @@ impl Cache {
     fn open_file(&self, id: u32) -> io::Result<File> {
         let s = &self.slots[id as usize];
         let path = self.root.join(&s.path);
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let f = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path)?;
+        let open = || OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path);
+        // Its folder made only when missing (two system calls less for each
+        // of the thousands of files opened).
+        let f = match open() {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                if let Some(dir) = path.parent() {
+                    fs::create_dir_all(dir)?;
+                }
+                open()?
+            }
+            f => f?,
+        };
         if f.metadata()?.len() != s.size {
             sys::make_sparse(&f);
             f.set_len(s.size)?;
@@ -412,6 +448,11 @@ impl Cache {
         })?;
         #[cfg(target_vendor = "apple")]
         for &id in dirty {
+            // Not one being emptied (evict holds it from clearing its bits
+            // to truncating it): its bits went after `index` was taken,
+            // which still claims them, and its holes would be read as data
+            // if this index were the last one written.
+            let Ok(_g) = self.slots[id as usize].guard.try_read() else { continue };
             if let Err(e) = self.keep_sparse(id) {
                 log::debug!("stream cache: {}: {e}", self.slots[id as usize].path);
             }
