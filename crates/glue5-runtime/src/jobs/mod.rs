@@ -500,7 +500,15 @@ pub(crate) unsafe extern "C" fn ugc_create(
     let id = content_id(&format!("{title} {} {:?}", gamer_tag(), std::time::SystemTime::now()));
     let saved = mission_file(m, files, count).is_some_and(|file| save(&id, &file));
     let created = manager + MANAGER_CREATED;
-    m.bytes_mut(created, MD_SIZE as usize).fill(0);
+    // Its fields, around the two buffers: emptied as theirs (zeroed, they
+    // would lose their allocator and grow step, the engine's next append
+    // overflowing).
+    m.bytes_mut(created, MD_DESCRIPTION as usize).fill(0);
+    m.bytes_mut(created + MD_LANGUAGE, (MD_SIZE - MD_LANGUAGE) as usize).fill(0);
+    unsafe {
+        orig::grow_buffer_clear(env, created + MD_DESCRIPTION);
+        orig::grow_buffer_clear(env, created + MD_DATA);
+    }
     m.set_u32(created + MD_TYPE, CONTENT_MISSION);
     m.write_str(created + MD_CONTENT_ID, &id, ID_CAP);
     m.write_str(created + MD_NAME, &title, NAME_CAP);
