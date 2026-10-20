@@ -424,11 +424,23 @@ fn bootstrap() -> Vec<SocketAddrV4> {
     resolved.0.clone()
 }
 
+/// An address in a reply: only one on the Internet (a node or player on
+/// this machine, a local network or multicast would be made up, to have
+/// this player send there).
 fn compact_addr(b: &[u8]) -> Option<SocketAddrV4> {
     let b: [u8; 6] = b.try_into().ok()?;
     let ip = Ipv4Addr::new(b[0], b[1], b[2], b[3]);
     let port = u16::from_be_bytes([b[4], b[5]]);
-    (port != 0 && !ip.is_unspecified() && !ip.is_broadcast()).then_some(SocketAddrV4::new(ip, port))
+    let local = ip.is_unspecified()
+        || ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_multicast()
+        // "This network", the carriers' shared space, reserved and broadcast.
+        || b[0] == 0
+        || (b[0] == 100 && b[1] & 0xc0 == 64)
+        || b[0] >= 240;
+    (port != 0 && !local).then_some(SocketAddrV4::new(ip, port))
 }
 
 // ---- bencode -------------------------------------------------------------------

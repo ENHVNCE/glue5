@@ -43,6 +43,7 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard};
 use std::time::{Duration, Instant};
@@ -51,6 +52,7 @@ use sha2::{Digest, Sha256};
 
 use crate::Locked;
 use crate::dht::{self, Dht};
+use crate::exit;
 
 /// The lobby ports, also the ports looked at for players on the same
 /// network: several players on one machine take the next free one.
@@ -692,7 +694,13 @@ impl P2p {
             match received {
                 Ok((len, SocketAddr::V4(from))) => {
                     failing = 0;
-                    self.receive(from, &buf[..len]);
+                    // Anyone can send one: a mistake in reading it drops
+                    // the datagram, not the game.
+                    let d = &buf[..len];
+                    let read = exit::recoverable(|| catch_unwind(AssertUnwindSafe(|| self.receive(from, d))));
+                    if read.is_err() {
+                        log::warn!("p2p: a datagram from {from} could not be read");
+                    }
                 }
                 Ok(_) => failing = 0,
                 Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => failing = 0,

@@ -160,6 +160,8 @@ fn file(path: &str) -> PathBuf {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') { c } else { '_' })
         .collect();
+    // Not the folder itself or the one above it.
+    let name = if name.bytes().all(|c| c == b'.') { format!("_{name}") } else { name };
     crate::rt().config.user_dir.join("cloud").join(name)
 }
 
