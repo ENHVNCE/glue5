@@ -303,7 +303,11 @@ impl Device {
             label: Some("glue5"),
             required_features: features,
             required_limits: adapter.limits(),
-            memory_hints: wgpu::MemoryHints::Performance,
+            // Vulkan suballocates from blocks it frees only once empty (and
+            // never the last of a kind): with its default 64-256 MB blocks a
+            // Pixel's GPU memory grew 0.3-0.5 GB over a run while the live
+            // resources stayed flat. Metal ignores it.
+            memory_hints: wgpu::MemoryHints::Manual { suballocated_device_memory_block_size: (32 << 20)..(64 << 20) },
             ..Default::default()
         }))
         .context("creating the GPU device")?;
