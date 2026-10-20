@@ -170,6 +170,8 @@ pub fn run() -> Result<()> {
         window,
         #[cfg(target_os = "android")]
         asked_rate: None,
+        #[cfg(target_os = "ios")]
+        thermal: (-1, None),
         text_input,
         typing: None,
         typing_rect: None,
@@ -307,6 +309,10 @@ struct App {
     /// The display rate asked of Android for the window's surface.
     #[cfg(target_os = "android")]
     asked_rate: Option<u32>,
+    /// The device's thermal state (iOS: 0 nominal to 3 critical) and when it
+    /// was last asked.
+    #[cfg(target_os = "ios")]
+    thermal: (isize, Option<Instant>),
     events: sdl3::EventPump,
     mouse: sdl3::mouse::MouseUtil,
     text_input: sdl3::keyboard::TextInputUtil,
@@ -673,6 +679,8 @@ impl App {
         self.presentation.set_vsync(self.settings.vsync);
         self.presentation.set_metal_hud(self.settings.overlay == PerfOverlay::MetalHud);
         glue5_gpu::perf::set_on(in_game && self.settings.overlay == PerfOverlay::Glue5);
+        #[cfg(target_os = "ios")]
+        self.watch_thermal();
         self.presentation.set_frame_rate(self.settings.max_fps);
         #[cfg(target_os = "android")]
         if self.asked_rate != Some(self.settings.max_fps) {
@@ -1069,6 +1077,23 @@ impl App {
         if self.game.is_none() && self.game_dir.is_none() && self.settings.source == Source::Folder {
             self.find_game(None);
         }
+    }
+
+    /// Logs the phone's thermal state when it changes (asked once a second):
+    /// hot (serious within a minute of play on an iPhone 16 Pro), iOS holds
+    /// the game to its efficiency cores and frames take 20-50 ms, which
+    /// tests and logs should know.
+    #[cfg(target_os = "ios")]
+    fn watch_thermal(&mut self) {
+        if self.thermal.1.is_some_and(|at| at.elapsed() < Duration::from_secs(1)) {
+            return;
+        }
+        let state = objc2_foundation::NSProcessInfo::processInfo().thermalState().0;
+        if state != self.thermal.0 {
+            const NAMES: [&str; 4] = ["nominal", "fair", "serious", "critical"];
+            log::info!("thermal: {}", NAMES.get(state as usize).copied().unwrap_or("?"));
+        }
+        self.thermal = (state, Some(Instant::now()));
     }
 
     /// A surface for the window's current native surface, for the renderer
