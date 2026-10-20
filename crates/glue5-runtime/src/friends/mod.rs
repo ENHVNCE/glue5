@@ -244,6 +244,11 @@ struct Friend {
     transport: Option<Transport>,
     /// The channel before the last handshake, for datagrams still on the way.
     previous: Option<Transport>,
+    /// A channel it opened (its handshake answered here), taken once a
+    /// datagram comes on it: proof the other end has it (a handshake
+    /// message 1 replayed, or a message 2 lost, would else take the
+    /// friend's traffic to a channel no one reads).
+    pending: Option<Transport>,
     presence: Option<Presence>,
     /// When it was last told the presence, and what.
     presence_sent: Option<(Instant, Presence)>,
@@ -737,6 +742,7 @@ impl Service {
             since,
             transport: None,
             previous: None,
+            pending: None,
             presence: None,
             presence_sent: None,
             last_time: 0,
@@ -778,6 +784,7 @@ impl Service {
         }
         self.drop_channel(f.transport);
         self.drop_channel(f.previous);
+        self.drop_channel(f.pending);
         self.handshakes.retain(|_, (_, o)| *o != Owner::Friend(*key));
         self.generation += 1;
         self.save();
@@ -888,6 +895,11 @@ impl Service {
             let f = self.friends.get_mut(&key).unwrap();
             if f.previous.as_ref().is_some_and(|t| now - t.heard > HANDSHAKE * 2) {
                 let t = f.previous.take();
+                self.drop_channel(t);
+            }
+            let f = self.friends.get_mut(&key).unwrap();
+            if f.pending.as_ref().is_some_and(|t| now - t.heard > HANDSHAKE * 2) {
+                let t = f.pending.take();
                 self.drop_channel(t);
             }
             let f = self.friends.get_mut(&key).unwrap();
@@ -1316,8 +1328,12 @@ impl Service {
                 f.last_time = time;
                 let Some(d) = h.write(&[]) else { return };
                 out.send.push((from, d));
+                // Taken when the friend's first datagram on it comes (it
+                // sends its presence at once): see `Friend::pending`.
                 if let Some(t) = h.into_transport(now) {
-                    self.open_friend(key, t, now, out);
+                    self.channels.insert(t.index, Owner::Friend(key));
+                    let older = f.pending.replace(t);
+                    self.drop_channel(older);
                 }
             }
             Pattern::Code => {
@@ -1478,11 +1494,20 @@ impl Service {
 
     fn on_data(&mut self, from: SocketAddrV4, index: u32, d: &[u8], now: Instant, out: &mut Out) {
         let Some(owner) = self.channels.get(&index).cloned() else { return };
+        let mut confirmed = None;
         let payload = match &owner {
             Owner::Friend(key) => {
                 let Some(f) = self.friends.get_mut(key) else { return };
-                let t = [f.transport.as_mut(), f.previous.as_mut()].into_iter().flatten().find(|t| t.index == index);
-                t.and_then(|t| t.open(d, from, now))
+                if f.pending.as_ref().is_some_and(|t| t.index == index) {
+                    let opened = f.pending.as_mut().and_then(|t| t.open(d, from, now));
+                    if opened.is_some() {
+                        confirmed = f.pending.take();
+                    }
+                    opened
+                } else {
+                    let t = [f.transport.as_mut(), f.previous.as_mut()].into_iter().flatten().find(|t| t.index == index);
+                    t.and_then(|t| t.open(d, from, now))
+                }
             }
             Owner::Asker(Some(key)) => self.requests.get_mut(key).and_then(|r| r.transport.open(d, from, now)),
             Owner::Asking(id) => {
@@ -1490,6 +1515,9 @@ impl Service {
             }
             Owner::Asker(None) => None,
         };
+        if let (Some(t), Owner::Friend(key)) = (confirmed, &owner) {
+            self.open_friend(*key, t, now, out);
+        }
         let Some(message) = payload.and_then(|p| serde_json::from_slice::<Message>(&p).ok()) else { return };
         match owner {
             Owner::Friend(key) => self.on_friend(key, message, now, out),

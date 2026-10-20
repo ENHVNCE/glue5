@@ -183,8 +183,12 @@ fn strangers_and_replays_are_not_answered() {
     lower.s.found(crypto::meeting_key(&shared, crypto::epoch(unix())), higher.addr, now + REKEY * 2, &mut out);
     let hs1 = out.send.iter().find(|(_, d)| d[3] == session::HS1).unwrap().1.clone();
     let mut first_answer = Out::default();
+    let before = higher.s.friends[&lower.key()].transport.as_ref().map(|t| t.index);
     higher.s.receive(lower.addr, hs1[3], &hs1[4..], now, &mut first_answer);
-    assert_eq!(first_answer.send.len(), 2, "message 2 and the presence");
+    // Message 2 only: the new channel is taken once the other end shows it
+    // has it (a replayed message 1 never does).
+    assert_eq!(first_answer.send.len(), 1, "message 2");
+    assert_eq!(higher.s.friends[&lower.key()].transport.as_ref().map(|t| t.index), before);
     let mut replayed = Out::default();
     higher.s.receive(d.addr, hs1[3], &hs1[4..], now, &mut replayed);
     assert!(replayed.send.is_empty());

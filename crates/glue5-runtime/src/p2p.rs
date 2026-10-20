@@ -88,6 +88,12 @@ const HOSTING: Duration = Duration::from_secs(6);
 const PATIENCE: Duration = Duration::from_secs(30);
 /// Lobbies at most at a time: the game's and friends' visited.
 const LOBBIES: usize = 4;
+/// Players known per lobby, and addresses being reached, at most: a GTA
+/// session has 32 players; the rest would only be strangers' floods.
+const PLAYERS: usize = 64;
+const TRYING: usize = 256;
+/// Addresses kept per player it greeted from.
+const SEEN: usize = 4;
 /// How often a lobby's players are asked for on the DHT (a player who
 /// cannot greet this one is reached only once this one hears of it).
 const LOBBY_REFRESH: Duration = Duration::from_secs(10);
@@ -172,8 +178,10 @@ struct Peer {
     lobby: LobbyId,
     /// What it says about itself.
     card: Option<Card>,
-    /// Where its datagrams come from, when they do.
+    /// Where its datagrams come from, when they do, and the last few
+    /// addresses it greeted from (a LAN's and the Internet's).
     addr: Option<SocketAddrV4>,
+    seen: Vec<SocketAddrV4>,
     /// When it was last heard from directly, or introduced.
     heard: Instant,
     introduced: Instant,
@@ -187,7 +195,7 @@ struct Peer {
 impl Peer {
     fn new(vip: u32, lobby: LobbyId, now: Instant) -> Peer {
         let heard = now.checked_sub(GONE).unwrap_or(now);
-        Peer { vip, lobby, card: None, addr: None, heard, introduced: now, via: None, flags: 0, playing: None }
+        Peer { vip, lobby, card: None, addr: None, seen: Vec::new(), heard, introduced: now, via: None, flags: 0, playing: None }
     }
 
     fn direct(&self, now: Instant) -> bool {
@@ -747,7 +755,10 @@ impl P2p {
                 friends.push((key, addr));
                 continue;
             };
-            if !state.trying.contains_key(&addr) && state.peers.values().all(|p| p.addr != Some(addr)) {
+            if !state.trying.contains_key(&addr)
+                && state.trying.len() < TRYING
+                && state.peers.values().all(|p| p.addr != Some(addr))
+            {
                 log::debug!("p2p: trying {addr}, from the DHT");
                 state.trying.insert(addr, (now, lobby));
                 new.push((addr, lobby));
@@ -894,8 +905,9 @@ impl P2p {
                 let dst_port = u16::from_be_bytes(d[10..12].try_into().unwrap());
                 let vip = self.vip.load(Ordering::Relaxed);
                 let state = self.state.lock().unwrap();
-                // Only from players of the lobbies.
-                if !state.peers.values().any(|p| p.addr == Some(from) || p.vip == src) {
+                // Only from players of the lobbies: from where one is heard,
+                // or where the sender greeted from (another of its addresses).
+                if !state.peers.values().any(|p| p.addr == Some(from) || (p.vip == src && p.seen.contains(&from))) {
                     return;
                 }
                 if dst == vip || is_broadcast(dst) {
@@ -926,6 +938,9 @@ impl P2p {
             return;
         }
         let known = state.peers.contains_key(&id);
+        if !known && state.peers.values().filter(|p| p.lobby == lobby).count() >= PLAYERS {
+            return;
+        }
         let heard_before = state.peers.get(&id).is_some_and(|p| p.addr.is_some());
         // Two players with one address: the one whose address the engine
         // has not taken yet takes another.
@@ -943,11 +958,21 @@ impl P2p {
         if card.is_some() {
             peer.card = card;
         }
-        // The nearest of its addresses that answer.
-        if !peer.direct(now) || peer.addr.is_none_or(|a| nearness(from) <= nearness(a)) {
+        // The nearest of its addresses that answer: one heard lately is
+        // given up only for a nearer one (a greeting with its id from
+        // elsewhere would take its traffic), or once it goes quiet.
+        if !peer.direct(now) || peer.addr.is_none_or(|a| nearness(from) < nearness(a)) {
             peer.addr = Some(from);
         }
-        peer.heard = now;
+        if peer.addr == Some(from) {
+            peer.heard = now;
+        }
+        if !peer.seen.contains(&from) {
+            if peer.seen.len() >= SEEN {
+                peer.seen.remove(0);
+            }
+            peer.seen.push(from);
+        }
         // A player already playing when first heard has had its time.
         if flags & PLAYING != 0 && peer.playing.is_none() {
             let long_ago = now.checked_sub(HOSTING).unwrap_or(now);
@@ -988,14 +1013,22 @@ impl P2p {
             if id == self.id {
                 continue;
             }
+            if !state.peers.contains_key(&id) && state.peers.values().filter(|p| p.lobby == lobby).count() >= PLAYERS {
+                continue;
+            }
+            let own = state.own.contains(&addr);
             let peer = state.peers.entry(id).or_insert(Peer::new(vip, lobby, now));
-            peer.vip = vip;
+            // What a player says of itself wins over what others say of it.
+            if !peer.direct(now) {
+                peer.vip = vip;
+            }
             peer.via = Some(from);
             peer.introduced = now;
-            if !peer.direct(now) && !state.own.contains(&addr) {
+            if !peer.direct(now) && !own {
                 punch.push(addr);
             }
         }
+        punch.truncate(TRYING.saturating_sub(state.trying.len()));
         for addr in &punch {
             state.trying.insert(*addr, (now, lobby));
         }
