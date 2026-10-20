@@ -439,7 +439,7 @@ fn init(ring: GpuRing, settings: Settings, screen: Option<Screen>) -> Result<exe
         pdirty: true,
         last_pipe: None,
         last_programs: (0, 0, 0, 0),
-        formats_seen: [0; 3],
+        srvs: Default::default(),
         bound_formats: Default::default(),
         chunk_passes: 0,
         batch_since: None,

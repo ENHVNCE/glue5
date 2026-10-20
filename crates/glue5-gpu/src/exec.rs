@@ -198,13 +198,11 @@ pub struct Gpu {
     /// Program ids (vertex, pixel) of the last draw, and the textures that
     /// make their recipes' variants (see `for_bound_formats`).
     pub last_programs: (u32, u32, u128, u128),
-    /// Per stage, changes to what decides its program variant (see
-    /// `for_bound_formats`): the textures bound, the depth target, objects
-    /// destroyed; and the variant last picked for that count.
-    pub formats_seen: [u64; 3],
-    /// (program id, changes seen, variant, its 32-bit float textures, the
-    /// texture slots it reads through copies).
-    pub bound_formats: [Option<(u32, u64, Arc<Program>, u128, u128)>; 3],
+    /// Per stage, the texture SRVs bound (what decides program variants,
+    /// see `for_bound_formats`), and the variant last picked: (program id,
+    /// (unfiltered, depth), variant).
+    pub srvs: [crate::draw::SrvSlots; 3],
+    pub bound_formats: [Option<(u32, (u128, u128), Arc<Program>)>; 3],
     /// Render passes recorded since the last submit.
     pub chunk_passes: u32,
     /// When the work not yet handed over started gathering (see `idle`).
@@ -445,8 +443,12 @@ impl Gpu {
                     d: c.w(8),
                     views: Vec::new(),
                 };
-                let obj = if c.op == op::CREATE_SRV { Obj::Srv(Box::new(view)) } else { Obj::Uav(Box::new(view)) };
-                self.objs.insert(c.w(0), obj);
+                if c.op == op::CREATE_SRV {
+                    self.objs.insert(c.w(0), Obj::Srv(Box::new(view)));
+                    self.srv_object_changed(c.w(0));
+                } else {
+                    self.objs.insert(c.w(0), Obj::Uav(Box::new(view)));
+                }
             }
             op::SET_SHADER => {
                 if let Some(slot) = self.s.shader.get_mut(c.w(0) as usize)
@@ -504,15 +506,15 @@ impl Gpu {
                     (_, 0..=2) => &mut self.s.sampler[stage],
                     _ => return,
                 };
-                let mut changed = false;
+                let mut changed = 0u128;
                 for i in 0..count {
                     if let Some(s) = slots.get_mut(start + i) {
-                        changed |= *s != c.w(3 + i);
+                        changed |= ((*s != c.w(3 + i)) as u128) << (start + i);
                         *s = c.w(3 + i);
                     }
                 }
-                if changed && c.op == op::SET_SRVS {
-                    self.formats_seen[stage] += 1;
+                if c.op == op::SET_SRVS {
+                    self.srvs[stage].stale |= changed;
                 }
             }
             op::SET_UAVS => {
@@ -533,12 +535,8 @@ impl Gpu {
                     self.s.rt[i] =
                         Target { tex: c.w(i * 4), mip: c.w(i * 4 + 1), slice: c.w(i * 4 + 2), format: c.w(i * 4 + 3) };
                 }
-                let (ds_tex, ds_flags) = (self.s.ds.tex, self.s.ds_flags);
                 self.s.ds = Target { tex: c.w(32), mip: c.w(33), slice: c.w(34), format: c.w(35) };
                 self.s.ds_flags = c.w(36);
-                if (ds_tex, ds_flags) != (self.s.ds.tex, self.s.ds_flags) {
-                    self.formats_seen.iter_mut().for_each(|n| *n += 1);
-                }
                 self.pdirty = true;
             }
             op::SET_BLEND => {
@@ -567,7 +565,7 @@ impl Gpu {
             op::CLEAR_STATE => {
                 self.s = D3d::default();
                 self.pdirty = true;
-                self.formats_seen.iter_mut().for_each(|n| *n += 1);
+                self.srvs = Default::default();
             }
             op::COPY_REGION => self.copy_region(&c),
             op::COPY_RESOURCE => self.copy_resource(c.w(0), c.w(1)),
@@ -774,6 +772,7 @@ impl Gpu {
                 present: None,
             })),
         );
+        self.srv_object_changed(id);
     }
 
     fn create_buffer(&mut self, id: u32, size: u32, bind: u32, misc: u32, stride: u32) {
@@ -1156,19 +1155,33 @@ impl Gpu {
         // Memory goes right after the next submit: batches handed over
         // earlier may still be waiting for theirs. Cached bind groups must
         // not keep it.
-        // What decides program variants may have gone with it.
-        self.formats_seen.iter_mut().for_each(|n| *n += 1);
         match self.objs.remove(id) {
-            Some(Obj::Texture(t)) => match t.recycle {
-                Some(key) => self.recycler.keep_texture(self.epoch, key, t.tex, t.bytes),
-                None => self.graveyard.push(Grave::Texture(t.tex)),
-            },
+            Some(Obj::Texture(t)) => {
+                self.srv_object_changed(id);
+                match t.recycle {
+                    Some(key) => self.recycler.keep_texture(self.epoch, key, t.tex, t.bytes),
+                    None => self.graveyard.push(Grave::Texture(t.tex)),
+                }
+            }
+            Some(Obj::Srv(_)) => self.srv_object_changed(id),
             Some(Obj::Buffer(b)) => match (b.slot, b.gpu) {
                 (Some(slot), _) => self.slabs.free(self.epoch, slot),
                 (None, Some(g)) => self.recycler.keep_buffer(self.epoch, g),
                 (None, None) => {}
             },
             _ => {}
+        }
+    }
+
+    /// A texture or a shader resource view was made or destroyed: the slots
+    /// that bind it, or a view of it, are looked at again.
+    fn srv_object_changed(&mut self, id: u32) {
+        for (srvs, bound) in self.srvs.iter_mut().zip(&self.s.srv) {
+            for (slot, (&srv, &res)) in bound.iter().zip(&srvs.res).enumerate() {
+                if srv == id || res == id {
+                    srvs.stale |= 1 << slot;
+                }
+            }
         }
     }
 

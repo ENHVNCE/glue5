@@ -171,6 +171,8 @@ pub struct Program {
     pub frag_depth: bool,
     /// Indices into `bindings` of the sampled textures.
     pub textures: Vec<usize>,
+    /// The same as bits by SRV slot, by how they are read.
+    pub sampled: Sampled,
     /// Inter-stage locations (vertex outputs / pixel inputs).
     pub locations: Vec<u32>,
     /// (texture binding, sampler binding) sampled together.
@@ -403,12 +405,7 @@ impl Library {
         };
 
         let bindings = stage_bindings(&text, stage);
-        let textures = bindings
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| matches!(b.kind, Kind::Texture { .. }))
-            .map(|(i, _)| i)
-            .collect();
+        let (textures, sampled) = sampled_textures(&bindings);
         let (outputs, interpolation, locations) = match stage {
             Stage::Pixel => (fragment_outputs(&text), interpolations(&text), ps_input_locations(&text)),
             Stage::Vertex => (0, Vec::new(), vs_output_locations(&text)),
@@ -431,6 +428,7 @@ impl Library {
             clip_distances,
             frag_depth: text.contains("@builtin(frag_depth)"),
             textures,
+            sampled,
             locations,
             pairs: sampling_pairs(&text),
             unfiltered: 0,
@@ -443,6 +441,36 @@ impl Library {
         program.layout = program.make_layout(device);
         Ok(program)
     }
+}
+
+/// A program's sampled textures, bits by SRV slot (binding - SRVS).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Sampled {
+    /// Read as floats, single-sampled.
+    pub float: u128,
+    /// Read as colours (floats or integers).
+    pub color: u128,
+    /// Read as depth.
+    pub depth: u128,
+}
+
+/// The sampled textures among `bindings`: their indices, and as bits.
+fn sampled_textures(bindings: &[Binding]) -> (Vec<usize>, Sampled) {
+    let (mut textures, mut sampled) = (Vec::new(), Sampled::default());
+    for (i, b) in bindings.iter().enumerate() {
+        let Kind::Texture { sample, multisampled, .. } = b.kind else { continue };
+        textures.push(i);
+        let bit = 1u128 << (b.binding - SRVS);
+        if sample == Sample::Depth {
+            sampled.depth |= bit;
+        } else {
+            sampled.color |= bit;
+        }
+        if sample == Sample::Float && !multisampled {
+            sampled.float |= bit;
+        }
+    }
+    (textures, sampled)
 }
 
 /// A stage's resource bindings (its group), by binding number.
@@ -499,6 +527,7 @@ impl Program {
             clip_distances: self.clip_distances,
             frag_depth: self.frag_depth,
             textures: self.textures.clone(),
+            sampled: self.sampled,
             locations: self.locations.clone(),
             pairs: self.pairs.clone(),
             unfiltered: self.unfiltered,
@@ -520,13 +549,7 @@ impl Program {
                 p.hud_mask = true;
                 p.pack = pack;
                 p.bindings = stage_bindings(&text, p.stage);
-                p.textures = p
-                    .bindings
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, b)| matches!(b.kind, Kind::Texture { .. }))
-                    .map(|(i, _)| i)
-                    .collect();
+                (p.textures, p.sampled) = sampled_textures(&p.bindings);
                 p.pairs = sampling_pairs(&text);
                 p.locations = ps_input_locations(&text);
                 p.interpolation = interpolations(&text);
@@ -601,13 +624,7 @@ impl Program {
             match module {
                 Ok((text, module)) => {
                     p.bindings = stage_bindings(&text, self.stage);
-                    p.textures = p
-                        .bindings
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, b)| matches!(b.kind, Kind::Texture { .. }))
-                        .map(|(i, _)| i)
-                        .collect();
+                    (p.textures, p.sampled) = sampled_textures(&p.bindings);
                     p.text = Wgsl::new(&text);
                     p.modules = Arc::new(Modules::with(module));
                     p.depth = depth;

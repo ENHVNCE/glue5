@@ -329,29 +329,6 @@ impl Gpu {
         }
     }
 
-    /// The texture slots `prog` reads through copies with the textures bound
-    /// now (`prepare_proxies`' kinds): changes only with what makes
-    /// `for_bound_formats` pick another variant, which keeps it.
-    pub fn proxy_slots(&self, prog: &Program) -> u128 {
-        let st = prog.stage as usize;
-        let mut slots = 0;
-        for &i in &prog.textures {
-            let b = &prog.bindings[i];
-            let Kind::Texture { sample, .. } = b.kind else {
-                continue;
-            };
-            let slot = b.binding - shader::SRVS;
-            let tex = self.objs.srv(self.s.srv[st][slot as usize]).filter(|v| !v.is_buffer).and_then(|v| self.objs.tex(v.res));
-            let proxied = tex.is_some_and(|t| {
-                matches!((format::is_depth(t.format), sample), (true, Sample::Uint | Sample::Float | Sample::Sint) | (false, Sample::Depth))
-            });
-            if proxied {
-                slots |= 1 << slot;
-            }
-        }
-        slots
-    }
-
     fn refresh_proxy(&mut self, id: u32, kind: usize) {
         if self.clears.iter().any(|c| c.tex == id) {
             self.flush_clears();

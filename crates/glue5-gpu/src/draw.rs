@@ -195,6 +195,57 @@ impl Dummies {
     }
 }
 
+/// A stage's texture SRVs, looked at when they are bound rather than at
+/// every draw: bits by slot.
+pub struct SrvSlots {
+    /// Slots to look at again: bound since, or what they name was made or
+    /// destroyed.
+    pub stale: u128,
+    /// A view of a texture.
+    texture: u128,
+    /// Of a depth texture: multisampled, with stencil.
+    depth: u128,
+    multisampled: u128,
+    stencil: u128,
+    /// Of a 32-bit float colour texture.
+    float32: u128,
+    /// The resource a slot's view is of (0: none, or a buffer view).
+    pub res: [u32; 128],
+}
+
+impl Default for SrvSlots {
+    fn default() -> Self {
+        SrvSlots { stale: 0, texture: 0, depth: 0, multisampled: 0, stencil: 0, float32: 0, res: [0; 128] }
+    }
+}
+
+impl SrvSlots {
+    /// Looks at the stale slots (`srvs`: the views bound).
+    fn resolve(&mut self, srvs: &[u32; 128], objs: &Objects) {
+        while self.stale != 0 {
+            let slot = self.stale.trailing_zeros() as usize;
+            let bit = 1u128 << slot;
+            self.stale &= !bit;
+            let masks = [&mut self.texture, &mut self.depth, &mut self.multisampled, &mut self.stencil, &mut self.float32];
+            for m in masks {
+                *m &= !bit;
+            }
+            let view = objs.srv(srvs[slot]).filter(|v| !v.is_buffer);
+            self.res[slot] = view.map_or(0, |v| v.res);
+            let Some(t) = view.and_then(|v| objs.tex(v.res)) else { continue };
+            self.texture |= bit;
+            // (A view only reinterprets sRGB: float32 is the texture's.)
+            if format::is_depth(t.format) {
+                self.depth |= bit;
+                self.multisampled |= if t.samples > 1 { bit } else { 0 };
+                self.stencil |= if t.format.has_stencil_aspect() { bit } else { 0 };
+            } else if format::is_float32(t.format) {
+                self.float32 |= bit;
+            }
+        }
+    }
+}
+
 /// What a bind group entry is built from.
 enum Res {
     Buffer(wgpu::Buffer, u64, Option<u64>),
@@ -493,10 +544,18 @@ impl Gpu {
                 Kind::Texture { dim, sample, .. } => {
                     let slot = b.binding - shader::SRVS;
                     let id = self.s.srv[st][slot as usize];
-                    let res = self.objs.srv(id).filter(|v| {
-                        !v.is_buffer && !self.reads_target(prog, stage, slot, v, *dim) && !self.compares_depth_target(v, *sample, stage)
-                    });
-                    match res.and_then(|v| self.objs.tex(v.res)) {
+                    // (Resolved by `for_bound_formats`.)
+                    let (srvs, bit) = (&self.srvs[st], 1u128 << slot);
+                    let res = srvs.res[slot as usize];
+                    // A view of the pass's targets is unbound for the draw;
+                    // looked at only when it may be one.
+                    let depth_read = *sample == Sample::Depth && srvs.depth & bit != 0;
+                    let maybe_target = self.pass.is_some() && (depth_read || self.s.rt.iter().any(|r| r.tex == res));
+                    let target = maybe_target
+                        && self.objs.srv(id).is_some_and(|v| {
+                            self.reads_target(prog, stage, slot, v, *dim) || self.compares_depth_target(v, *sample, stage)
+                        });
+                    match (srvs.texture & bit != 0 && !target).then(|| self.objs.tex(res)).flatten() {
                         Some(t) => {
                             t.used.set(epoch);
                             t.in_bind_group.set(true);
@@ -721,46 +780,45 @@ impl Gpu {
     /// `prepare_proxies`, which then looks up only those).
     fn for_bound_formats(&mut self, prog: Arc<Program>, stage: Stage) -> (Arc<Program>, u128, u128) {
         let st = stage as usize;
-        // Nothing it depends on changed since the last draw with this program.
-        if let Some((id, seen, variant, float32, proxies)) = &self.bound_formats[st]
-            && (*id, *seen) == (prog.id, self.formats_seen[st])
-        {
-            return (variant.clone(), *float32, *proxies);
-        }
-        let (mut float32, mut depth) = (0u128, 0u128);
-        for b in &prog.bindings {
-            let Kind::Texture { sample: Sample::Float, multisampled: false, .. } = b.kind else {
-                continue;
-            };
-            let bit = 1u128 << (b.binding - shader::SRVS);
-            let id = self.s.srv[st][(b.binding - shader::SRVS) as usize];
-            let Some(srv) = self.objs.srv(id).filter(|v| !v.is_buffer) else { continue };
-            let Some(tex) = self.objs.tex(srv.res) else { continue };
-            if format::is_depth(tex.format) {
-                if tex.samples == 1 && self.may_sample_depth(srv.res, tex.format, stage) {
-                    depth |= bit;
-                } else {
-                    float32 |= bit; // its R32Float copy
-                }
-            } else if format::is_float32(format::view(srv.format, tex.format, &self.caps)) {
-                float32 |= bit;
+        self.srvs[st].resolve(&self.s.srv[st], &self.objs);
+        let b = &self.srvs[st];
+        let float = prog.sampled.float;
+        let mut depth = float & b.depth & !b.multisampled;
+        // Not the pass's depth attachment while it is written.
+        let mut attached = depth;
+        while attached != 0 {
+            let slot = attached.trailing_zeros();
+            attached &= attached - 1;
+            let res = b.res[slot as usize];
+            if res == self.s.ds.tex && !self.may_sample_depth(res, b.stencil >> slot & 1 != 0, stage) {
+                depth &= !(1 << slot);
             }
         }
+        // The other depth buffers read as floats through their R32Float copies.
+        let float32 = float & (b.float32 | (b.depth & !depth));
         let unfiltered = if self.caps.float32_filter { 0 } else { float32 };
-        let variant = prog.for_bindings(&self.device, unfiltered, depth);
-        let proxies = self.proxy_slots(&variant);
-        self.bound_formats[st] = Some((prog.id, self.formats_seen[st], variant.clone(), float32, proxies));
+        let variant = match &self.bound_formats[st] {
+            Some((id, key, variant)) if (*id, *key) == (prog.id, (unfiltered, depth)) => variant.clone(),
+            _ => {
+                let variant = prog.for_bindings(&self.device, unfiltered, depth);
+                self.bound_formats[st] = Some((prog.id, (unfiltered, depth), variant.clone()));
+                variant
+            }
+        };
+        // Depth read as colour, colour read as depth: through copies.
+        let b = &self.srvs[st];
+        let proxies = (variant.sampled.color & b.depth) | (variant.sampled.depth & b.texture & !b.depth);
         (variant, float32, proxies)
     }
 
     /// Whether a depth texture can be sampled by this draw: not while it is
     /// the pass's depth attachment, unless that is read-only (both aspects).
-    fn may_sample_depth(&self, tex: u32, format: TextureFormat, stage: Stage) -> bool {
+    fn may_sample_depth(&self, tex: u32, stencil: bool, stage: Stage) -> bool {
         if stage == Stage::Compute || tex != self.s.ds.tex {
             return true;
         }
         let ro = self.s.ds_flags & 3;
-        ro & 1 != 0 && (ro & 2 != 0 || !format.has_stencil_aspect())
+        ro & 1 != 0 && (ro & 2 != 0 || !stencil)
     }
 
     /// Whether a comparison (`texture_depth`) read is of the pass's depth
@@ -771,7 +829,9 @@ impl Gpu {
     fn compares_depth_target(&self, srv: &View, sample: Sample, stage: Stage) -> bool {
         sample == Sample::Depth
             && self.pass.is_some()
-            && self.objs.tex(srv.res).is_some_and(|t| format::is_depth(t.format) && !self.may_sample_depth(srv.res, t.format, stage))
+            && self.objs.tex(srv.res).is_some_and(|t| {
+                format::is_depth(t.format) && !self.may_sample_depth(srv.res, t.format.has_stencil_aspect(), stage)
+            })
     }
 
     /// Whether a texture SRV reads what the open render pass draws into.
