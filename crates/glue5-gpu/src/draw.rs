@@ -62,6 +62,33 @@ impl BindCache {
 /// constant) per member.
 type PackIds = [(u32, u32, u32); 16];
 
+/// Where a stage's constants went: its pack, and its own buffers (in the
+/// order of `Pack::own`).
+#[derive(Clone, Copy)]
+struct Constants {
+    pack: Alloc,
+    own: [Option<Alloc>; shader::OWN_MAX],
+}
+
+/// A bind group's dynamic offsets, in binding order: its pack's, then its
+/// own constant buffers'.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct Offsets {
+    values: [u32; 1 + shader::OWN_MAX],
+    len: u8,
+}
+
+impl Offsets {
+    fn push(&mut self, offset: u32) {
+        self.values[self.len as usize] = offset;
+        self.len += 1;
+    }
+
+    pub fn as_slice(&self) -> &[u32] {
+        &self.values[..self.len as usize]
+    }
+}
+
 /// The last packs of a (program, stage): the same constants in the same
 /// frame reuse their copy.
 #[derive(Default)]
@@ -411,13 +438,13 @@ impl Gpu {
 
     // ---- bind groups -----------------------------------------------------------------
 
-    /// The bind group of a program's stage and its dynamic offset.
+    /// The bind group of a program's stage and its dynamic offsets.
     fn bind_group(
         &mut self,
         prog: &Program,
         stage: Stage,
         layout: &wgpu::BindGroupLayout,
-    ) -> Option<(wgpu::BindGroup, u64, Option<u32>)> {
+    ) -> Option<(wgpu::BindGroup, u64, Offsets)> {
         // The scene's draws move by its jitter (temporal upscaling, see scene.rs).
         let jitter = match (stage, &self.pass_info) {
             (Stage::Vertex, Some(p)) => self.scene.clip_jitter((p.width, p.height)),
@@ -441,7 +468,10 @@ impl Gpu {
         let epoch = self.epoch;
         let mut key = std::mem::take(&mut self.key);
         key.clear();
-        key.extend([prog.id, stage as u32, pack.map_or(0, |a| a.chunk_id)]);
+        key.extend([prog.id, stage as u32, pack.map_or(0, |c| c.pack.chunk_id)]);
+        if let Some(c) = &pack {
+            key.extend(c.own.iter().flatten().map(|a| a.chunk_id));
+        }
         for b in &prog.bindings {
             match &b.kind {
                 Kind::Uniform => {}
@@ -514,7 +544,12 @@ impl Gpu {
             }),
         };
         self.key = key;
-        result.map(|(bg, serial)| (bg, serial, pack.map(|a| a.offset)))
+        let mut offsets = Offsets::default();
+        if let Some(c) = &pack {
+            offsets.push(c.pack.offset);
+            c.own.iter().flatten().for_each(|a| offsets.push(a.offset));
+        }
+        result.map(|(bg, serial)| (bg, serial, offsets))
     }
 
     fn storage_view(&self, st: usize, binding: u32) -> (u32, Option<&View>) {
@@ -534,7 +569,7 @@ impl Gpu {
         prog: &Program,
         stage: Stage,
         layout: &wgpu::BindGroupLayout,
-        pack: Option<Alloc>,
+        constants: Option<Constants>,
     ) -> Option<wgpu::BindGroup> {
         let st = stage as usize;
         let mut resources: Vec<(u32, Res)> = Vec::with_capacity(prog.bindings.len());
@@ -550,8 +585,14 @@ impl Gpu {
                     Res::Buffer(consts.clone(), 0, None)
                 }
                 Kind::Uniform => {
-                    let (pack, alloc) = (prog.pack.as_ref()?, pack?);
-                    Res::Buffer(self.uniforms.buffer(alloc.chunk).clone(), 0, Some(pack.size as u64))
+                    let (pack, constants) = (prog.pack.as_ref()?, constants?);
+                    let (alloc, size) = if b.binding == shader::PACKED_CBUFFERS {
+                        (constants.pack, pack.size)
+                    } else {
+                        let i = pack.own.iter().position(|m| m.slot == b.binding)?;
+                        (constants.own[i]?, pack.own[i].size)
+                    };
+                    Res::Buffer(self.uniforms.buffer(alloc.chunk).clone(), 0, Some(size as u64))
                 }
                 Kind::Sampler { comparison } => {
                     let id = self.s.sampler[st][(b.binding - shader::SAMPLERS) as usize];
@@ -1112,12 +1153,11 @@ impl Gpu {
             bound.pipeline = pipe_id;
         }
         for (i, g) in [g0, g1].into_iter().enumerate() {
-            if let Some((bg, serial, dynamic)) = g {
-                let d = dynamic.unwrap_or(u32::MAX);
-                if bound.groups[i] != Some((serial, d)) {
-                    pass.set_bind_group(i as u32, &bg, dynamic.as_slice());
-                    bound.groups[i] = Some((serial, d));
-                }
+            if let Some((bg, serial, offsets)) = g
+                && bound.groups[i] != Some((serial, offsets))
+            {
+                pass.set_bind_group(i as u32, &bg, offsets.as_slice());
+                bound.groups[i] = Some((serial, offsets));
             }
         }
         for (slot, buf, offset) in &vbs {
@@ -1235,7 +1275,7 @@ impl Gpu {
         let Some(compute) = self.computes.get(&self.device, &cs, &subs) else {
             return self.skip("compute pipeline failed");
         };
-        let Some((bg, _, dynamic)) = self.bind_group(&compute.program, Stage::Compute, &compute.layout) else {
+        let Some((bg, _, offsets)) = self.bind_group(&compute.program, Stage::Compute, &compute.layout) else {
             return self.skip("compute bind group");
         };
         self.stats.dispatches += 1;
@@ -1247,7 +1287,7 @@ impl Gpu {
             timestamp_writes: ts.and_then(|i| self.profiler.as_ref().map(|p| p.compute(i))),
         });
         pass.set_pipeline(&compute.pipeline);
-        pass.set_bind_group(0, &bg, dynamic.as_slice());
+        pass.set_bind_group(0, &bg, offsets.as_slice());
         pass.dispatch_workgroups(x, y, z);
     }
 }
@@ -1265,8 +1305,12 @@ fn pack_constants(
     stage: Stage,
     pack: &shader::Pack,
     jitter: Option<[f32; 2]>,
-) -> Alloc {
+) -> Constants {
     let st = stage as usize;
+    let mut own = [None; shader::OWN_MAX];
+    for (i, m) in pack.own.iter().enumerate() {
+        own[i] = Some(own_constants(objs, cbs[st].get(m.slot as usize).copied().unwrap_or_default(), uniforms, device, m.size));
+    }
     let mut current: PackIds = [(0, 0, 0); 16];
     for (i, m) in pack.members.iter().enumerate().take(16) {
         let cb = cbs[st].get(m.slot as usize).copied().unwrap_or_default();
@@ -1280,23 +1324,13 @@ fn pack_constants(
         .iter()
         .find(|(frame, ids, j, _)| *frame == uniforms.frame && *ids == current && *j == jitter_key)
     {
-        return *alloc;
+        return Constants { pack: *alloc, own };
     }
     let alloc = uniforms.alloc(device, pack.size);
     let dst = uniforms.bytes(alloc, pack.size);
     for (m, &(buf, _, first)) in pack.members.iter().zip(&current) {
         let out = &mut dst[m.offset as usize..(m.offset + m.size) as usize];
-        let src = objs.buf(buf).and_then(|b| b.shadow.as_deref());
-        let copied = match src {
-            Some(s) => {
-                let from = (first as usize * 16).min(s.len());
-                let n = (s.len() - from).min(out.len());
-                out[..n].copy_from_slice(&s[from..from + n]);
-                n
-            }
-            None => 0,
-        };
-        out[copied..].fill(0); // D3D reads zeros past a buffer's end
+        copy_constants(objs.buf(buf).and_then(|b| b.shadow.as_deref()), first, out);
         // `rage_matrices`, with gWorldViewProj.
         if let Some(clip) = jitter
             && m.slot == 1
@@ -1309,5 +1343,45 @@ fn pack_constants(
         cache.entries.remove(0);
     }
     cache.entries.push((uniforms.frame, current, jitter_key, alloc));
+    Constants { pack: alloc, own }
+}
+
+/// A constant buffer bound on its own (`size` bytes from its `first`
+/// constant): copied once per version and frame, for every stage binding it.
+fn own_constants(
+    objs: &Objects,
+    cb: crate::exec::CbBinding,
+    uniforms: &mut Uniforms,
+    device: &wgpu::Device,
+    size: u32,
+) -> Alloc {
+    let buf = objs.buf(cb.buf);
+    let version = buf.map_or(u32::MAX, |b| b.version);
+    if let Some((frame, v, first, copied, alloc)) = buf.and_then(|b| b.constants.get())
+        && (frame, v, first) == (uniforms.frame, version, cb.first)
+        && copied >= size
+    {
+        return alloc;
+    }
+    let alloc = uniforms.alloc(device, size);
+    copy_constants(buf.and_then(|b| b.shadow.as_deref()), cb.first, uniforms.bytes(alloc, size));
+    if let Some(b) = buf {
+        b.constants.set(Some((uniforms.frame, version, cb.first, size, alloc)));
+    }
     alloc
+}
+
+/// A constant buffer's data from its `first` constant into `out`, zeros
+/// past its end (as D3D reads them).
+fn copy_constants(src: Option<&[u8]>, first: u32, out: &mut [u8]) {
+    let copied = match src {
+        Some(s) => {
+            let from = (first as usize * 16).min(s.len());
+            let n = (s.len() - from).min(out.len());
+            out[..n].copy_from_slice(&s[from..from + n]);
+            n
+        }
+        None => 0,
+    };
+    out[copied..].fill(0);
 }

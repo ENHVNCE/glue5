@@ -112,7 +112,7 @@ pub struct PassInfo {
 #[derive(Default)]
 pub struct Bound {
     pub pipeline: usize,
-    pub groups: [Option<(u64, u32)>; 2],
+    pub groups: [Option<(u64, crate::draw::Offsets)>; 2],
     pub vb: [Option<(u32, u64)>; 16],
     pub ib: Option<(u32, u32, u64)>,
     pub viewport: Option<[f32; 6]>,
@@ -787,6 +787,7 @@ impl Gpu {
                 used: Default::default(),
                 uploaded: Default::default(),
                 in_bind_group: Default::default(),
+                constants: Default::default(),
                 counter: None,
             })),
         );

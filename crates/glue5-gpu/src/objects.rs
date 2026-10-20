@@ -128,6 +128,9 @@ pub struct Buf {
     pub used: Cell<u64>,
     pub uploaded: Cell<u64>,
     pub in_bind_group: Cell<bool>,
+    /// A constant buffer's copy for the stages that bind it on their own
+    /// (`shader::Pack::own`): (frame, version, first constant, size, where).
+    pub constants: Cell<Option<(u64, u32, u32, u32, crate::uniforms::Alloc)>>,
     /// The UAV counter of append/consume buffers.
     pub counter: Option<wgpu::Buffer>,
 }

@@ -114,13 +114,24 @@ impl Binding {
 }
 
 /// The constant buffers a stage reads, merged into one uniform struct at
-/// binding 0 (one dynamic offset per stage instead of up to 14 bindings).
+/// binding 0 (one dynamic offset per stage instead of up to 14 bindings),
+/// but for the largest (the bones, lighting, shadows): those keep their own
+/// binding (at their slot), copied once per version instead of into each
+/// draw's pack.
 #[derive(Clone, Debug)]
 pub struct Pack {
     /// (D3D slot, size, offset), by slot.
     pub members: Vec<PackMember>,
     pub size: u32,
+    /// Bound on their own (offset unused), by slot.
+    pub own: Vec<PackMember>,
 }
+
+/// Constant buffers this large get a binding of their own, at most this
+/// many a stage (a pipeline has two stages: its dynamic uniform buffers,
+/// with the packs, stay within the 8 every GPU has).
+pub const OWN_SIZE: u32 = 512;
+pub const OWN_MAX: usize = 3;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PackMember {
@@ -355,17 +366,20 @@ impl Library {
             }
             _ => source,
         };
-        let (text, pack) = pack_uniforms(&source);
+        // Two stages a pipeline, each with its pack and own buffers.
+        let dynamic = device.limits().max_dynamic_uniform_buffers_per_pipeline_layout as usize;
+        let (text, pack) = pack_uniforms_owning(&source, OWN_MAX.min((dynamic / 2).saturating_sub(1)));
         let clip_distances = text.contains("@builtin(clip_distances)");
         let text = if clip_distances && !device.features().contains(wgpu::Features::CLIP_DISTANCES) {
             without_clip_distances(&text).context("unexpected clip distances output")?
         } else {
             text
         };
-        if let Some(pack) = &pack
-            && pack.size > device.limits().max_uniform_buffer_binding_size as u32
-        {
-            bail!("constant buffers total {} bytes, over the uniform binding limit", pack.size);
+        if let Some(pack) = &pack {
+            let limit = device.limits().max_uniform_buffer_binding_size as u32;
+            if pack.size > limit || pack.own.iter().any(|m| m.size > limit) {
+                bail!("constant buffers of {} bytes, over the uniform binding limit", pack.size);
+            }
         }
         // Validated now, made again when a pipeline needs it: the engine
         // creates all its shaders (thousands) while loading.
@@ -706,26 +720,53 @@ fn struct_body<'a>(text: &'a str, name: &str) -> Option<&'a str> {
 
 /// Merges the constant buffers (every `var<uniform>` but the constant table)
 /// into one struct at binding 0; members keep their names, 16-byte aligned,
-/// in slot order. The runtime copies the bound buffers back to back.
+/// in slot order. The runtime copies the bound buffers back to back. The
+/// largest keep their own declaration ([`Pack::own`]); at least one is
+/// packed.
 pub fn pack_uniforms(text: &str) -> (String, Option<Pack>) {
+    pack_uniforms_owning(text, OWN_MAX)
+}
+
+/// [`pack_uniforms`] with at most `own_max` constant buffers on their own.
+pub fn pack_uniforms_owning(text: &str, own_max: usize) -> (String, Option<Pack>) {
     let mut members = Vec::new();
     let mut group = 0;
     let mut names = Vec::new();
+    let rows = |ty: &str| {
+        struct_body(text, ty).and_then(|b| RE_ARRAY_LEN.captures(b)).map_or(1, |a| a[1].parse::<u32>().unwrap())
+    };
+    // The largest, slot 0 (the pack's binding) aside.
+    let mut sizes: Vec<(u32, u32)> = RE_UNIFORM
+        .captures_iter(text)
+        .filter_map(|c| {
+            let slot: u32 = c[2].parse().unwrap();
+            (slot != CONSTANT_TABLE).then(|| (rows(&c[4]) * 16, slot))
+        })
+        .collect();
+    sizes.sort_by(|a, b| b.cmp(a));
+    let own: Vec<(u32, u32)> = sizes
+        .iter()
+        .copied()
+        // Not `rage_matrices` (slot 1): the jitter goes into each vertex
+        // stage's copy (see `scene.rs`).
+        .filter(|&(size, slot)| size >= OWN_SIZE && slot != PACKED_CBUFFERS && slot != 1)
+        .take(own_max.min(sizes.len().saturating_sub(1)))
+        .collect();
     let out = RE_UNIFORM.replace_all(text, |c: &regex::Captures| {
         let slot: u32 = c[2].parse().unwrap();
-        if slot == CONSTANT_TABLE {
+        if slot == CONSTANT_TABLE || own.iter().any(|o| o.1 == slot) {
             return c[0].to_owned();
         }
         group = c[1].parse().unwrap();
         let ty = &c[4];
-        let rows =
-            struct_body(text, ty).and_then(|b| RE_ARRAY_LEN.captures(b)).map_or(1, |a| a[1].parse::<u32>().unwrap());
-        members.push((slot, c[3].to_owned(), ty.to_owned(), rows * 16));
+        members.push((slot, c[3].to_owned(), ty.to_owned(), rows(ty) * 16));
         String::new()
     });
     if members.is_empty() {
         return (text.to_owned(), None);
     }
+    let mut own: Vec<PackMember> = own.into_iter().map(|(size, slot)| PackMember { slot, size, offset: 0 }).collect();
+    own.sort_by_key(|m| m.slot);
     members.sort_by_key(|m| m.0);
     let mut out = out.into_owned();
     for (_, name, _, _) in &members {
@@ -747,7 +788,7 @@ pub fn pack_uniforms(text: &str) -> (String, Option<Pack>) {
         Some(at) => out.insert_str(at, &format!("\n{decl}")),
         None => out.push_str(&decl),
     }
-    (out, Some(Pack { members: pack, size: offset }))
+    (out, Some(Pack { members: pack, size: offset, own }))
 }
 
 fn view_dim(name: &str) -> Option<wgpu::TextureViewDimension> {
@@ -1427,6 +1468,34 @@ fn main(@location(0u) v0 : vec2<f32>) -> tint_symbol_1 {
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         let data = readback.slice(..).get_mapped_range().unwrap();
         (0..gh).flat_map(|y| data[(y * bpr) as usize..(y * bpr + gw * 16) as usize].to_vec()).collect()
+    }
+
+    #[test]
+    fn large_constant_buffers_keep_their_own_binding() {
+        let decl = |slot: u32, rows: u32| {
+            format!(
+                "struct cb{slot}_struct {{\n  tint_symbol : array<vec4<f32>, {rows}u>,\n}}\n\n\
+                 @group(0u) @binding({slot}u) var<uniform> cb{slot}_{slot} : cb{slot}_struct;\n\n"
+            )
+        };
+        // The matrices (256 B), lighting (960 B), the bones (12,240 B).
+        let text = format!(
+            "{}{}{}@vertex\nfn main() -> @builtin(position) vec4<f32> {{\n  return cb1_1.tint_symbol[0u] + \
+             cb3_3.tint_symbol[0u] + cb4_4.tint_symbol[0u];\n}}\n",
+            decl(1, 16),
+            decl(3, 60),
+            decl(4, 765)
+        );
+        let (out, pack) = pack_uniforms(&text);
+        let pack = pack.unwrap();
+        assert_eq!(pack.own.iter().map(|m| (m.slot, m.size)).collect::<Vec<_>>(), [(3, 960), (4, 12240)]);
+        assert_eq!((pack.members.len(), pack.size), (1, 256));
+        assert!(out.contains("@group(0u) @binding(4u) var<uniform> cb4_4 : cb4_struct;"));
+        assert!(out.contains("cbpack_v.cb1_1.tint_symbol[0u]") && out.contains("cb4_4.tint_symbol[0u]"));
+        naga::front::wgsl::parse_str(&out).unwrap();
+        // Never all of them, nor more than asked.
+        assert!(pack_uniforms(&format!("{}@vertex fn main() -> @builtin(position) vec4<f32> {{ return cb4_4.tint_symbol[0u]; }}", decl(4, 765))).1.unwrap().own.is_empty());
+        assert_eq!(pack_uniforms_owning(&text, 1).1.unwrap().own.len(), 1);
     }
 
     /// Every translated shader of the game (GLUE5_GAME_DIR) still validates
