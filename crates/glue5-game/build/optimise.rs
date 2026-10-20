@@ -76,6 +76,16 @@ impl Options {
         }
     }
 
+    /// The functions the profile ran, the busiest first (`hot.txt` beside
+    /// it; see hot.rs).
+    pub fn hot_list(&self) -> Result<Option<Vec<String>>> {
+        let Pgo::Use(path, _) = &self.pgo else { return Ok(None) };
+        let list = path.with_file_name("hot.txt");
+        println!("cargo:rerun-if-changed={}", list.display());
+        let Ok(text) = std::fs::read_to_string(&list) else { return Ok(None) };
+        Ok(Some(text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect()))
+    }
+
     /// What the objects' cache key adds.
     pub fn key(&self) -> String {
         match &self.pgo {

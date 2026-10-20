@@ -8,6 +8,7 @@
 mod codegen;
 mod compile;
 mod formats;
+mod hot;
 mod mangle;
 mod module;
 mod natives;
@@ -132,13 +133,22 @@ fn run() -> Result<()> {
     ordering::apply(&sources, &mut texts)?;
     page_map::apply(&sources, &mut texts)?;
     formats::apply(&sources, &mut texts)?;
+    let optimise = optimise::Options::from_env(env::var("CARGO_CFG_TARGET_ENV")? == "msvc")?;
+    let hot = match optimise.hot_list()? {
+        Some(list) => hot::gather(&list, &sources, &mut texts, &gen_dir)?,
+        None => Vec::new(),
+    };
+    // (Not over the shared `.hooked.c` files with functions moved out: a
+    // build without them may read those meanwhile.)
+    let patched = if hot.is_empty() { "hooked.c" } else { "hot.c" };
     for (source, text) in sources.iter_mut().zip(texts) {
         if let Some(text) = text {
-            let patched = source.with_extension("hooked.c");
+            let patched = source.with_extension(patched);
             write_if_changed(&patched, &text)?;
             *source = patched;
         }
     }
+    sources.extend(hot);
     write_if_changed(&gen_dir.join("glue.c"), &codegen::glue_c(&module, &hooks)?)?;
     fs::write(out.join("bindings.rs"), codegen::bindings_rs(&module, &hooks))?;
     // The natives, for the crates that call them (DEP_GLUE5_GAME_NATIVES).
@@ -231,7 +241,6 @@ fn run() -> Result<()> {
     // Cargo's -j, but at most 8: each job holds a 15 MB C file's compilation.
     let jobs = env::var("NUM_JOBS").ok().and_then(|j| j.parse().ok()).unwrap_or(4).min(8);
     let cache = tools.join("objcache").join(env::var("TARGET")?);
-    let optimise = optimise::Options::from_env(msvc)?;
     let mut game_build = build.clone();
     optimise.apply(&mut game_build);
     let game_key = format!("{game_key}{}", optimise.key());

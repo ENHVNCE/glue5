@@ -180,7 +180,7 @@ Two build options for the game's code, off until measured on the devices
 | Variable | Effect |
 |---|---|
 | `GLUE5_GAME_LTO=1` | ThinLTO across the game's 64 C files (inlining across them; a build of ~3 min on an M1 Pro, the link cached per target in `target/glue5-tools/ltocache`). |
-| `GLUE5_GAME_PGO=<file.profdata>` | The game compiled with a profile; `mise run pgo` makes one from the engine's benchmark, headless (`target/glue5-tools/pgo/game.profdata`). |
+| `GLUE5_GAME_PGO=<file.profdata>` | The game compiled with a profile, its functions run gathered together (`hot.txt` beside it); `mise run pgo` makes both from the engine's benchmark, headless (`target/glue5-tools/pgo`). |
 
 ### macOS packaging
 
