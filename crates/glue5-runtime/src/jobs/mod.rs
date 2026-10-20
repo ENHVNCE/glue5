@@ -419,7 +419,7 @@ pub(crate) unsafe extern "C" fn ugc_get_file(env: *mut Env, request: u64) -> u32
     let m = unsafe { Mem::of(env) };
     let id = m.str(request + REQUEST_CONTENT_ID);
     let status = request + REQUEST_STATUS;
-    let job = jobs().into_iter().find(|j| j.id == id);
+    let job = library().as_ref().unwrap().iter().find(|j| j.id == id).cloned();
     let data = match job {
         Some(job) if m.u32(request + REQUEST_FILE) == MISSION_FILE => {
             let path = job.path(m.u32(request + REQUEST_LANGUAGE));
