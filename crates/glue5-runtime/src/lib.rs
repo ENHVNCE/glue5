@@ -17,7 +17,7 @@ mod draw_lists;
 mod dht;
 pub mod exit;
 mod files;
-mod frame_pace;
+pub mod frame_pace;
 pub mod friends;
 pub mod game_settings;
 mod gamer_tags;

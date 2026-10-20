@@ -12,10 +12,10 @@
 //! (none too long however late each comes back), and stores the frame's
 //! end as the engine would have.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use glue5_game::{Env, orig};
+use glue5_game::{Env, futex, orig};
 
 use crate::memory::Mem;
 
@@ -30,8 +30,24 @@ const INTERVALS: u64 = 19447080;
 /// What the limiter lets a frame take when it is off: 1/256 s.
 const UNLIMITED: f32 = 1.0 / 256.0;
 
+/// 1 while the app is in the background where the system lets it run
+/// (Android): the render thread stops at the end of its frame, and with it
+/// the game, as iOS suspends it.
+static BACKGROUND: AtomicU32 = AtomicU32::new(0);
+
+/// The app went to the background, or came back.
+pub fn set_background(on: bool) {
+    BACKGROUND.store(on as u32, Ordering::Release);
+    if !on {
+        futex::notify(&BACKGROUND, u32::MAX);
+    }
+}
+
 /// Hook for `CSystem::EndRender()`.
 pub(crate) unsafe extern "C" fn end_render(env: *mut Env) {
+    while BACKGROUND.load(Ordering::Acquire) == 1 {
+        futex::wait32(&BACKGROUND, 1, None);
+    }
     let mem = unsafe { Mem::of(env) };
     let last = mem.atomic_u64(LAST_END).swap(0, Ordering::AcqRel);
     unsafe { orig::end_render(env) };
