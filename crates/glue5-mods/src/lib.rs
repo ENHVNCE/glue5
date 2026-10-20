@@ -436,6 +436,12 @@ pub fn logs(seq: u64) -> (Vec<LogLine>, u64) {
     (lines, s.next_seq - 1)
 }
 
+/// The last `n` log lines.
+pub fn recent_logs(n: usize) -> Vec<LogLine> {
+    let s = crate::lock(&SHARED.state);
+    s.log.iter().skip(s.log.len().saturating_sub(n)).cloned().collect()
+}
+
 /// The files changed after `seq` (by any client), and the cursor to pass next.
 pub fn changes(seq: u64) -> (Vec<String>, u64) {
     let s = crate::lock(&SHARED.state);

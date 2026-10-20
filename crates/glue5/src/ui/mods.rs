@@ -381,12 +381,14 @@ fn qr_row(ui: &mut egui::Ui, url: &str) {
 
 fn log_tab(ui: &mut egui::Ui) {
     let scale = theme::density(ui);
-    let (lines, _) = glue5_mods::logs(0);
+    // The last lines only (a copy of the whole log each frame held the lock
+    // the mods' update takes).
+    let lines = glue5_mods::recent_logs(80);
     if lines.is_empty() {
         muted(ui, "Nothing yet.");
     }
     panel(ui, |ui| {
-        for l in lines.iter().rev().take(80).rev() {
+        for l in &lines {
             let color = if l.level == glue5_mods::LogLevel::Error { ERR } else { Color32::from_gray(213) };
             ui.label(RichText::new(format!("{} · {}", l.module, l.text)).monospace().size(12.0 * scale).color(color));
         }
@@ -395,9 +397,17 @@ fn log_tab(ui: &mut egui::Ui) {
 
 /// `text` as a QR code, dark on white.
 fn qr(ui: &mut egui::Ui, text: &str, size: f32) {
-    let Ok(code) = qrcode::QrCode::new(text.as_bytes()) else { return };
-    let modules = code.width();
-    let colors = code.to_colors();
+    // Encoded once per address (the page is drawn every frame).
+    thread_local! {
+        static CODE: std::cell::RefCell<Option<(String, usize, Vec<qrcode::Color>)>> = const { std::cell::RefCell::new(None) };
+    }
+    let code = CODE.with_borrow_mut(|cached| {
+        if cached.as_ref().is_none_or(|(t, ..)| t != text) {
+            *cached = qrcode::QrCode::new(text.as_bytes()).ok().map(|c| (text.to_string(), c.width(), c.to_colors()));
+        }
+        cached.as_ref().map(|(_, modules, colors)| (*modules, colors.clone()))
+    });
+    let Some((modules, colors)) = code else { return };
     let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, CornerRadius::same((10.0 * theme::density(ui)) as u8), Color32::WHITE);

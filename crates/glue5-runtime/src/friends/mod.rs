@@ -1837,6 +1837,14 @@ fn start_network() {
 }
 
 /// The player's name as its friends see it.
+/// Writes what the network changed and is not saved yet (it waits up to a
+/// few seconds otherwise): the application ends.
+pub fn flush() {
+    if let Some(Some(saving)) = with(|s, _| s.saving(Instant::now(), true)) {
+        saving.write();
+    }
+}
+
 pub fn set_name(name: &str) {
     with(|s, _| s.local.name = clean_name(name));
 }

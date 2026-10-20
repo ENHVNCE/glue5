@@ -132,7 +132,10 @@ pub fn run() -> Result<()> {
         Event::Window { win_event: WindowEvent::PixelSizeChanged(w, h), .. } => {
             watched.set_size(w.max(0) as u32, h.max(0) as u32)
         }
+        // iOS sends it also while the app is only inactive (Control Center,
+        // a system alert): suspended is when it did go to the background.
         Event::AppWillEnterBackground { .. } => life.background.store(true, Ordering::Relaxed),
+        Event::AppDidEnterBackground { .. } => life.suspended.store(true, Ordering::Relaxed),
         Event::AppDidEnterForeground { .. } => {
             life.background.store(false, Ordering::Relaxed);
             life.came_back.store(true, Ordering::Relaxed);
@@ -244,6 +247,8 @@ struct Lifecycle {
     background: AtomicBool,
     /// Back in the foreground since the loop last looked.
     came_back: AtomicBool,
+    /// Was in the background for real (not only inactive) before that.
+    suspended: AtomicBool,
 }
 
 /// What is being typed into: a field of the app's, or the game's text box.
@@ -416,7 +421,16 @@ impl App {
             let page = self.ui.page();
             // Before the game the loop sleeps until there is input or the UI
             // animates; with it, it keeps the touch controls and pads current.
-            let wait = if self.game.is_some() { Duration::from_millis(8) } else { self.ui.idle_for() };
+            // In the background no frame is drawn, so a repaint due would
+            // never be taken: no busy loop for it (iOS: inactive under
+            // Control Center or an alert, for as long as that lasts).
+            let wait = if self.game.is_some() {
+                Duration::from_millis(8)
+            } else if self.lifecycle.background.load(Ordering::Relaxed) {
+                Duration::from_millis(250)
+            } else {
+                self.ui.idle_for()
+            };
             let first = wait_event(&mut self.events, wait);
             let events: Vec<Event> = first.into_iter().chain(self.events.poll_iter()).collect();
             for event in events {
@@ -1014,9 +1028,9 @@ impl App {
         #[cfg(target_os = "android")]
         self.replace_surface();
         // iOS may take back a suspended app's listening sockets: the Studio
-        // starts again (on the next update) on a new one.
-        #[cfg(any(target_os = "ios", target_os = "tvos"))]
-        {
+        // starts again (on the next update) on a new one. Not after it was
+        // only inactive (its browsers would lose their connections).
+        if self.lifecycle.suspended.swap(false, Ordering::Relaxed) && cfg!(any(target_os = "ios", target_os = "tvos")) {
             self.studio = None;
         }
         self.ui.repaint();
@@ -1043,12 +1057,13 @@ impl App {
         }
     }
 
-    /// The settings, and the stream's index (the app ends).
+    /// The settings, the stream's index and the friends (the app ends).
     fn save(&self) {
         self.settings.save(&self.user_dir);
         if let Some(stream) = &self.stream {
             stream.flush();
         }
+        glue5_runtime::friends::flush();
     }
 
     /// Follows the settings: the game's files from a folder or a server
@@ -1191,7 +1206,6 @@ impl App {
     /// volume: a rename).
     fn start_stream(&mut self, server: Option<String>) {
         let root = self.copy_root();
-        paths::keep_out_of_backups(&root);
         let old = self.stream.take().map(|old| {
             old.stop();
             old.root().to_owned()
@@ -1236,6 +1250,12 @@ impl App {
                 && let Err(e) = glue5_stream::cache::clear(&cache)
             {
                 log::warn!("stream: deleting the copy in the cache: {e}");
+            }
+            // Out of the backups (iOS), now that it is there: moved, or
+            // made here for the stream to fill.
+            if streaming {
+                let _ = std::fs::create_dir_all(&root);
+                paths::keep_out_of_backups(&root);
             }
         });
         self.stream = server.map(|server| {

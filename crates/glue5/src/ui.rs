@@ -565,8 +565,11 @@ impl Ui {
                     Event::FingerUp { .. } => egui::TouchPhase::End,
                     _ => egui::TouchPhase::Cancel,
                 };
-                self.touch(*touch_id, *finger_id, phase, pos2(x * size.x, y * size.y), *pressure);
-                self.pointer_to(pos2(x * size.x, y * size.y));
+                let at = pos2(x * size.x, y * size.y);
+                self.touch(*touch_id, *finger_id, phase, at, *pressure);
+                // A cancelled touch lets go away from where it was: egui
+                // takes a release close to its press for a click.
+                self.pointer_to(if phase == egui::TouchPhase::Cancel { pos2(-1.0e4, -1.0e4) } else { at });
                 self.events.push(egui::Event::PointerButton {
                     pos: self.pointer,
                     button: egui::PointerButton::Primary,
@@ -681,6 +684,12 @@ impl Ui {
             self.gear = None;
             self.menus_button = None;
             self.chip = Default::default();
+            return actions;
+        }
+        // Over the game, one pass per frame shown: the renderer draws only
+        // the newest submission at each present, the loop turns faster (its
+        // input stays queued for the next pass).
+        if status.started.is_some() && self.overlay.waiting() {
             return actions;
         }
         // Play was chosen at the last frame: this one shows that the game
