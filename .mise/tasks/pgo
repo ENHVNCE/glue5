@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+#MISE description="Profile the game for PGO: an instrumented build runs the engine's benchmark headless, its profile merged into target/glue5-tools/pgo/game.profdata (then build with GLUE5_GAME_PGO=<that file>)"
+#MISE depends=["setup"]
+set -euo pipefail
+dir="$PWD/target/glue5-tools/pgo"
+rm -rf "$dir/raw"
+mkdir -p "$dir/raw"
+GLUE5_GAME_PGO=generate LLVM_PROFILE_FILE="$dir/raw/game_%p.profraw" \
+    GLUE5_ENGINE_ARGS="-benchmark -benchmarkIterations=1" cargo run -r --example headless
+if command -v xcrun >/dev/null; then profdata=(xcrun llvm-profdata); else profdata=(llvm-profdata); fi
+"${profdata[@]}" merge -o "$dir/game.profdata" "$dir"/raw/*.profraw
+rm -rf "$dir/raw"
+echo "profile: $dir/game.profdata"

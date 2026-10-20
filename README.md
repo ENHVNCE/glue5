@@ -172,6 +172,16 @@ need Xcode's tvOS platform (Xcode › Settings › Components) and an Apple TV
 paired with Xcode (on the TV: Settings › Remotes and Devices › Remote App and
 Devices).
 
+### Optimised builds (experimental)
+
+Two build options for the game's code, off until measured on the devices
+(Clang's own command line: not Windows' clang-cl):
+
+| Variable | Effect |
+|---|---|
+| `GLUE5_GAME_LTO=1` | ThinLTO across the game's 64 C files (inlining across them; a build of ~3 min on an M1 Pro, the link cached per target in `target/glue5-tools/ltocache`). |
+| `GLUE5_GAME_PGO=<file.profdata>` | The game compiled with a profile; `mise run pgo` makes one from the engine's benchmark, headless (`target/glue5-tools/pgo/game.profdata`). |
+
 ### macOS packaging
 
 `mise run macos:build` creates `target/package/Glue 5.app` for the Mac's

@@ -11,6 +11,7 @@ mod formats;
 mod mangle;
 mod module;
 mod natives;
+mod optimise;
 mod ordering;
 mod page_map;
 
@@ -230,7 +231,14 @@ fn run() -> Result<()> {
     // Cargo's -j, but at most 8: each job holds a 15 MB C file's compilation.
     let jobs = env::var("NUM_JOBS").ok().and_then(|j| j.parse().ok()).unwrap_or(4).min(8);
     let cache = tools.join("objcache").join(env::var("TARGET")?);
-    let mut objects = compile::compile(&build, &sources, &game_key, &cache, jobs)?;
+    let optimise = optimise::Options::from_env(msvc)?;
+    let mut game_build = build.clone();
+    optimise.apply(&mut game_build);
+    let game_key = format!("{game_key}{}", optimise.key());
+    let objects = compile::compile(&game_build, &sources, &game_key, &cache, jobs)?;
+    let ltocache = tools.join("ltocache").join(env::var("TARGET")?);
+    let mut objects = optimise.link(&game_build, objects, &ltocache, &out)?;
+    optimise.runtime(&build)?;
     objects.extend(compile::compile(&build, &glue, &glue_key, &cache, jobs)?);
     objects.extend(compile::compile(&build, &runtime, &runtime_key, &cache, jobs)?);
     let lib = if msvc { "glue5_game.lib" } else { "libglue5_game.a" };
