@@ -151,6 +151,25 @@ app. On iPhone and iPad you install it as your own app (sideloading, with
 your Apple ID).
 </details>
 
+## Contributing
+
+Bug reports, fixes and ports are welcome: read
+[CONTRIBUTING.md](CONTRIBUTING.md) first, and follow the
+[code of conduct](CODE_OF_CONDUCT.md).
+
+## License
+
+GLUE 5 is free software: you can redistribute it and modify it under the
+terms of the [GNU General Public License](LICENSE), version 3 or (at your
+option) any later version.
+
+The patches in [`patches/`](patches/README.md) change other projects and
+are offered under each project's own license, so they can go upstream.
+The fonts and touch icons in `crates/glue5/assets` keep their licenses
+([OFL](crates/glue5/assets/ui/OFL.txt),
+[icons](crates/glue5/assets/touch/README.md)). The game itself is not part
+of GLUE 5 and is covered by none of this.
+
 ## Acknowledgements
 
 GLUE 5 is built on [wasm2c](https://github.com/WebAssembly/wabt/tree/main/wasm2c),
