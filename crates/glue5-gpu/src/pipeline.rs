@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::{Value, json};
 use wgpu::{Features, TextureFormat};
 
@@ -169,18 +169,19 @@ impl Compiler {
         let t0 = Instant::now();
         let label = format!("{} + {}", vs.label, ps.map_or("-", |p| &p.label));
         let result = self.build(vs, ps, r, &label);
+        self.count(t0, result.is_ok());
+        result
+            .map_err(|e| {
+                crate::log_once(&format!("pipe{label}{:?}", r.targets), || format!("pipeline {label} failed: {e:#}"))
+            })
+            .ok()
+    }
+
+    /// Counts a pipeline made (`ok`) or not, from `t0`: render, compute or
+    /// the renderer's own.
+    pub fn count(&self, t0: Instant, ok: bool) {
         self.compile_us.fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
-        match result {
-            Ok(pipe) => {
-                self.compiled.fetch_add(1, Ordering::Relaxed);
-                Some(pipe)
-            }
-            Err(e) => {
-                self.failed.fetch_add(1, Ordering::Relaxed);
-                crate::log_once(&format!("pipe{label}{:?}", r.targets), || format!("pipeline {label} failed: {e:#}"));
-                None
-            }
-        }
+        if ok { &self.compiled } else { &self.failed }.fetch_add(1, Ordering::Relaxed);
     }
 
     fn build(&self, vs: &Program, ps: Option<&Program>, r: &Recipe, label: &str) -> anyhow::Result<Pipe> {
@@ -474,16 +475,8 @@ impl Recipe {
             r.variant[0] = r.variant[1];
             r.variant[2] = r.variant[3];
         }
-        let format = |f: TextureFormat| match f {
-            TextureFormat::Depth32FloatStencil8 if !caps.features.contains(Features::DEPTH32FLOAT_STENCIL8) => {
-                TextureFormat::Depth24PlusStencil8
-            }
-            TextureFormat::Rgba16Unorm if !caps.norm16 => TextureFormat::Rgba16Float,
-            TextureFormat::Rg16Unorm if !caps.norm16 => TextureFormat::Rg16Float,
-            f => f,
-        };
-        r.targets.iter_mut().flatten().for_each(|f| *f = format(*f));
-        r.depth_format = r.depth_format.map(format);
+        r.targets.iter_mut().flatten().for_each(|f| *f = device_format(*f, caps));
+        r.depth_format = r.depth_format.map(|f| device_format(f, caps));
         r
     }
 
@@ -578,22 +571,101 @@ impl Recipe {
     }
 }
 
+/// A format recorded on any device as made on this one: the stand-ins of
+/// formats it lacks (see `format::texture`).
+fn device_format(f: TextureFormat, caps: &Caps) -> TextureFormat {
+    match f {
+        TextureFormat::Depth32FloatStencil8 if !caps.features.contains(Features::DEPTH32FLOAT_STENCIL8) => {
+            TextureFormat::Depth24PlusStencil8
+        }
+        TextureFormat::Rgba16Unorm if !caps.norm16 => TextureFormat::Rgba16Float,
+        TextureFormat::Rg16Unorm if !caps.norm16 => TextureFormat::Rg16Float,
+        f => f,
+    }
+}
+
+/// A compute pipeline's recipe: the shader, its program variant
+/// (unfiltered and depth textures, as a [`Recipe`]'s pixel pair) and the
+/// formats of the storage textures bound where the shader declares others
+/// (binding, format).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ComputeRecipe {
+    pub cs: u64,
+    pub variant: [u128; 2],
+    pub storage: Vec<(u32, TextureFormat)>,
+}
+
+impl ComputeRecipe {
+    /// As [`Recipe::for_device`].
+    pub fn for_device(&self, caps: &Caps) -> ComputeRecipe {
+        let mut r = self.clone();
+        if caps.float32_filter {
+            r.variant[0] = r.variant[1];
+        }
+        r.storage.iter_mut().for_each(|(_, f)| *f = device_format(*f, caps));
+        r
+    }
+
+    pub fn to_json(&self) -> Value {
+        let mut v = json!({
+            "cs": format!("{:016x}", self.cs),
+            "uav": self.storage.iter().map(|&(b, f)| json!([b, format::name(f)])).collect::<Vec<_>>(),
+        });
+        if self.variant != [0; 2] {
+            v["variant"] = json!(self.variant.map(|m| format!("{m:x}")));
+        }
+        v
+    }
+
+    pub fn from_json(v: &Value) -> Option<ComputeRecipe> {
+        let storage = v
+            .get("uav")?
+            .as_array()?
+            .iter()
+            .map(|s| Some((s.get(0)?.as_u64()? as u32, format::by_name(s.get(1)?.as_str()?)?)))
+            .collect::<Option<_>>()?;
+        Some(ComputeRecipe {
+            cs: u64::from_str_radix(v.get("cs")?.as_str()?, 16).ok()?,
+            variant: match v.get("variant") {
+                None => [0; 2],
+                Some(a) => {
+                    let mask = |i: usize| u128::from_str_radix(a.get(i)?.as_str()?, 16).ok();
+                    [mask(0)?, mask(1)?]
+                }
+            },
+            storage,
+        })
+    }
+}
+
 /// The recipes seen while playing this game build, gathered from several
 /// devices and automated runs (`mise run shaders:seed`, `shaders:collect`).
 const SEED: &str = include_str!("../seed/pipelines.jsonl");
 
-/// The recipes known before the game starts: the seed and this device's
-/// (`<cache>/pipelines.jsonl`), each once. Lines in another format (without
-/// a signature) are skipped.
-pub fn known_recipes(cache_dir: Option<&std::path::Path>) -> Vec<Arc<Recipe>> {
+/// The recipes known before the game starts (as recorded).
+#[derive(Default)]
+pub struct Known {
+    pub render: Vec<Arc<Recipe>>,
+    pub compute: Vec<ComputeRecipe>,
+}
+
+/// The recipes of the seed and of this device (`<cache>/pipelines.jsonl`),
+/// each once. Lines in another format (render recipes without a signature)
+/// are skipped.
+pub fn known_recipes(cache_dir: Option<&std::path::Path>) -> Known {
     let recorded = cache_dir.and_then(|d| std::fs::read_to_string(d.join("pipelines.jsonl")).ok()).unwrap_or_default();
-    let mut seen = rustc_hash::FxHashSet::default();
-    SEED.lines()
-        .chain(recorded.lines())
-        .filter_map(|l| Recipe::from_json(&serde_json::from_str(l).ok()?))
-        .filter(|r| seen.insert(r.clone()))
-        .map(Arc::new)
-        .collect()
+    let (mut known, mut seen, mut seen_compute) = (Known::default(), FxHashSet::default(), FxHashSet::default());
+    for line in SEED.lines().chain(recorded.lines()) {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if v.get("cs").is_some() {
+            if let Some(r) = ComputeRecipe::from_json(&v).filter(|r| seen_compute.insert(r.clone())) {
+                known.compute.push(r);
+            }
+        } else if let Some(r) = Recipe::from_json(&v).filter(|r| seen.insert(r.clone())) {
+            known.render.push(Arc::new(r));
+        }
+    }
+    known
 }
 
 #[cfg(test)]
@@ -616,8 +688,24 @@ mod tests {
 
     #[test]
     fn seed_parses() {
-        let lines = SEED.lines().filter(|l| l.contains("\"sig\":")).count();
-        assert_eq!(known_recipes(None).len(), lines);
+        let known = known_recipes(None);
+        assert_eq!(known.render.len(), SEED.lines().filter(|l| l.contains("\"sig\":")).count());
+        assert_eq!(known.compute.len(), SEED.lines().filter(|l| l.contains("\"cs\":")).count());
+    }
+
+    #[test]
+    fn compute_recipes_round_trip() {
+        let r = ComputeRecipe {
+            cs: 0x23a7a3c1c0d38f46,
+            variant: [0b110, 0b100],
+            storage: vec![(161, TextureFormat::Rgba16Unorm)],
+        };
+        let line = r.to_json().to_string();
+        assert_eq!(ComputeRecipe::from_json(&serde_json::from_str(&line).unwrap()), Some(r.clone()));
+        // Not a render recipe (which older builds read the lines as).
+        assert!(Recipe::from_json(&serde_json::from_str(&line).unwrap()).is_none());
+        let here = r.for_device(&caps(Features::empty(), false, true));
+        assert_eq!((here.variant, here.storage), ([0b100, 0b100], vec![(161, TextureFormat::Rgba16Float)]));
     }
 
     #[test]

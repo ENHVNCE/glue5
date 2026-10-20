@@ -13,7 +13,7 @@ use crate::Settings;
 use crate::done::{StagingPool, Work};
 use crate::format::{self, Caps, Upload};
 use crate::objects::{Buf, Layout, Obj, Objects, Query, Shader, State, Tex, View};
-use crate::pipeline::{self, Compiler, Recipe, SigElement};
+use crate::pipeline::{self, Compiler, ComputeRecipe, Recipe, SigElement};
 use crate::pool::Pool;
 use crate::shader::{Library, Program, Stage};
 use crate::uniforms::Uniforms;
@@ -157,6 +157,9 @@ pub struct Stats {
     pub decode_wait: Duration,
     pub decode_wait_max: Duration,
     pub decoded_here: u64,
+    /// Dispatches whose pipeline was not made yet (made by the command
+    /// thread, or waited for).
+    pub late_computes: u64,
 }
 
 pub struct Gpu {
@@ -220,6 +223,9 @@ pub struct Gpu {
     pub known: FxHashSet<Arc<Recipe>>,
     pub pass_tails: FxHashMap<(Vec<Option<TextureFormat>>, Option<TextureFormat>, u32, u8), u32>,
     pub recipes_new: Vec<Arc<Recipe>>,
+    /// The same for compute pipelines.
+    pub known_computes: FxHashSet<ComputeRecipe>,
+    pub computes_new: Vec<ComputeRecipe>,
     pub key: Vec<u32>,
 
     // resources
@@ -1079,13 +1085,13 @@ impl Gpu {
         };
         let slot = self.library.slot(hash);
         if slot.get().is_none() {
-            let (library, device, slot) = (self.library.clone(), self.device.clone(), slot.clone());
+            let (library, compiler, slot) = (self.library.clone(), self.compiler.clone(), slot.clone());
             let computes = (stage == Stage::Compute).then(|| self.computes.clone());
             self.pool.urgent(move || {
-                let program = slot.get_or_init(|| library.prepare(&device, hash, stage));
+                let program = slot.get_or_init(|| library.prepare(&compiler.device, hash, stage));
                 // A dispatch would otherwise compile its pipeline on the command thread.
                 if let (Some(computes), Some(program)) = (computes, program) {
-                    computes.get(&device, program, &[]);
+                    computes.get(&compiler, program, &[]);
                 }
             });
         }
@@ -1301,7 +1307,7 @@ impl Gpu {
         };
         let c = &self.compiler;
         log::info!(
-            "gpu: {:.1} fps ({frames_line}), {} draws/frame, {} dispatches, {:.1} passes/frame (ended by {}), {:.1} submits/frame ({}), recording {:.0}% ({:.1} ms/frame), encoding {:.1} ms/frame, submitting {:.1}, presenting {:.1}, releasing {:.1}, waiting for the GPU {:.1}, for a drawable {:.1}; pipelines {} ({} failed, {:.0} ms compiling), draws waiting for one {}, skipped [{}], clamped {}, bind groups +{} ({} cached){decoding}, objects {} ({memory}), errors +{}",
+            "gpu: {:.1} fps ({frames_line}), {} draws/frame, {} dispatches, {:.1} passes/frame (ended by {}), {:.1} submits/frame ({}), recording {:.0}% ({:.1} ms/frame), encoding {:.1} ms/frame, submitting {:.1}, presenting {:.1}, releasing {:.1}, waiting for the GPU {:.1}, for a drawable {:.1}; pipelines {} ({} failed, {:.0} ms compiling), draws waiting for one {}, dispatches waiting for one {}, skipped [{}], clamped {}, bind groups +{} ({} cached){decoding}, objects {} ({memory}), errors +{}",
             st.presents as f64 / secs,
             st.draws / frames,
             st.dispatches / frames,
@@ -1321,6 +1327,7 @@ impl Gpu {
             c.failed.load(std::sync::atomic::Ordering::Relaxed),
             c.compile_us.swap(0, std::sync::atomic::Ordering::Relaxed) as f64 / 1000.0,
             st.pending_skips,
+            st.late_computes,
             skipped.join(", "),
             st.clamped,
             st.bind_groups,

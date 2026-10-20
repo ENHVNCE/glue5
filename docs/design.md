@@ -400,7 +400,9 @@ Recipes include the program variants the renderer picks for what is bound
 (depth buffers read as textures, everywhere; 32-bit float textures read
 unfiltered, on GPUs that cannot filter them, such as the A15 and most
 Android GPUs). The light and foliage shaders use them, so they are recorded
-and prepared too.
+and prepared too. Compute pipelines are recorded and prepared alike (the
+shader, its variant, the formats of the storage textures bound); a dispatch
+whose pipeline is not ready makes it then, as its results are needed.
 
 Pipelines never recorded still compile in the background during play: a
 draw whose pipeline is not ready is skipped for that frame instead of

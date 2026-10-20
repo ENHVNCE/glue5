@@ -11,7 +11,7 @@ use wgpu::{TextureFormat, TextureViewDimension};
 use crate::exec::{Bound, Clear, Gpu, PassInfo, depth_attachment};
 use crate::format;
 use crate::objects::{NO_LAYOUT, Objects, View};
-use crate::pipeline::{self, Recipe};
+use crate::pipeline::{self, ComputeRecipe, Recipe};
 use crate::shader::{self, Kind, Program, Sample, Stage};
 use crate::uniforms::{Alloc, Uniforms};
 
@@ -1268,23 +1268,30 @@ impl Gpu {
         let Some(cs) = self.program(self.s.shader[2]) else {
             return self.skip("no compute shader");
         };
-        let (cs, _, proxies) = self.for_bound_formats(cs, Stage::Compute);
+        let (cs, float32, proxies) = self.for_bound_formats(cs, Stage::Compute);
         self.prepare_proxies(&cs, proxies);
         self.end_pass();
         // Storage textures are declared with a guessed format; the pipeline
         // needs the bound textures' formats.
-        let mut subs = Vec::new();
-        for b in &cs.bindings {
-            if let Kind::StorageTexture { format, .. } = &b.kind {
-                let id = self.s.uav[2][(b.binding - shader::UAVS) as usize];
-                if let Some(t) = self.objs.uav(id).filter(|v| !v.is_buffer).and_then(|v| self.objs.tex(v.res))
-                    && t.format != *format
-                {
-                    subs.push((b.binding, *format, t.format));
-                }
-            }
+        let subs = cs.storage_formats(|binding| {
+            let id = self.s.uav[2][(binding - shader::UAVS) as usize];
+            self.objs.uav(id).filter(|v| !v.is_buffer).and_then(|v| self.objs.tex(v.res)).map(|t| t.format)
+        });
+        // Recorded as render recipes are (see `pipeline`).
+        let recipe = ComputeRecipe {
+            cs: cs.hash,
+            variant: [float32 | cs.depth, cs.depth],
+            storage: subs.iter().map(|&(binding, _, format)| (binding, format)).collect(),
+        };
+        if !self.known_computes.contains(&recipe) {
+            self.known_computes.insert(recipe.clone());
+            self.computes_new.push(recipe);
         }
-        let Some(compute) = self.computes.get(&self.device, &cs, &subs) else {
+        // Made now if not made before the game or by a compile thread: the
+        // dispatch's results are needed.
+        let (compute, late) = self.computes.get(&self.compiler, &cs, &subs);
+        self.stats.late_computes += late as u64;
+        let Some(compute) = compute else {
             return self.skip("compute pipeline failed");
         };
         let Some((bg, _, offsets)) = self.bind_group(&compute.program, Stage::Compute, &compute.layout) else {

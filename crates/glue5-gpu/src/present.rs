@@ -1181,16 +1181,18 @@ impl Gpu {
             return;
         };
         let recipes = std::mem::take(&mut self.recipes_new);
+        let computes = std::mem::take(&mut self.computes_new);
         // The driver's cache only when pipelines were added.
         let compiled = self.compiler.compiled.load(std::sync::atomic::Ordering::Relaxed);
         let driver = (compiled != self.saved_compiled).then(|| (self.compiler.clone(), self.adapter.clone()));
         self.saved_compiled = compiled;
-        if recipes.is_empty() && driver.is_none() {
+        if recipes.is_empty() && computes.is_empty() && driver.is_none() {
             return;
         }
         self.pool.background(move || {
-            if !recipes.is_empty() {
-                append_recipes(&dir.join("pipelines.jsonl"), &recipes);
+            if !recipes.is_empty() || !computes.is_empty() {
+                let lines = recipes.iter().map(|r| r.to_json()).chain(computes.iter().map(|r| r.to_json()));
+                append_recipes(&dir.join("pipelines.jsonl"), lines);
             }
             if let Some((compiler, adapter)) = driver {
                 crate::save_pipeline_cache(&compiler, &adapter, &dir);
@@ -1200,9 +1202,9 @@ impl Gpu {
 }
 
 /// Recipes added to the file of those recorded, a line each.
-fn append_recipes(path: &Path, recipes: &[Arc<crate::pipeline::Recipe>]) {
+fn append_recipes(path: &Path, recipes: impl Iterator<Item = serde_json::Value>) {
     use std::io::Write;
-    let lines: String = recipes.iter().map(|r| r.to_json().to_string() + "\n").collect();
+    let lines: String = recipes.map(|r| r.to_string() + "\n").collect();
     let result = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
