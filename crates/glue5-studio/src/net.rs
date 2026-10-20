@@ -48,6 +48,8 @@ pub(crate) fn connect(s: S) {
             s.pairing.set(Pairing::Paired);
             s.pair_failed.set(false);
             if again {
+                // The game sends again the log it keeps: not shown twice.
+                s.rows.update(|r| r.retain(|(_, row)| !matches!(row, Row::Log(_))));
                 for path in s.tabs.with_untracked(|t| t.iter().filter(|t| !t.dirty).map(|t| t.path.clone()).collect::<Vec<_>>()) {
                     reload(s, &path);
                 }

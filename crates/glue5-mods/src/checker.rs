@@ -55,6 +55,14 @@ impl Checker {
         Ok(f(slot.as_mut().unwrap()))
     }
 
+    /// The file `name` is gone (deleted, renamed): out of the checker, if
+    /// there is one (a `require` of it no longer checks).
+    pub fn forget(name: &str) {
+        if let Some(c) = crate::lock(&CHECKER).as_mut() {
+            c.set(name, None);
+        }
+    }
+
     /// Drops the checker and its memory.
     pub fn release() {
         crate::lock(&CHECKER).take();

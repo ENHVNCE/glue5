@@ -71,7 +71,12 @@ pub fn write(path: &str, text: &str) -> Result<(), String> {
     if let Some(parent) = p.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{path}: {e}"))?;
     }
-    let tmp = p.with_extension("glue5-tmp");
+    // Hidden (not listed) and its own: two writes at once (the Studio and
+    // an agent), or of `a.luau` and `a.json`, never share one.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let file = p.file_name().map_or_else(Default::default, |f| f.to_string_lossy().into_owned());
+    let tmp = p.with_file_name(format!(".{file}.{n}.glue5-tmp"));
     std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, &p)).map_err(|e| format!("{path}: {e}"))?;
     crate::changed(path);
     crate::refresh();
@@ -81,6 +86,7 @@ pub fn write(path: &str, text: &str) -> Result<(), String> {
 pub fn delete(path: &str) -> Result<(), String> {
     let p = resolve(path)?;
     std::fs::remove_file(&p).map_err(|e| format!("{path}: {e}"))?;
+    crate::checker::Checker::forget(path);
     crate::changed(path);
     crate::refresh();
     Ok(())
@@ -92,6 +98,7 @@ pub fn rename(from: &str, to: &str) -> Result<(), String> {
         return Err(format!("{to} exists"));
     }
     std::fs::rename(&a, &b).map_err(|e| format!("{from}: {e}"))?;
+    crate::checker::Checker::forget(from);
     crate::changed(from);
     crate::changed(to);
     crate::refresh();
@@ -219,19 +226,28 @@ pub fn import(zip: &[u8], hint: &str) -> Result<String, String> {
         .map(|i| if i == 1 { base.clone() } else { format!("{base}-{i}") })
         .find(|n| !dir.join(n).exists())
         .unwrap();
-    for (n, data) in &files {
-        let rel = format!("{name}/{}", strip(n));
-        let path = resolve(&rel)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("{rel}: {e}"))?;
+    let written = (|| {
+        for (n, data) in &files {
+            let rel = format!("{name}/{}", strip(n));
+            let path = resolve(&rel)?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("{rel}: {e}"))?;
+            }
+            std::fs::write(&path, data).map_err(|e| format!("{rel}: {e}"))?;
         }
-        std::fs::write(&path, data).map_err(|e| format!("{rel}: {e}"))?;
-    }
-    // Code from elsewhere starts when the player says so.
-    let mut info = info(&name);
-    if info.autostart {
-        info.autostart = false;
-        set_info(&name, &info)?;
+        // Code from elsewhere starts when the player says so.
+        let mut info = info(&name);
+        if info.autostart {
+            info.autostart = false;
+            set_info(&name, &info)?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = written {
+        // Not half a mod (which could start with the game): the folder
+        // is new, made here.
+        let _ = std::fs::remove_dir_all(dir.join(&name));
+        return Err(e);
     }
     crate::changed(&format!("{name}/"));
     crate::refresh();

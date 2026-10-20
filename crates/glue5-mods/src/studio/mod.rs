@@ -18,7 +18,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub use api::GUIDE;
 
@@ -51,7 +51,12 @@ impl Studio {
                 if stopping.load(Ordering::Acquire) {
                     break;
                 }
-                let Ok(stream) = stream else { continue };
+                let Ok(stream) = stream else {
+                    // Out of descriptors, or a socket the system took back
+                    // (iOS, in the background): not a busy loop meanwhile.
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                };
                 // A thread each, a few at most (a browser opens about six).
                 if shared.clients.fetch_add(1, Ordering::AcqRel) >= MAX_CLIENTS {
                     shared.clients.fetch_sub(1, Ordering::AcqRel);
@@ -190,8 +195,9 @@ const MAX_BODY: usize = 8 << 20;
 impl Server {
     fn serve(&self, stream: TcpStream) -> std::io::Result<()> {
         stream.set_nodelay(true)?;
-        stream.set_read_timeout(Some(Duration::from_secs(60)))?;
-        let mut reader = BufReader::new(stream.try_clone()?);
+        // A client that stops reading lets go of its connection too.
+        stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+        let mut reader = BufReader::new(Timed { stream: stream.try_clone()?, until: None });
         let mut out = stream;
         loop {
             if self.stop.load(Ordering::Acquire) {
@@ -341,7 +347,50 @@ fn same_origin(request: &Request) -> bool {
     }
 }
 
-fn read_request(reader: &mut BufReader<TcpStream>) -> std::io::Result<Option<Request>> {
+/// A connection read with a deadline: a request's head comes whole within
+/// [`HEAD_TIME`] of its first byte (one byte now and then would otherwise
+/// hold a connection, and the few there are, for ever).
+struct Timed {
+    stream: TcpStream,
+    until: Option<Instant>,
+}
+
+/// How long a connection may wait for its next request, and take to send
+/// one's head.
+const IDLE: Duration = Duration::from_secs(60);
+const HEAD_TIME: Duration = Duration::from_secs(10);
+
+impl Read for Timed {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let wait = match self.until {
+            Some(until) => match until.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) {
+                Some(left) => left.min(IDLE),
+                None => return Err(std::io::ErrorKind::TimedOut.into()),
+            },
+            None => IDLE,
+        };
+        self.stream.set_read_timeout(Some(wait))?;
+        self.stream.read(buf)
+    }
+}
+
+fn read_request(reader: &mut BufReader<Timed>) -> std::io::Result<Option<Request>> {
+    // Idle until the request starts; then its head within the deadline.
+    reader.get_mut().until = None;
+    if reader.fill_buf()?.is_empty() {
+        return Ok(None);
+    }
+    reader.get_mut().until = Some(Instant::now() + HEAD_TIME);
+    let head = read_head(reader);
+    reader.get_mut().until = None;
+    let head = match head? {
+        Some(head) => head,
+        None => return Ok(None),
+    };
+    parse_request(&head)
+}
+
+fn read_head(reader: &mut BufReader<Timed>) -> std::io::Result<Option<Vec<u8>>> {
     let mut head = Vec::new();
     loop {
         let start = head.len();
@@ -354,12 +403,15 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> std::io::Result<Option<Req
             return Err(std::io::Error::other("request head too large"));
         }
         if head[start..] == *b"\r\n" || head[start..] == *b"\n" {
-            break;
+            return Ok(Some(head));
         }
     }
+}
+
+fn parse_request(head: &[u8]) -> std::io::Result<Option<Request>> {
     let mut headers = [httparse::EMPTY_HEADER; 64];
     let mut parsed = httparse::Request::new(&mut headers);
-    if !parsed.parse(&head).map_err(std::io::Error::other)?.is_complete() {
+    if !parsed.parse(head).map_err(std::io::Error::other)?.is_complete() {
         return Err(std::io::Error::other("incomplete request"));
     }
     let target = parsed.path.unwrap_or("/").to_string();
@@ -461,12 +513,13 @@ fn accept(mut out: TcpStream, request: &Request) -> std::io::Result<Socket> {
     Ok(tungstenite::WebSocket::from_raw_socket(out, tungstenite::protocol::Role::Server, Some(config)))
 }
 
-/// A message, or none yet (the read timed out), or the end.
+/// A message, or none yet (the read timed out), or the end. Other frames
+/// (a pong) come as an empty message: the client is still there.
 pub(crate) fn receive(ws: &mut Socket) -> Result<Option<String>, ()> {
     match ws.read() {
         Ok(tungstenite::Message::Text(t)) => Ok(Some(t.to_string())),
         Ok(tungstenite::Message::Close(_)) => Err(()),
-        Ok(_) => Ok(None),
+        Ok(_) => Ok(Some(String::new())),
         Err(tungstenite::Error::Io(e))
             if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) =>
         {

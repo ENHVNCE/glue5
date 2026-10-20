@@ -42,13 +42,15 @@ pub(crate) fn ModPage(s: S, name: String) -> impl IntoView {
     {
         let name = name.clone();
         let load = load.clone();
-        let saved = move || {
+        // A memo: the list comes again every second with the mods' CPU
+        // times, which must not reload (and wipe) fields being typed in.
+        let saved = Memo::new(move |_| {
             s.mods.with(|m| {
                 m.iter().find(|x| x.name == name).map(|x| (x.title.clone(), x.description.clone(), x.autostart, x.restart_on_save))
             })
-        };
+        });
         Effect::new(move |_| {
-            saved();
+            saved.track();
             load();
         });
     }
