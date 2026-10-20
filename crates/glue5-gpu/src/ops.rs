@@ -262,13 +262,20 @@ impl Gpu {
     // ---- textures read through copies ---------------------------------------------
 
     /// Refreshes the copies the program's textures are read through.
-    pub fn prepare_proxies(&mut self, prog: &Program) {
+    /// `slots`: the texture slots that may need one (see `proxy_slots`).
+    pub fn prepare_proxies(&mut self, prog: &Program, slots: u128) {
+        if slots == 0 {
+            return;
+        }
         let st = prog.stage as usize;
         for &i in &prog.textures {
             let b = &prog.bindings[i];
             let Kind::Texture { sample, .. } = b.kind else {
                 continue;
             };
+            if slots & 1 << (b.binding - shader::SRVS) == 0 {
+                continue;
+            }
             let Some(res) = self
                 .objs
                 .srv(self.s.srv[st][(b.binding - shader::SRVS) as usize])
@@ -296,6 +303,29 @@ impl Gpu {
                 self.refresh_proxy(res, kind);
             }
         }
+    }
+
+    /// The texture slots `prog` reads through copies with the textures bound
+    /// now (`prepare_proxies`' kinds): changes only with what makes
+    /// `for_bound_formats` pick another variant, which keeps it.
+    pub fn proxy_slots(&self, prog: &Program) -> u128 {
+        let st = prog.stage as usize;
+        let mut slots = 0;
+        for &i in &prog.textures {
+            let b = &prog.bindings[i];
+            let Kind::Texture { sample, .. } = b.kind else {
+                continue;
+            };
+            let slot = b.binding - shader::SRVS;
+            let tex = self.objs.srv(self.s.srv[st][slot as usize]).filter(|v| !v.is_buffer).and_then(|v| self.objs.tex(v.res));
+            let proxied = tex.is_some_and(|t| {
+                matches!((format::is_depth(t.format), sample), (true, Sample::Uint | Sample::Float | Sample::Sint) | (false, Sample::Depth))
+            });
+            if proxied {
+                slots |= 1 << slot;
+            }
+        }
+        slots
     }
 
     fn refresh_proxy(&mut self, id: u32, kind: usize) {

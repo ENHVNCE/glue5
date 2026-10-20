@@ -194,7 +194,9 @@ pub struct Gpu {
     /// `for_bound_formats`): the textures bound, the depth target, objects
     /// destroyed; and the variant last picked for that count.
     pub formats_seen: [u64; 3],
-    pub bound_formats: [Option<(u32, u64, Arc<Program>, u128)>; 3],
+    /// (program id, changes seen, variant, its 32-bit float textures, the
+    /// texture slots it reads through copies).
+    pub bound_formats: [Option<(u32, u64, Arc<Program>, u128, u128)>; 3],
     /// Render passes recorded since the last submit.
     pub chunk_passes: u32,
     /// When the work not yet handed over started gathering (see `idle`).

@@ -716,13 +716,15 @@ impl Gpu {
     /// either are non-filtering (nearest instead of linear). Also the
     /// textures unfilterable on such GPUs, whatever this one does: what
     /// recipes record (see `Recipe::for_device`).
-    fn for_bound_formats(&mut self, prog: Arc<Program>, stage: Stage) -> (Arc<Program>, u128) {
+    /// Also the slots of the textures it reads through copies (for
+    /// `prepare_proxies`, which then looks up only those).
+    fn for_bound_formats(&mut self, prog: Arc<Program>, stage: Stage) -> (Arc<Program>, u128, u128) {
         let st = stage as usize;
         // Nothing it depends on changed since the last draw with this program.
-        if let Some((id, seen, variant, float32)) = &self.bound_formats[st]
+        if let Some((id, seen, variant, float32, proxies)) = &self.bound_formats[st]
             && (*id, *seen) == (prog.id, self.formats_seen[st])
         {
-            return (variant.clone(), *float32);
+            return (variant.clone(), *float32, *proxies);
         }
         let (mut float32, mut depth) = (0u128, 0u128);
         for b in &prog.bindings {
@@ -745,8 +747,9 @@ impl Gpu {
         }
         let unfiltered = if self.caps.float32_filter { 0 } else { float32 };
         let variant = prog.for_bindings(&self.device, unfiltered, depth);
-        self.bound_formats[st] = Some((prog.id, self.formats_seen[st], variant.clone(), float32));
-        (variant, float32)
+        let proxies = self.proxy_slots(&variant);
+        self.bound_formats[st] = Some((prog.id, self.formats_seen[st], variant.clone(), float32, proxies));
+        (variant, float32, proxies)
     }
 
     /// Whether a depth texture can be sampled by this draw: not while it is
@@ -969,13 +972,13 @@ impl Gpu {
         {
             return self.skip("no input layout");
         }
-        let (vs, vs_float32) = self.for_bound_formats(vs, Stage::Vertex);
-        let (ps, ps_float32) = match ps {
+        let (vs, vs_float32, vs_proxies) = self.for_bound_formats(vs, Stage::Vertex);
+        let (ps, ps_float32, ps_proxies) = match ps {
             Some(ps) => {
-                let (ps, float32) = self.for_bound_formats(ps, Stage::Pixel);
-                (Some(ps), float32)
+                let (ps, float32, proxies) = self.for_bound_formats(ps, Stage::Pixel);
+                (Some(ps), float32, proxies)
             }
-            None => (None, 0),
+            None => (None, 0, 0),
         };
         // Same state, other textures, can mean another program variant
         // (or, here, only another recipe).
@@ -984,9 +987,9 @@ impl Gpu {
             self.last_programs = programs;
             self.pdirty = true;
         }
-        self.prepare_proxies(&vs);
+        self.prepare_proxies(&vs, vs_proxies);
         if let Some(ps) = &ps {
-            self.prepare_proxies(ps);
+            self.prepare_proxies(ps, ps_proxies);
         }
         if !self.ensure_pass() {
             return self.skip("no render target");
@@ -1265,8 +1268,8 @@ impl Gpu {
         let Some(cs) = self.program(self.s.shader[2]) else {
             return self.skip("no compute shader");
         };
-        let (cs, _) = self.for_bound_formats(cs, Stage::Compute);
-        self.prepare_proxies(&cs);
+        let (cs, _, proxies) = self.for_bound_formats(cs, Stage::Compute);
+        self.prepare_proxies(&cs, proxies);
         self.end_pass();
         // Storage textures are declared with a guessed format; the pipeline
         // needs the bound textures' formats.
