@@ -442,8 +442,13 @@ impl Ui {
     }
 
     fn show(&mut self, page: Option<Page>) {
-        if matches!(page, Some(Page::Credits | Page::Friends | Page::Servers | Page::Mods)) && self.page != page {
-            self.behind = self.page;
+        let secondary = |p: Option<Page>| matches!(p, Some(Page::Credits | Page::Friends | Page::Servers | Page::Mods));
+        if secondary(page) && self.page != page {
+            // One opened from another goes back where the first came from
+            // (else back would go between the two for ever).
+            if !secondary(self.page) {
+                self.behind = self.page;
+            }
             if page == Some(Page::Servers) {
                 self.servers.opened();
             }
@@ -550,10 +555,16 @@ impl Ui {
             }),
             // A finger is a touch (egui scrolls by dragging only on a touch
             // screen) and the pointer.
+            // A finger the system took (an edge gesture, a call) lets go too.
             Event::FingerDown { touch_id, finger_id, x, y, pressure, .. }
-            | Event::FingerUp { touch_id, finger_id, x, y, pressure, .. } => {
+            | Event::FingerUp { touch_id, finger_id, x, y, pressure, .. }
+            | Event::FingerCanceled { touch_id, finger_id, x, y, pressure, .. } => {
                 let pressed = matches!(event, Event::FingerDown { .. });
-                let phase = if pressed { egui::TouchPhase::Start } else { egui::TouchPhase::End };
+                let phase = match event {
+                    Event::FingerDown { .. } => egui::TouchPhase::Start,
+                    Event::FingerUp { .. } => egui::TouchPhase::End,
+                    _ => egui::TouchPhase::Cancel,
+                };
                 self.touch(*touch_id, *finger_id, phase, pos2(x * size.x, y * size.y), *pressure);
                 self.pointer_to(pos2(x * size.x, y * size.y));
                 self.events.push(egui::Event::PointerButton {
@@ -717,7 +728,8 @@ impl Ui {
         let below = if self.gear.is_some() { (30.0 + GEAR_RADIUS) * scale + 8.0 } else { 12.0 };
         self.toast_area = draw_toasts(&ctx, safe, below, &taken, &self.toasts, now);
         if !self.toasts.is_empty() {
-            self.repaint_in(Duration::from_millis(33));
+            // Through egui: its delay decides the next frame after this one.
+            ctx.request_repaint_after(Duration::from_millis(33));
         }
         // The sign, legible whatever the touch controls' opacity.
         taken.extend(self.toast_area);

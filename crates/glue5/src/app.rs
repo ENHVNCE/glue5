@@ -441,6 +441,9 @@ impl App {
             Event::Quit { .. } => return true,
             Event::GamepadAdded { which, .. } => self.pads.added(*which),
             Event::GamepadRemoved { which, .. } => self.pads.removed(*which),
+            // A phone's on-screen keyboard types keys too: not a keyboard
+            // taking over from the touch controls.
+            Event::KeyDown { .. } if MOBILE && self.typing.is_some() => {}
             Event::KeyDown { .. } | Event::MouseButtonDown { .. } | Event::GamepadButtonDown { .. } => {
                 self.touch_input = false
             }
@@ -455,7 +458,12 @@ impl App {
         }
         // The Siri Remote's touch surface moves like a pad's stick (SDL makes
         // the remote a gamepad); its touches are not on the screen.
-        if TV && matches!(event, Event::FingerDown { .. } | Event::FingerMotion { .. } | Event::FingerUp { .. }) {
+        if TV
+            && matches!(
+                event,
+                Event::FingerDown { .. } | Event::FingerMotion { .. } | Event::FingerUp { .. } | Event::FingerCanceled { .. }
+            )
+        {
             return false;
         }
         if let Event::FingerDown { x, y, .. } = event {
@@ -520,6 +528,7 @@ impl App {
             Event::FingerDown { finger_id, x, y, .. } => self.touch.finger_down(finger_id, x, y),
             Event::FingerMotion { finger_id, x, y, .. } => self.touch.finger_motion(finger_id, x, y),
             Event::FingerUp { finger_id, .. } => self.touch.finger_up(finger_id),
+            Event::FingerCanceled { finger_id, .. } => self.touch.finger_cancel(finger_id),
             _ => {}
         }
         if let Some(game) = &self.game
@@ -607,10 +616,10 @@ impl App {
                 }
                 self.touch_mouse = mouse;
             }
-            if self.settings.haptics {
-                haptics::rumble(glue5_runtime::input::rumble(0));
-            }
         }
+        // The game's rumble while the touch controls play; stopped as soon as
+        // they hide or haptics go off (a vibration plays until told to stop).
+        haptics::rumble(if show && self.settings.haptics { glue5_runtime::input::rumble(0) } else { (0, 0) });
 
         // While the touch controls are pad 0, a controller in slot 0 waits.
         let report = self.pads.update(self.ui.is_open(), show);
@@ -1004,6 +1013,12 @@ impl App {
         // window's handle to it already).
         #[cfg(target_os = "android")]
         self.replace_surface();
+        // iOS may take back a suspended app's listening sockets: the Studio
+        // starts again (on the next update) on a new one.
+        #[cfg(any(target_os = "ios", target_os = "tvos"))]
+        {
+            self.studio = None;
+        }
         self.ui.repaint();
         // The game's files may have been copied in meanwhile (Finder, the
         // Files app, adb). Not for a server, whose copy is found once ready.
@@ -1176,6 +1191,7 @@ impl App {
     /// volume: a rename).
     fn start_stream(&mut self, server: Option<String>) {
         let root = self.copy_root();
+        paths::keep_out_of_backups(&root);
         let old = self.stream.take().map(|old| {
             old.stop();
             old.root().to_owned()
@@ -1345,6 +1361,7 @@ impl App {
             .chain(paths::default_game_dirs())
             .chain(paths::download_dir(&self.user_dir));
         if let Some(dir) = candidates.filter(|d| is_game_dir(d)).find_map(|d| paths::canonical(&d).ok()) {
+            paths::keep_out_of_backups(&dir);
             self.settings.game_dir = Some(dir.clone());
             self.game_dir = Some(dir);
         }

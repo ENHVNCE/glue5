@@ -97,6 +97,8 @@ pub fn mods_dir(user_dir: &Path) -> PathBuf {
                 }
                 Err(e) => {
                     log::warn!("mods: moving {} to {}: {e}", old.display(), dir.display());
+                    // A partial copy would pass for the moved folder next time.
+                    let _ = std::fs::remove_dir_all(&dir);
                     return old;
                 }
             }
@@ -209,6 +211,24 @@ pub fn or_stream() -> &'static str {
 /// What the game folder holds.
 pub fn game_layout() -> String {
     format!("game/\n  b/{}/shaders/\n  data/", glue5_runtime::GAME_BUILD)
+}
+
+/// Keeps `dir` (the game's folder, tens of GB) out of the device's iCloud
+/// and computer backups, which take Documents whole by default. Set again
+/// each time: the mark goes with the folder when it is copied in anew (one
+/// not made yet is marked the next time).
+pub fn keep_out_of_backups(dir: &Path) {
+    #[cfg(target_os = "ios")]
+    if dir.is_dir() {
+        use objc2_foundation::{NSNumber, NSString, NSURL, NSURLIsExcludedFromBackupKey};
+        let url = NSURL::fileURLWithPath(&NSString::from_str(&dir.to_string_lossy()));
+        // SAFETY: the key takes an NSNumber holding a BOOL.
+        if let Err(e) = unsafe { url.setResourceValue_forKey_error(Some(&NSNumber::numberWithBool(true)), NSURLIsExcludedFromBackupKey) } {
+            log::warn!("{}: still in the backups: {e}", dir.display());
+        }
+    }
+    #[cfg(not(target_os = "ios"))]
+    let _ = dir;
 }
 
 pub fn canonical(dir: &Path) -> Result<PathBuf> {

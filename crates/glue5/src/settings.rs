@@ -282,7 +282,11 @@ impl Settings {
 
     pub fn save(&self, user_dir: &Path) {
         let json = serde_json::to_vec_pretty(self).expect("settings serialise");
-        if let Err(e) = std::fs::write(Self::file(user_dir), json) {
+        // Through a copy: a write cut short (disk full, the app killed)
+        // leaves the old file, not one that loads as the defaults.
+        let file = Self::file(user_dir);
+        let tmp = file.with_extension("json.tmp");
+        if let Err(e) = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &file)) {
             log::warn!("cannot save settings: {e}");
         }
     }

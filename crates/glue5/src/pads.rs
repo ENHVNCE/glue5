@@ -34,6 +34,8 @@ const TRIGGER_THRESHOLD: f32 = 0.5;
 /// Holding Back + Start (on one controller) this long opens the
 /// application's settings.
 const MENU_HOLD: Duration = Duration::from_millis(700);
+/// A rumble is sent for a second and renewed after this while it lasts.
+const RUMBLE_RENEW: Duration = Duration::from_millis(500);
 
 /// A direction held in the application's pages repeats after this, then
 /// at this interval.
@@ -69,7 +71,9 @@ pub struct Report {
 struct Slot {
     pad: sdl3::gamepad::Gamepad,
     id: JoystickId,
+    /// The rumble last sent, and when (SDL stops it when its duration ends).
     rumble: (u16, u16),
+    rumble_at: Instant,
     /// Since when Back + Start (or Back + RB) are held, and whether that
     /// hold has fired.
     combo: Option<(Instant, bool)>,
@@ -92,7 +96,7 @@ impl Pads {
             Ok(pad) => pad,
             Err(e) => return log::warn!("cannot open gamepad: {e}"),
         };
-        let slot = Slot { pad, id, rumble: (0, 0), combo: None, friends_combo: None };
+        let slot = Slot { pad, id, rumble: (0, 0), rumble_at: Instant::now(), combo: None, friends_combo: None };
         // SDL makes the Siri Remote a gamepad with one stick (its touch
         // surface) and a few buttons; controllers have two sticks.
         if TV && !slot.pad.has_axis(Axis::RightX) {
@@ -156,10 +160,14 @@ impl Pads {
                 }
             }
 
-            let rumble = input::rumble(i);
-            if rumble != slot.rumble {
+            // Pad 0's rumble is the touch player's while the touch controls
+            // have it (the phone's haptics then).
+            let rumble = if i == 0 && touch_is_pad0 { (0, 0) } else { input::rumble(i) };
+            // Sent on change, and renewed while it lasts: a request ends
+            // after its duration however long the game holds it.
+            if rumble != slot.rumble || (rumble != (0, 0) && slot.rumble_at.elapsed() >= RUMBLE_RENEW) {
                 slot.rumble = rumble;
-                // Refreshed on change; long enough to bridge frames.
+                slot.rumble_at = Instant::now();
                 let _ = slot.pad.set_rumble(rumble.0, rumble.1, if rumble == (0, 0) { 0 } else { 1000 });
             }
         }
