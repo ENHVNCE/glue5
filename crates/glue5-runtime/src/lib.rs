@@ -65,6 +65,19 @@ pub fn cores() -> usize {
     *CORES.get_or_init(|| std::thread::available_parallelism().map_or(4, |n| n.get()))
 }
 
+/// Writes `path` whole, through a copy beside it renamed over it: a write
+/// cut short (a full disk, the app killed) leaves the file as it was, not
+/// one cut short (a character, its stats, a job: the only copies there are).
+pub(crate) fn write_file(path: &std::path::Path, data: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    std::fs::write(&tmp, data)?;
+    std::fs::rename(&tmp, path)
+}
+
 /// The game directory's layout, as the whale5 server serves it: the engine's
 /// files under `data/`, this build's translated shaders under
 /// `b/<build>/shaders/`.

@@ -84,20 +84,26 @@ static BARS: Mutex<Option<HashMap<u32, Bar>>> = Mutex::new(None);
 /// Whether the manager's movie `id` is a bar of instructional buttons
 /// (the scripts', the pause menu's, the store's: their files end so).
 fn is_bar(mem: Mem, id: u32) -> bool {
+    movie_file(mem, id).is_some_and(|name| name.to_ascii_lowercase().ends_with(b"instructional_buttons"))
+}
+
+/// The file of movie `id` (its slot's, which a later movie may take).
+fn movie_file(mem: Mem, id: u32) -> Option<Vec<u8>> {
     let base = mem.u64(MOVIES);
     if base == 0 || id as u64 >= mem.u16(MOVIE_COUNT) as u64 {
-        return false;
+        return None;
     }
     let name = mem.bytes(base + id as u64 * MOVIE_SIZE + MOVIE_NAME, 64);
-    let name = &name[..name.iter().position(|&b| b == 0).unwrap_or(name.len())];
-    name.to_ascii_lowercase().ends_with(b"instructional_buttons")
+    Some(name[..name.iter().position(|&b| b == 0).unwrap_or(name.len())].to_vec())
 }
 
 /// Movies showing a cursor of their own (the browser's, a hacking
-/// screen's: their scripts do for keyboard and mouse only), and when a
-/// script last moved one (those calls come each frame it is used).
+/// screen's: their scripts do for keyboard and mouse only), with their
+/// files (a movie released with its cursor shown leaves its slot to
+/// another), and when a script last moved one (those calls come each
+/// frame it is used).
 struct Pointer {
-    shown: Vec<u32>,
+    shown: Vec<(u32, Option<Vec<u8>>)>,
     moved: Option<Instant>,
 }
 
@@ -118,9 +124,9 @@ fn pointer_method(mem: Mem, movie: u32, method: &[u8], args: u64, count: u32) {
     };
     if let Some(show) = show {
         let mut pointer = POINTER.lock().unwrap();
-        pointer.shown.retain(|&m| m != movie);
+        pointer.shown.retain(|(m, _)| *m != movie);
         if show {
-            pointer.shown.push(movie);
+            pointer.shown.push((movie, movie_file(mem, movie)));
         }
     }
 }
@@ -133,10 +139,11 @@ pub(crate) fn pointer_shown(env: *mut Env) -> bool {
     if pointer.moved.is_some_and(|t| t.elapsed() < Duration::from_millis(250)) {
         return true;
     }
+    let shows = |id: u32| pointer.shown.iter().any(|(m, file)| *m == id && movie_file(mem, id) == *file);
     !pointer.shown.is_empty()
         && (0..20)
             .map(|i| SCRIPT_MOVIES + i * SCRIPT_MOVIE_SIZE)
-            .any(|e| mem.u8(e + SCRIPT_MOVIE_DRAWN) == 1 && pointer.shown.contains(&(mem.i32(e) as u32)))
+            .any(|e| mem.u8(e + SCRIPT_MOVIE_DRAWN) == 1 && shows(mem.i32(e) as u32))
 }
 
 /// Hook for `CScaleformMgr::CallMethodInternal`: every method call of the

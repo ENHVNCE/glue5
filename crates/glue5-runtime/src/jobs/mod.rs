@@ -459,7 +459,7 @@ fn mission_file(m: Mem, files: u64, count: u32) -> Option<Vec<u8>> {
 fn save(id: &str, data: &[u8]) -> bool {
     let dir = own_dir();
     let path = dir.join(format!("{id}.json"));
-    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, data)) {
+    if let Err(e) = crate::write_file(&path, data) {
         log::error!("jobs: saving {}: {e}", path.display());
         return false;
     }

@@ -153,7 +153,8 @@ impl Vfs {
                 log::warn!("vfs: {path} asked of the file system while the game streams");
                 return Err(errno::NOENT);
             };
-            let rel = path.trim_start_matches("/game").trim_start_matches('/');
+            // (Once: `/game/gameconfig.xml` is `gameconfig.xml`.)
+            let rel = path.strip_prefix("/game").unwrap_or("").trim_start_matches('/');
             if rel.is_empty() {
                 return Ok(Host { path: game.clone(), read_only: true });
             }

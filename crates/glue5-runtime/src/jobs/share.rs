@@ -32,6 +32,10 @@ const WINDOW: usize = 16;
 const RETRY: Duration = Duration::from_millis(600);
 /// A download whose announcer says nothing for this long is dropped.
 const GIVE_UP: Duration = Duration::from_secs(30);
+/// Jobs downloaded at once, and at once from one player (the others wait
+/// for a later announcement).
+const DOWNLOADS_AT_ONCE: usize = 8;
+const DOWNLOADS_PER_PLAYER: usize = 2;
 
 struct Download {
     hash: [u8; 8],
@@ -149,12 +153,18 @@ fn on_announce(from: u32, d: &[u8]) {
         if !is_content_id(id) || size == 0 || size > MAX_FILE {
             continue;
         }
-        // The player's own jobs stay its own; a version already here stays.
-        if have.iter().any(|j| j.id == id && (j.kind == Kind::Own || j.hash == hash)) {
+        // The player's own jobs and the game's stay as they are; another
+        // version only of one shared before (a version already here stays).
+        if have.iter().any(|j| j.id == id && (j.kind != Kind::Shared || j.hash == hash)) {
             continue;
         }
+        // A few at a time, from each player and in all: each takes room
+        // for its pieces (MBs from announcements alone otherwise).
+        let full = downloads.len() >= DOWNLOADS_AT_ONCE
+            || downloads.values().filter(|d| d.from == from).count() >= DOWNLOADS_PER_PLAYER;
         match downloads.get_mut(id) {
             Some(d) if d.hash == hash => d.heard = Instant::now(),
+            None if full => {}
             _ => {
                 let count = size.div_ceil(PIECE_SIZE);
                 log::info!("jobs: {id} ({size} bytes) from {}", std::net::Ipv4Addr::from(from));
@@ -209,7 +219,7 @@ fn on_piece(from: u32, id: &[u8], hash: &[u8], index: usize, count: usize, piece
     }
     let dir = shared_dir();
     let path = dir.join(format!("{id}.json"));
-    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &data)) {
+    if let Err(e) = crate::write_file(&path, &data) {
         log::warn!("jobs: saving {}: {e}", path.display());
         return;
     }
