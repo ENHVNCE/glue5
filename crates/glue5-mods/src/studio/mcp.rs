@@ -120,6 +120,7 @@ fn call(name: &str, a: &Value) -> Value {
                 let mut out = json!({ "written": path });
                 if path.ends_with(".luau") || path.ends_with(".json") {
                     out["diagnostics"] = api::diagnostics(path, None);
+                    super::checker_used_by_agent();
                 }
                 // A running mod restarts with it, as from the Studio.
                 if crate::saved(path) {
@@ -131,7 +132,10 @@ fn call(name: &str, a: &Value) -> Value {
                 files::delete(s("path")?)?;
                 json!({ "deleted": s("path")? })
             }
-            "check" => api::diagnostics(s("path")?, None),
+            "check" => {
+                super::checker_used_by_agent();
+                api::diagnostics(s("path")?, None)
+            }
             "start_mod" | "restart_mod" => {
                 let mod_name = s("name")?;
                 if !crate::mods().iter().any(|m| m.name == mod_name) {

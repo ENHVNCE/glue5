@@ -156,6 +156,23 @@ fn checker_users(delta: i32) {
     }
 }
 
+/// A coding agent used the type checker (over MCP): it goes once unused
+/// for a while, as no editor (LSP) keeps it. Watched by one thread, made
+/// the first time.
+fn checker_used_by_agent() {
+    static WATCHING: std::sync::Once = std::sync::Once::new();
+    WATCHING.call_once(|| {
+        let _ = std::thread::Builder::new().name("studio checker".into()).spawn(|| {
+            loop {
+                std::thread::sleep(Duration::from_secs(30));
+                if CHECKER_USERS.load(Ordering::Acquire) == 0 {
+                    crate::checker::Checker::release_if_idle(Duration::from_secs(180));
+                }
+            }
+        });
+    });
+}
+
 struct Server {
     token: String,
     /// The server stopped (the Studio was turned off, or its code changed):

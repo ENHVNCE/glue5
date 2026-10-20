@@ -36,10 +36,13 @@ pub struct Checker {
 unsafe impl Send for Checker {}
 
 static CHECKER: Mutex<Option<Checker>> = Mutex::new(None);
+/// When it was last used.
+static USED: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
 impl Checker {
     /// Runs `f` with the checker, made the first time.
     pub fn with<R>(f: impl FnOnce(&mut Checker) -> R) -> Result<R, String> {
+        *crate::lock(&USED) = Some(std::time::Instant::now());
         let mut slot = crate::lock(&CHECKER);
         if slot.is_none() {
             let (started, before) = (std::time::Instant::now(), glue5_runtime::memory::footprint().0);
@@ -60,6 +63,14 @@ impl Checker {
     pub fn forget(name: &str) {
         if let Some(c) = crate::lock(&CHECKER).as_mut() {
             c.set(name, None);
+        }
+    }
+
+    /// Drops the checker when it has not been used for `idle` (for users
+    /// that do not say when they are done: coding agents over MCP).
+    pub fn release_if_idle(idle: std::time::Duration) {
+        if crate::lock(&USED).is_some_and(|t| t.elapsed() >= idle) {
+            Self::release();
         }
     }
 
