@@ -1024,7 +1024,9 @@ impl Gpu {
         let mut waiting = rustc_hash::FxHashSet::default();
         let mut held = Duration::ZERO;
         for d in std::mem::take(&mut self.decodes) {
-            let Some(t) = self.objs.tex(d.id) else { continue };
+            // Destroyed meanwhile (its decodes were dropped), or the id now
+            // names another texture.
+            let Some(t) = self.objs.tex(d.id).filter(|t| t.tex == d.texture) else { continue };
             let used_now = t.used.get() == self.epoch;
             let texels = if waiting.contains(&d.id) {
                 None
