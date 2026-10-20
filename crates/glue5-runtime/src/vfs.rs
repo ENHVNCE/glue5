@@ -147,6 +147,11 @@ impl Vfs {
     /// Maps an absolute engine path to the host.
     pub fn resolve(&self, path: &str) -> Result<Host, Errno> {
         let path = normalize(path);
+        // On Windows a component with a colon (`C:`, `file:stream`) would
+        // leave the roots once joined.
+        if cfg!(windows) && path.contains(':') {
+            return Err(errno::NOENT);
+        }
         if path == "/game" || path.starts_with("/game/") {
             let Some(game) = &self.game else {
                 // The engine's own device serves /game; the browser build had nothing here either.
