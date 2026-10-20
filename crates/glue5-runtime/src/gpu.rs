@@ -237,12 +237,19 @@ pub mod query {
 }
 
 /// Stores a query result into its slot in wasm memory: the 64-bit result at
-/// +8, then `seq` at +0 (written last), and wakes waiters.
+/// +8, then `seq` at +0 (written last), and wakes waiters, those on
+/// [`COMPLETED`] too.
 pub fn store_query(mem: Mem, at: u64, result: u64, seq: u32) {
     mem.set_u32(at + 8, result as u32);
     mem.set_u32(at + 12, (result >> 32) as u32);
     mem.store_notify(at, seq);
+    COMPLETED.fetch_add(1, Ordering::Release);
+    glue5_game::futex::notify(&COMPLETED, u32::MAX);
 }
+
+/// Queries completed (fences among them), counted: the render thread waits
+/// on it for its frame's fence (`waits.rs`).
+pub(crate) static COMPLETED: AtomicU32 = AtomicU32::new(0);
 
 /// A backend that renders nothing: it drains the ring and completes
 /// everything the engine waits on (fences, readbacks, queries).

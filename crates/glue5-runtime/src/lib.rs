@@ -8,6 +8,7 @@
 pub mod audio;
 mod audio_update;
 mod blips;
+mod clib;
 mod boot_screen;
 mod cloud;
 pub mod cpu;
@@ -16,6 +17,7 @@ mod draw_lists;
 mod dht;
 pub mod exit;
 mod files;
+mod frame_pace;
 pub mod friends;
 pub mod game_settings;
 mod gamer_tags;
@@ -47,6 +49,7 @@ mod trap_site;
 mod upscale;
 pub mod vfs;
 mod vnet;
+mod waits;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -311,6 +314,9 @@ pub fn start(config: Config, gpu: gpu::GpuBackend) -> Result<Game> {
     device_reset::hooks(&mut hooks);
     readback::hooks(&mut hooks);
     audio_update::hooks(&mut hooks);
+    frame_pace::hooks(&mut hooks);
+    clib::hooks(&mut hooks);
+    waits::hooks(&mut hooks);
     granular::hooks(&mut hooks);
     script_assets::hooks(&mut hooks);
     gamer_tags::hooks(&mut hooks);
