@@ -282,7 +282,7 @@ const HELP_TEXT_LEN: usize = 600;
 
 /// The player's controls (`CControlMgr`'s main player control): its inputs'
 /// values at +33704, 72 bytes each.
-const CONTROL: u64 = 24488864;
+pub(crate) const CONTROL: u64 = 24488864;
 const CONTROL_VALUES: u64 = 33704;
 const CONTROL_VALUE_SIZE: u64 = 72;
 /// `GetInputSource`'s device: the first pad (its mapping, whichever device
