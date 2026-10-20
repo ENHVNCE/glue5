@@ -1102,6 +1102,9 @@ impl Gpu {
         if self.last_stats.elapsed() >= Duration::from_secs(10) {
             self.total_presents += self.stats.presents;
             self.log_stats();
+            // Bind groups unused for 10-20 s, freed off the command thread.
+            let stale = self.binds.age();
+            self.pool.background(move || drop(stale));
         }
         if self.last_save.elapsed() >= Duration::from_secs(60) {
             self.save_caches();

@@ -21,7 +21,8 @@ const CHUNK_PASSES: u32 = 16;
 const ZERO_VB: u64 = 4096;
 
 /// Bind groups by the ids of what they hold (ids are never reused). Two
-/// generations: the oldest is dropped when the newest is full.
+/// generations: the oldest is dropped when the newest is full, or when it
+/// ages ([`BindCache::age`]).
 #[derive(Default)]
 pub struct BindCache {
     current: BindGroups,
@@ -55,6 +56,14 @@ impl BindCache {
 
     pub fn len(&self) -> usize {
         self.current.len() + self.old.len()
+    }
+
+    /// Starts a new generation: the groups no draw takes until the next one
+    /// go then. Most are of textures streamed out or areas left (~2 KB of
+    /// the driver's and wgpu's each; an iPhone kept ~27,000 for minutes).
+    /// Returns the generation dropped, to free elsewhere.
+    pub fn age(&mut self) -> BindGroups {
+        std::mem::replace(&mut self.old, std::mem::take(&mut self.current))
     }
 }
 
