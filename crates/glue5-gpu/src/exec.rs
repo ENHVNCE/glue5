@@ -1147,6 +1147,21 @@ impl Gpu {
         }
     }
 
+    /// Records the pending clears of `ids` (a command reads or writes them)
+    /// as passes of their own; the others stay pending, to become the load
+    /// operation of their texture's next pass.
+    pub fn flush_clears_of(&mut self, ids: &[u32]) {
+        if !self.clears.iter().any(|c| ids.contains(&c.tex)) {
+            return;
+        }
+        self.end_pass();
+        let (now, later) = std::mem::take(&mut self.clears).into_iter().partition(|c| ids.contains(&c.tex));
+        self.clears = later;
+        for clear in now {
+            self.record_clear(clear);
+        }
+    }
+
     /// Records the pending clears as passes of their own.
     pub fn flush_clears(&mut self) {
         if self.clears.is_empty() {

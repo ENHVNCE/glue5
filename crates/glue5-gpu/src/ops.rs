@@ -446,7 +446,7 @@ impl Gpu {
         let (dst, dst_sub, dx, dy, dz, src, src_sub, has_box) =
             (c.w(0), c.w(1), c.w(2), c.w(3), c.w(4), c.w(5), c.w(6), c.w(7) != 0);
         let bx = [c.w(8), c.w(9), c.w(10), c.w(11), c.w(12), c.w(13)]; // left top front right bottom back
-        self.flush_clears();
+        self.flush_clears_of(&[src, dst]);
         let epoch = self.epoch;
         if let (Some(s), Some(d)) = (self.objs.buf(src), self.objs.buf(dst)) {
             let (Some(sg), Some(dg)) = (s.gpu.clone(), d.gpu.clone()) else {
@@ -563,7 +563,7 @@ impl Gpu {
     }
 
     pub fn copy_resource(&mut self, dst: u32, src: u32) {
-        self.flush_clears();
+        self.flush_clears_of(&[src, dst]);
         let epoch = self.epoch;
         if let (Some(s), Some(d)) = (self.objs.buf(src), self.objs.buf(dst)) {
             if let (Some(sg), Some(dg)) = (s.gpu.clone(), d.gpu.clone()) {
@@ -617,7 +617,7 @@ impl Gpu {
     }
 
     pub fn resolve(&mut self, dst: u32, dst_sub: u32, src: u32, src_sub: u32) {
-        self.flush_clears();
+        self.flush_clears_of(&[src, dst]);
         let epoch = self.epoch;
         let (Some(s), Some(d)) = (self.objs.tex(src), self.objs.tex(dst)) else {
             return;
@@ -661,10 +661,10 @@ impl Gpu {
     }
 
     pub fn generate_mips(&mut self, srv: u32) {
-        self.flush_clears();
         let Some(id) = self.objs.srv(srv).map(|v| v.res) else {
             return;
         };
+        self.flush_clears_of(&[id]);
         let Some(t) = self.objs.tex(id) else { return };
         if t.mips < 2 || format::is_depth(t.format) || t.format.is_compressed() || t.is_3d() || t.samples > 1 {
             return;
@@ -731,12 +731,12 @@ impl Gpu {
     // ---- UAVs ------------------------------------------------------------------------------
 
     pub fn clear_uav(&mut self, id: u32, values: [u32; 4]) {
-        self.flush_clears();
         let zero = values == [0; 4];
         let Some(view) = self.objs.uav(id) else {
             return;
         };
         let (res, mip, is_buffer) = (view.res, view.a, view.is_buffer);
+        self.flush_clears_of(&[res]);
         let epoch = self.epoch;
         if is_buffer {
             let Some(b) = self.objs.buf(res) else { return };
@@ -881,7 +881,7 @@ impl Gpu {
         let bx = [c.w(3), c.w(4), c.w(5), c.w(6), c.w(7), c.w(8)];
         let (to, row_pitch, slice_pitch, is_buffer, size, flag) =
             (c.addr(9), c.w(11), c.w(12), c.w(13) != 0, c.w(14), c.addr(15));
-        self.flush_clears();
+        self.flush_clears_of(&[src]);
         self.waited_on = true;
         let epoch = self.epoch;
         let done = |flag: u64| Work::Store { at: flag, value: 0 };
