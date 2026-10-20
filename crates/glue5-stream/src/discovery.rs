@@ -314,6 +314,13 @@ pub(crate) mod responder {
 
         /// The addresses to give a querier at `from`: those on its network
         /// (a /24, as at home), else all.
+        /// Whether `from` is on one of this device's networks (its /24): a
+        /// network of public addresses (a campus's) is a local one too.
+        fn on_link(&self, from: SocketAddr) -> bool {
+            let IpAddr::V4(ip) = from.ip() else { return false };
+            self.addresses.iter().any(|a| a.octets()[..3] == ip.octets()[..3])
+        }
+
         fn near(&self, from: SocketAddr) -> Vec<Ipv4Addr> {
             let IpAddr::V4(ip) = from.ip() else { return self.addresses.clone() };
             let same: Vec<_> = self.addresses.iter().copied().filter(|a| a.octets()[..3] == ip.octets()[..3]).collect();
@@ -427,7 +434,7 @@ pub(crate) mod responder {
             // Only the local network's (RFC 6762, 11): a query from elsewhere
             // (spoofed, say) would make this a reflector, and learn the
             // device's name and addresses.
-            if !on_local_network(from.ip()) {
+            if !on_local_network(from.ip()) && !me.on_link(from) {
                 continue;
             }
             let Some(query) = Query::read(&buf[..n], from, me) else { continue };

@@ -79,12 +79,24 @@ fn lock(root: &Path) -> io::Result<Arc<File>> {
         Err(std::fs::TryLockError::WouldBlock) => {
             return Err(io::Error::other("the copy is in use by another Glue 5 (only one can use it at a time)"));
         }
+        // A file system without locks (some network shares): unlocked.
+        Err(std::fs::TryLockError::Error(e)) if e.kind() == io::ErrorKind::Unsupported || e.raw_os_error() == Some(libc_enolck()) => {
+            log::warn!("stream cache: {} cannot be locked ({e}): other instances are not kept off it", root.display());
+        }
         Err(std::fs::TryLockError::Error(e)) => return Err(e),
     }
     let f = Arc::new(f);
     locks.retain(|_, w| w.strong_count() > 0);
     locks.insert(key, Arc::downgrade(&f));
     Ok(f)
+}
+
+/// ENOLCK, where there is one (no locks on the file system).
+fn libc_enolck() -> i32 {
+    #[cfg(unix)]
+    return libc::ENOLCK;
+    #[cfg(not(unix))]
+    return -1;
 }
 
 /// The lock file's name in a copy.
