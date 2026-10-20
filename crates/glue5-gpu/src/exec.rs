@@ -1340,14 +1340,17 @@ impl Gpu {
             log::info!("{}", crate::profile::report(&p.totals, frames));
         }
         // Shader modules are needed only to make pipelines: idle ones go,
-        // a few hundred at a time, dropped on a compile thread.
-        let mut idle = Vec::new();
-        self.library.take_idle_modules(30, 400, &mut idle);
-        self.computes.take_idle_modules(30, 400, &mut idle);
-        if !idle.is_empty() {
-            log::debug!("gpu: {} idle shader modules released", idle.len());
-            self.pool.background(move || drop(idle));
-        }
+        // a few hundred at a time, looked for (through thousands of
+        // programs) and dropped on a compile thread.
+        let (library, computes) = (self.library.clone(), self.computes.clone());
+        self.pool.background(move || {
+            let mut idle = Vec::new();
+            library.take_idle_modules(30, 400, &mut idle);
+            computes.take_idle_modules(30, 400, &mut idle);
+            if !idle.is_empty() {
+                log::debug!("gpu: {} idle shader modules released", idle.len());
+            }
+        });
         let (used, available) = glue5_runtime::memory::footprint();
         if let Some(used) = used {
             let more = available.map_or(String::new(), |a| format!(", {} MiB more allowed", a >> 20));
