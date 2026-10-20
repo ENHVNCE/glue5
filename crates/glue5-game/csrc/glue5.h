@@ -7,6 +7,15 @@
 
 #include "wasm-rt.h"
 
+/* Trap targets without the signal mask: no signal handler ever jumps to
+ * one (bounds are checked in the code, no guard pages), and saving it is a
+ * system call at every entry into wasm (natives, hooks calling the engine:
+ * ~170 ns each). siglongjmp takes a buffer saved either way. */
+#ifndef _WIN32
+#undef WASM_RT_SETJMP_TRAP_SETBUF
+#define WASM_RT_SETJMP_TRAP_SETBUF(buf) sigsetjmp(buf, 0)
+#endif
+
 /* One per wasm instance, i.e. per engine thread. Every import and hook
  * receives it. Mirrored by `glue5_game::Env`. */
 struct w2c_env {

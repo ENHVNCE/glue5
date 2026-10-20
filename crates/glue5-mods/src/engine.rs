@@ -32,6 +32,9 @@ pub(crate) fn hooks(h: &mut Hooks) {
     h.script_wait = Some(script_wait);
 }
 
+/// fwTimer's frame count, what GET_FRAME_COUNT returns (read here: every
+/// script's WAIT asks, every frame).
+const FRAME_COUNT: u64 = 12321252;
 /// The program registry's slots (`scrProgram::GetProgram`): 176 u64, and
 /// its free list's first slot (176: none left, where `Insert` traps).
 const PROGRAMS: u64 = 15406680;
@@ -166,7 +169,7 @@ impl Engine {
         }
         // Once a frame: threads the game ended itself (TERMINATE_THREAD, a
         // session that starts again) take their mods with them.
-        let frame = unsafe { natives::call_int(env, "GET_FRAME_COUNT") }.unwrap_or(0);
+        let frame = mem.i32(FRAME_COUNT);
         if frame != self.frame {
             self.frame = frame;
             self.spent = Duration::ZERO;
