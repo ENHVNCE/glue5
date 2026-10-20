@@ -9,10 +9,14 @@
 
 use std::sync::{Arc, Mutex};
 
-const CHUNK: u64 = 4 << 20;
-/// Chunks kept for reuse, at most: loading needs many at once, play few,
-/// and memory is scarce on phones.
-const KEEP: usize = 16;
+/// A chunk's size: each batch takes the one being filled with it, however
+/// little is in it (4-7 batches a frame), so chunks are small; a larger
+/// upload (a texture's top mips) takes a buffer of its own, in multiples of
+/// this, kept for the next ones of its size.
+pub const CHUNK: u64 = 1 << 20;
+/// Bytes of free chunks kept for reuse, at most: loading needs many at
+/// once, play few, and memory is scarce on phones.
+const KEEP: u64 = 32 << 20;
 
 /// Mapped chunks, ready to be written.
 pub type FreeChunks = Arc<Mutex<Vec<wgpu::Buffer>>>;
@@ -57,14 +61,18 @@ impl Uploads {
         if let Some((full, _)) = self.current.take() {
             self.used.push(full);
         }
+        // The smallest free one that fits, not twice the size needed (a
+        // texture's buffer is no chunk for small uploads).
+        let need = size.max(CHUNK).next_multiple_of(CHUNK);
         let reused = {
             let mut free = self.free.lock().unwrap();
-            free.iter().position(|b| b.size() >= size).map(|i| free.swap_remove(i))
+            let fits = free.iter().enumerate().filter(|(_, b)| b.size() >= size && b.size() <= 2 * need);
+            fits.min_by_key(|(_, b)| b.size()).map(|(i, _)| i).map(|i| free.swap_remove(i))
         };
         let buffer = reused.unwrap_or_else(|| {
             self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("upload staging"),
-                size: size.max(CHUNK).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT),
+                size: need,
                 usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: true,
             })
@@ -172,7 +180,7 @@ pub fn recycle(chunks: Vec<wgpu::Buffer>, free: &FreeChunks) {
         let (back, free) = (chunk.clone(), free.clone());
         chunk.slice(..).map_async(wgpu::MapMode::Write, move |r| {
             let mut free = free.lock().unwrap();
-            if r.is_ok() && free.len() < KEEP {
+            if r.is_ok() && free.iter().map(wgpu::Buffer::size).sum::<u64>() + back.size() <= KEEP {
                 free.push(back);
             } else {
                 back.destroy();

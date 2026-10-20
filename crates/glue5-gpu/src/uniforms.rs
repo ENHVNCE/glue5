@@ -95,7 +95,11 @@ impl Uniforms {
         for c in &mut self.sets[self.set] {
             if let Some((lo, hi)) = c.dirty.take() {
                 let hi = hi.next_multiple_of(4).min(CHUNK);
-                uploads.buffer(&c.buffer, lo as u64, &c.mirror[lo as usize..hi as usize]);
+                // In pieces that fit the staging chunks.
+                for at in (lo..hi).step_by(crate::uploads::CHUNK as usize) {
+                    let end = (at + crate::uploads::CHUNK as u32).min(hi);
+                    uploads.buffer(&c.buffer, at as u64, &c.mirror[at as usize..end as usize]);
+                }
             }
         }
     }
