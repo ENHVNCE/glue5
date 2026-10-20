@@ -55,6 +55,8 @@ pub struct Pads {
     previous: u16,
     /// The direction held in a page, and when it repeats next.
     repeat: Option<(u16, Instant)>,
+    /// The loop reads the controllers itself (see [`Pads::read_by_loop`]).
+    by_loop: bool,
 }
 
 /// What the pads did for the application this update.
@@ -82,7 +84,30 @@ struct Slot {
 
 impl Pads {
     pub fn new(subsystem: sdl3::GamepadSubsystem) -> Self {
-        Pads { subsystem, slots: Default::default(), remotes: Vec::new(), previous: 0, repeat: None }
+        Pads { subsystem, slots: Default::default(), remotes: Vec::new(), previous: 0, repeat: None, by_loop: false }
+    }
+
+    /// A controller is open.
+    pub fn any(&self) -> bool {
+        self.slots.iter().any(Option::is_some) || !self.remotes.is_empty()
+    }
+
+    /// Whether the application's loop reads the controllers itself (then
+    /// call [`Pads::read`] after each wait): while one is open, SDL reads it
+    /// every millisecond of the loop's waits otherwise, a twentieth of a
+    /// core on a page that does nothing.
+    pub fn read_by_loop(&mut self, by_loop: bool) {
+        if by_loop != self.by_loop {
+            self.by_loop = by_loop;
+            sdl3::hint::set("SDL_AUTO_UPDATE_JOYSTICKS", if by_loop { "0" } else { "1" });
+        }
+    }
+
+    /// Reads the controllers, when the loop does (their events follow).
+    pub fn read(&self) {
+        if self.by_loop {
+            self.subsystem.update();
+        }
     }
 
     pub fn added(&mut self, id: JoystickId) {

@@ -26,6 +26,9 @@ const SILENT: Duration = Duration::from_secs(70);
 pub fn run(mut ws: Socket, stop: &std::sync::atomic::AtomicBool) -> std::io::Result<()> {
     let mut docs: HashMap<String, String> = HashMap::new();
     let (mut heard, mut pinged) = (Instant::now(), Instant::now());
+    // Only the stop and the ping to look after between messages: no need
+    // to wake 20 times a second as a session does.
+    let _ = ws.get_ref().set_read_timeout(Some(Duration::from_secs(1)));
     loop {
         if stop.load(std::sync::atomic::Ordering::Acquire) {
             let _ = ws.close(None);

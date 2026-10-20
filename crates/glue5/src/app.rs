@@ -36,6 +36,9 @@ const GEAR_ALONE: f32 = 0.35;
 /// In the user directory: why the last game stopped, for the start page
 /// (gone once the game is started again).
 const FAILURE_FILE: &str = "last-failure.txt";
+
+/// How often the pages read the controllers, when the loop reads them.
+const PAD_READ: Duration = Duration::from_millis(16);
 /// How long the pointer waits to be captured once it should be (`App::pointer`).
 const CAPTURE_DELAY: Duration = Duration::from_millis(150);
 
@@ -424,14 +427,21 @@ impl App {
             // In the background no frame is drawn, so a repaint due would
             // never be taken: no busy loop for it (iOS: inactive under
             // Control Center or an alert, for as long as that lasts).
+            // Before the game on a desktop with a controller, the loop reads
+            // it (at the pages' pace) rather than SDL every millisecond.
+            let read_pads = !MOBILE && self.game.is_none() && self.pads.any();
+            self.pads.read_by_loop(read_pads);
             let wait = if self.game.is_some() {
                 Duration::from_millis(8)
             } else if self.lifecycle.background.load(Ordering::Relaxed) {
                 Duration::from_millis(250)
+            } else if read_pads {
+                self.ui.idle_for().min(PAD_READ)
             } else {
                 self.ui.idle_for()
             };
             let first = wait_event(&mut self.events, wait);
+            self.pads.read();
             let events: Vec<Event> = first.into_iter().chain(self.events.poll_iter()).collect();
             for event in events {
                 if self.event(event) {

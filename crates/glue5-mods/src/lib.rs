@@ -432,7 +432,9 @@ fn command(c: Command) {
 /// The log lines after `seq` (0: all kept), and the cursor to pass next.
 pub fn logs(seq: u64) -> (Vec<LogLine>, u64) {
     let s = crate::lock(&SHARED.state);
-    let lines: Vec<LogLine> = s.log.iter().filter(|l| l.seq > seq).cloned().collect();
+    // From the end: the lines are in order, and callers ask for the newest.
+    let new = s.log.iter().rev().take_while(|l| l.seq > seq).count();
+    let lines: Vec<LogLine> = s.log.iter().skip(s.log.len() - new).cloned().collect();
     (lines, s.next_seq - 1)
 }
 

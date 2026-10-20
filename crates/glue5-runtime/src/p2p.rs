@@ -72,6 +72,9 @@ const WAITING: u8 = 2;
 const PLAYING: u8 = 4;
 /// How often players greet each other (keeping the NATs' mappings open),
 /// and when a silent one is gone.
+/// The network thread's clock: the DHT's and the friends' ticks (nothing
+/// is due sooner; a datagram ends the wait at once).
+const TICK: Duration = Duration::from_millis(250);
 const KEEPALIVE: Duration = Duration::from_secs(2);
 const GONE: Duration = Duration::from_secs(20);
 /// How long an address is tried before giving up on it.
@@ -340,7 +343,7 @@ fn bind(ports: impl IntoIterator<Item = u16>) -> std::io::Result<UdpSocket> {
         match UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)) {
             Ok(socket) => {
                 socket.set_broadcast(true)?;
-                socket.set_read_timeout(Some(Duration::from_millis(50)))?;
+                socket.set_read_timeout(Some(TICK))?;
                 return Ok(socket);
             }
             Err(e) => error = e,
@@ -711,7 +714,7 @@ impl P2p {
                 }
             }
             let now = Instant::now();
-            if now - dht_ticked > Duration::from_millis(250) {
+            if now - dht_ticked >= TICK {
                 dht_ticked = now;
                 let mut out = dht::Output::default();
                 self.state.lock().unwrap().dht.tick(now, &mut out);
