@@ -56,8 +56,12 @@ fn run() -> Result<()> {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let root = manifest.parent().and_then(Path::parent).context("workspace root")?.to_path_buf();
     let out = PathBuf::from(env::var("OUT_DIR")?);
-    let tools =
-        env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|| root.join("target")).join("glue5-tools");
+    // (A relative target directory is cargo's, from the workspace root:
+    // build scripts run in their crate's directory.)
+    let tools = env::var_os("CARGO_TARGET_DIR")
+        .map(|t| root.join(t))
+        .unwrap_or_else(|| root.join("target"))
+        .join("glue5-tools");
 
     for path in ["build", "hooks.rs", "hooks", "csrc"] {
         println!("cargo:rerun-if-changed={}", manifest.join(path).display());
@@ -88,7 +92,8 @@ fn run() -> Result<()> {
     // OUT_DIR so every profile and target shares them and their objects.
     let wasm2c = tools.join("bin").join(format!("wasm2c{}", env::consts::EXE_SUFFIX));
     ensure!(wasm2c.exists(), "{} not found: run `mise run setup` first", wasm2c.display());
-    let tool_stamp = fs::read_to_string(tools.join("wasm2c.stamp")).unwrap_or_default();
+    let tool_stamp = fs::read_to_string(tools.join("wasm2c.stamp"))
+        .with_context(|| format!("{}: run `mise run setup` first", tools.join("wasm2c.stamp").display()))?;
     println!("cargo:rerun-if-changed={}", wasm2c.display());
     let gen_dir = tools.join("gen").join(&sha[..16]);
     let stamp_path = gen_dir.join("wasm2c.stamp");
@@ -100,11 +105,20 @@ fn run() -> Result<()> {
             .args(["--enable-threads", "-n", "game", &format!("--num-outputs={OUTPUTS}"), "-o"])
             .arg(tmp.join("game.c"))
             .arg(&wasm_path)
-            .status()?;
-        ensure!(status.success(), "wasm2c failed");
+            .status();
+        if !status.as_ref().is_ok_and(|s| s.success()) {
+            // Not left behind (a GB or more each time, a full disk likely).
+            let _ = fs::remove_dir_all(&tmp);
+            bail!("wasm2c failed: {status:?}");
+        }
         fs::write(tmp.join("wasm2c.stamp"), &tool_stamp)?;
-        let _ = fs::remove_dir_all(&gen_dir);
-        fs::rename(&tmp, &gen_dir)?;
+        if fs::read_to_string(&stamp_path).ok().as_deref() == Some(tool_stamp.as_str()) {
+            // Another build put the same there meanwhile (and may be reading it).
+            let _ = fs::remove_dir_all(&tmp);
+        } else {
+            let _ = fs::remove_dir_all(&gen_dir);
+            fs::rename(&tmp, &gen_dir)?;
+        }
     }
 
     // 3. Hooks and glue.
@@ -247,41 +261,49 @@ fn find_wasm(game_dir: &Path) -> Result<(String, PathBuf)> {
 
 /// Renames each hooked function's definition to `<symbol>_orig` in its
 /// file's text (`texts`, written as `game_N.hooked.c`, which replaces the
-/// original in the build).
+/// original in the build). One pass over each file: its functions' names
+/// looked up among the hooks (a search per hook took minutes).
 fn apply_hooks(hooks: &[codegen::Hook], sources: &[PathBuf], texts: &mut [Option<String>]) -> Result<()> {
-    let mut pending: Vec<&codegen::Hook> = hooks.iter().collect();
+    const PARAMS: &str = "(w2c_game* instance";
+    let mut pending: std::collections::HashMap<&str, &codegen::Hook> =
+        hooks.iter().map(|h| (h.symbol.as_str(), h)).collect();
     for (source, patched) in sources.iter().zip(texts.iter_mut()) {
         if pending.is_empty() {
             break;
         }
         let text = fs::read_to_string(source)?;
-        pending.retain(|hook| {
-            let needle = format!(" {}(w2c_game* instance", hook.symbol);
-            let current = patched.as_deref().unwrap_or(&text);
-            let Some(line_start) = current
-                .match_indices(&needle)
-                .map(|(i, _)| current[..i].rfind('\n').map_or(0, |n| n + 1))
-                .find(|&ls| {
-                    // A definition, not a declaration: its signature (on
-                    // one line, or wrapped over several) ends with `{`.
-                    let rest = &current[ls..];
-                    let end = rest.find(['{', ';']).unwrap_or(0);
-                    rest[end..].starts_with('{') && !rest.starts_with("static")
-                })
-            else {
-                return true;
-            };
-            let line_end = current[line_start..].find('\n').map_or(current.len(), |n| line_start + n);
-            let line = current[line_start..line_end].replacen(
-                &format!(" {}(", hook.symbol),
-                &format!(" {}_orig(", hook.symbol),
-                1,
-            );
-            *patched = Some(format!("{}{}{}", &current[..line_start], line, &current[line_end..]));
-            false
-        });
+        // Where each hooked definition's name ends (`_orig` goes there).
+        let mut renames = Vec::new();
+        for (at, _) in text.match_indices(PARAMS) {
+            let line_start = text[..at].rfind('\n').map_or(0, |n| n + 1);
+            let Some(space) = text[line_start..at].rfind(' ') else { continue };
+            let symbol = &text[line_start + space + 1..at];
+            if !pending.contains_key(symbol) {
+                continue;
+            }
+            // A definition, not a declaration: its signature (on one line,
+            // or wrapped over several) ends with `{`.
+            let rest = &text[line_start..];
+            let end = rest.find(['{', ';']).unwrap_or(0);
+            if rest[end..].starts_with('{') && !rest.starts_with("static") {
+                pending.remove(symbol);
+                renames.push(at);
+            }
+        }
+        if renames.is_empty() {
+            continue;
+        }
+        let mut out = String::with_capacity(text.len() + renames.len() * 5);
+        let mut from = 0;
+        for at in renames {
+            out.push_str(&text[from..at]);
+            out.push_str("_orig");
+            from = at;
+        }
+        out.push_str(&text[from..]);
+        *patched = Some(out);
     }
-    if let Some(hook) = pending.first() {
+    if let Some(hook) = hooks.iter().find(|h| pending.contains_key(h.symbol.as_str())) {
         bail!("hook `{}`: definition of {} not found in the wasm2c output", hook.field, hook.symbol);
     }
     Ok(())
