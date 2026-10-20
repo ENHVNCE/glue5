@@ -24,10 +24,12 @@ const ZERO_VB: u64 = 4096;
 /// generations: the oldest is dropped when the newest is full.
 #[derive(Default)]
 pub struct BindCache {
-    current: FxHashMap<Box<[u32]>, (wgpu::BindGroup, u64)>,
-    old: FxHashMap<Box<[u32]>, (wgpu::BindGroup, u64)>,
+    current: BindGroups,
+    old: BindGroups,
     serial: u64,
 }
+
+type BindGroups = FxHashMap<Box<[u32]>, (wgpu::BindGroup, u64)>;
 
 const BIND_GROUPS: usize = 16384;
 
@@ -41,13 +43,14 @@ impl BindCache {
         Some(v)
     }
 
-    fn insert(&mut self, key: &[u32], bg: wgpu::BindGroup) -> u64 {
-        if self.current.len() >= BIND_GROUPS {
-            self.old = std::mem::take(&mut self.current);
-        }
+    /// Returns its serial, and the generation dropped to make room, if one
+    /// was (thousands of bind groups: the caller drops them elsewhere).
+    fn insert(&mut self, key: &[u32], bg: wgpu::BindGroup) -> (u64, Option<BindGroups>) {
+        let dropped = (self.current.len() >= BIND_GROUPS)
+            .then(|| std::mem::replace(&mut self.old, std::mem::take(&mut self.current)));
         self.serial += 1;
         self.current.insert(key.into(), (bg, self.serial));
-        self.serial
+        (self.serial, dropped)
     }
 
     pub fn len(&self) -> usize {
@@ -237,9 +240,7 @@ impl Gpu {
         if let Some(t) = self.objs.tex_mut(self.s.ds.tex) {
             let view = t.target_view(t.format, self.s.ds.mip, self.s.ds.slice);
             t.used.set(epoch);
-            if ro != 3 {
-                t.mark_written();
-            }
+            t.mark_aspects_written(ro & 1 == 0, ro & 2 == 0);
             let mut clear = take_clear(&mut clears, self.s.ds.tex, self.s.ds.mip, self.s.ds.slice);
             // A read-only aspect cannot be cleared as the pass loads it: the
             // clear goes first, as a pass of its own (D3D clears it anyway).
@@ -504,7 +505,11 @@ impl Gpu {
             Some((bg, serial)) => Some((bg, serial)),
             None => self.create_bind_group(prog, stage, layout, pack).map(|bg| {
                 self.stats.bind_groups += 1;
-                let serial = self.binds.insert(&key, bg.clone());
+                let (serial, dropped) = self.binds.insert(&key, bg.clone());
+                // Freed off the command thread (a hitch of tens of ms there).
+                if let Some(dropped) = dropped {
+                    self.pool.background(move || drop(dropped));
+                }
                 (bg, serial)
             }),
         };
@@ -707,6 +712,8 @@ impl Gpu {
     /// Whether a comparison (`texture_depth`) read is of the pass's depth
     /// attachment while that is written: unbound for the draw, as D3D11
     /// does (float reads go through a copy instead, see `for_bound_formats`).
+    /// With only depth read-only (stencil written) D3D would read it, but
+    /// wgpu cannot sample an attachment one of whose aspects is written.
     fn compares_depth_target(&self, srv: &View, sample: Sample, stage: Stage) -> bool {
         sample == Sample::Depth
             && self.pass.is_some()
@@ -743,7 +750,7 @@ impl Gpu {
     fn reads_target(&self, prog: &Program, stage: Stage, slot: u32, srv: &View, dim: TextureViewDimension) -> bool {
         let hit = stage != Stage::Compute && self.is_target(srv, dim);
         if hit {
-            crate::log_once(&format!("srvrt{}{slot}", prog.label), || {
+            crate::log_once_for("srvrt", u64::from(prog.id) << 8 | u64::from(slot), || {
                 format!(
                     "{}: t{slot} reads a render target of its pass: unbound for the draw, as D3D11 does",
                     prog.label

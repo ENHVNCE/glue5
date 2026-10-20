@@ -986,12 +986,14 @@ impl Gpu {
     /// A texture's regions go in the order they came.
     fn finish_decodes(&mut self) {
         let mut later: Vec<Decode> = Vec::new();
+        // The textures with a region waiting (a set: hundreds wait at times).
+        let mut waiting = rustc_hash::FxHashSet::default();
         for d in std::mem::take(&mut self.decodes) {
             let Some(t) = self.objs.tex(d.id).filter(|t| t.tex == d.texture) else {
                 continue; // destroyed meanwhile
             };
             let used_now = t.used.get() == self.epoch;
-            let texels = if later.iter().any(|l| l.texture == d.texture) {
+            let texels = if waiting.contains(&d.id) {
                 None
             } else if used_now {
                 let Ok(texels) = d.data.recv() else { continue };
@@ -1004,6 +1006,7 @@ impl Gpu {
                 }
             };
             let Some(texels) = texels else {
+                waiting.insert(d.id);
                 later.push(d);
                 continue;
             };

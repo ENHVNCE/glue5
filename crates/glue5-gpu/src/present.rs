@@ -1184,7 +1184,10 @@ impl Gpu {
         }
         let compiled = self.compiler.compiled.load(std::sync::atomic::Ordering::Relaxed);
         if compiled != self.saved_compiled {
-            crate::save_pipeline_cache(&self.compiler, &self.adapter, &dir);
+            // Off the command thread: the driver's cache is megabytes to get
+            // and write (the ring stood still meanwhile).
+            let (compiler, adapter) = (self.compiler.clone(), self.adapter.clone());
+            self.pool.background(move || crate::save_pipeline_cache(&compiler, &adapter, &dir));
             self.saved_compiled = compiled;
         }
     }

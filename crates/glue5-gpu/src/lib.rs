@@ -164,6 +164,9 @@ fn pipeline_cache_name(info: &wgpu::AdapterInfo) -> String {
 /// Writes the driver's pipeline cache for the next run (Vulkan; Metal keeps
 /// its own): the whole cache, megabytes, so only when pipelines were added.
 fn save_pipeline_cache(compiler: &pipeline::Compiler, adapter: &wgpu::Adapter, dir: &std::path::Path) {
+    // One at a time (they share the temporary file).
+    static SAVING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = SAVING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(cache) = &compiler.cache
         && let Some(data) = cache.get_data()
     {
@@ -463,11 +466,26 @@ fn init(ring: GpuRing, settings: Settings, screen: Option<Screen>) -> Result<exe
     })
 }
 
+/// [`log_once`] for a kind of message about thing `id` (a program's):
+/// nothing allocated for one said before (callers come at every draw).
+pub(crate) fn log_once_for(kind: &'static str, id: u64, msg: impl FnOnce() -> String) {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    static SEEN: Mutex<Option<HashSet<(&'static str, u64)>>> = Mutex::new(None);
+    if SEEN.lock().unwrap().get_or_insert_default().insert((kind, id)) {
+        log::warn!("gpu: {}", msg());
+    }
+}
+
 pub(crate) fn log_once(key: &str, msg: impl FnOnce() -> String) {
     use std::collections::HashSet;
     use std::sync::Mutex;
     static SEEN: Mutex<Option<HashSet<String>>> = Mutex::new(None);
-    if SEEN.lock().unwrap().get_or_insert_default().insert(key.to_owned()) {
+    // (Some callers come at every draw: no copy of a key seen before.)
+    let mut seen = SEEN.lock().unwrap();
+    let seen = seen.get_or_insert_default();
+    if !seen.contains(key) {
+        seen.insert(key.to_owned());
         log::warn!("gpu: {}", msg());
     }
 }

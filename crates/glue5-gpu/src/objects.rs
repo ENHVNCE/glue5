@@ -91,6 +91,20 @@ impl Tex {
             p.dirty = true;
         }
     }
+
+    /// A pass writes these aspects of it (a depth target): the copies of
+    /// the others stay good (a pass with depth read-only redid its copy at
+    /// every draw that read it, breaking the pass each time).
+    pub fn mark_aspects_written(&mut self, depth: bool, stencil: bool) {
+        // Proxies: depth as float, stencil as uint, float as depth.
+        for (p, written) in self.proxies.iter_mut().zip([depth, stencil, true]) {
+            if let Some(p) = p
+                && written
+            {
+                p.dirty = true;
+            }
+        }
+    }
 }
 
 pub struct Buf {

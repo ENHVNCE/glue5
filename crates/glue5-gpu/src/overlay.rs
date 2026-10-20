@@ -18,6 +18,8 @@ struct Frame {
     /// Texture changes accumulate until a present applies them.
     textures: TexturesDelta,
     pixels_per_point: f32,
+    /// Submitted since the renderer last took it.
+    waiting: bool,
 }
 
 impl Drop for Frame {
@@ -34,10 +36,18 @@ impl Overlay {
         frame.primitives = Arc::new(primitives);
         frame.textures.append(textures);
         frame.pixels_per_point = pixels_per_point;
+        frame.waiting = true;
+    }
+
+    /// A submission the renderer has not drawn yet: a newer one would only
+    /// replace it (the application can skip making one).
+    pub fn waiting(&self) -> bool {
+        self.0.lock().unwrap().waiting
     }
 
     fn take(&self) -> (Arc<Vec<ClippedPrimitive>>, TexturesDelta, f32) {
         let mut frame = self.0.lock().unwrap();
+        frame.waiting = false;
         (frame.primitives.clone(), std::mem::take(&mut frame.textures), frame.pixels_per_point)
     }
 }

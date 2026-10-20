@@ -287,7 +287,7 @@ impl Gpu {
                 _ => continue,
             };
             if t.samples > 1 {
-                crate::log_once(&format!("msproxy{}", prog.label), || {
+                crate::log_once_for("msproxy", u64::from(prog.id), || {
                     format!("{}: multisampled depth read as float: not supported", prog.label)
                 });
                 continue;

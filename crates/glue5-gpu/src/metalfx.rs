@@ -248,9 +248,9 @@ impl MetalFx {
         };
         let mtl = self.device.clone()?;
         let made = self.slots[Kind::Interpolator as usize].get(&mtl, device, key, false, commands)?;
-        // A new interpolator starts without history, as after a cut.
+        // A new interpolator starts without history, as after a cut (until
+        // a frame of it is encoded).
         let fresh = made.frames == 0;
-        made.frames = 1;
         let Effect::Interpolator(fx) = &made.fx else { return None };
         let (depth, motion) = (raw(&scene.depth)?, raw(&scene.motion)?);
         let output = &made.targets[0];
@@ -284,7 +284,9 @@ impl MetalFx {
             return None;
         }
         commands.push(encoder.finish());
-        Some(output.view.clone())
+        let view = output.view.clone();
+        made.frames = 1;
+        Some(view)
     }
 }
 

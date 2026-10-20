@@ -250,6 +250,9 @@ pub struct Library {
     /// Programs by hash: prepared once, shared by every shader object with
     /// that hash. `None`: not usable.
     programs: Mutex<HashMap<u64, Arc<OnceLock<Option<Arc<Program>>>>>>,
+    /// Hashes of the programs asked for by name (a scan of the index each
+    /// time otherwise: the pause map asks at every draw).
+    names: Mutex<HashMap<String, Option<u64>>>,
 }
 
 struct Entry {
@@ -282,7 +285,7 @@ impl Library {
             );
         }
         log::info!("gpu: {} translated shaders in {}", index.len(), dir.display());
-        Ok(Library { dir: dir.to_owned(), index, programs: Mutex::default() })
+        Ok(Library { dir: dir.to_owned(), index, programs: Mutex::default(), names: Mutex::default() })
     }
 
     pub fn label(&self, hash: u64) -> String {
@@ -291,7 +294,16 @@ impl Library {
 
     /// A named translated program, prepared once like engine-created shaders.
     pub fn named(&self, device: &wgpu::Device, label: &str, stage: Stage) -> Option<Arc<Program>> {
-        let hash = *self.index.iter().find(|(_, e)| e.label == label)?.0;
+        let mut names = self.names.lock().unwrap();
+        let hash = match names.get(label) {
+            Some(&hash) => hash,
+            None => {
+                let hash = self.index.iter().find(|(_, e)| e.label == label).map(|(h, _)| *h);
+                names.insert(label.to_owned(), hash);
+                hash
+            }
+        }?;
+        drop(names);
         self.slot(hash).get_or_init(|| self.prepare(device, hash, stage)).clone()
     }
 
