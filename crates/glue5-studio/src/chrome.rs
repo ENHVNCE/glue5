@@ -20,8 +20,13 @@ pub(crate) fn TitleBar(s: S) -> impl IntoView {
             s.found.set(Vec::new());
             return;
         }
+        let asked = q.clone();
         request("natives.search", json!({ "query": q, "limit": 12 }), move |r| {
-            if let Ok(Value::Array(list)) = r {
+            // Only for the query still typed (one shortened or cleared since
+            // would show what it no longer asks for).
+            if let Ok(Value::Array(list)) = r
+                && s.query.get_untracked() == asked
+            {
                 s.found.set(list);
             }
         });

@@ -174,8 +174,11 @@ pub(crate) fn NativesView(s: S) -> impl IntoView {
             results.set(Vec::new());
             return;
         }
+        let asked = q.clone();
         request("natives.search", json!({ "query": q, "limit": 60 }), move |r| {
-            if let Ok(Value::Array(list)) = r {
+            if let Ok(Value::Array(list)) = r
+                && query.get_untracked() == asked
+            {
                 results.set(list);
             }
         });

@@ -93,17 +93,18 @@ pub(crate) unsafe extern "C" fn create_socket(
 
 /// Hook for `rage::netSocket::NativeBind()`.
 pub(crate) unsafe extern "C" fn native_bind(env: *mut Env, socket: u64) -> u32 {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
     static EPHEMERAL: AtomicU64 = AtomicU64::new(50000);
     let m = unsafe { Mem::of(env) };
     let mut port = m.u16(socket + SOCKET_PORT);
     if port == 0 {
         port = EPHEMERAL.fetch_add(1, Ordering::Relaxed) as u16;
     }
-    let handle = NEXT.fetch_add(1, Ordering::Relaxed);
+    // The lowest free, as a system's descriptors: the engine puts them in
+    // fd_sets of 1024 (a number past that would write past its set).
     let mut sockets = SOCKETS.lock().unwrap();
+    let handle = (1u32..).find(|h| !sockets.ports.contains_key(h)).unwrap();
     sockets.queues.entry(port).or_default();
-    sockets.ports.insert(handle as u32, port);
+    sockets.ports.insert(handle, port);
     drop(sockets);
     m.set_i64(socket + SOCKET_HANDLE, handle as i64);
     m.set_u8(socket + SOCKET_FLAGS, m.u8(socket + SOCKET_FLAGS) | FLAG_BROADCAST);

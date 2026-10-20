@@ -10,7 +10,7 @@
 //! job's header and its file at once).
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::{Job, Kind, MAX_FILE, add, fingerprint, is_content_id, jobs, parse_job, shared_dir};
@@ -180,12 +180,25 @@ fn on_announce(from: u32, d: &[u8]) {
 fn on_get(from: u32, id: &[u8], hash: &[u8], index: usize) {
     let Ok(id) = std::str::from_utf8(id) else { return };
     let Some(job) = shareable().into_iter().find(|j| j.id == id && j.hash == hash) else { return };
-    // A file of a few hundred KB at most, read again for each piece: the
-    // disk's cache keeps it.
-    let Ok(data) = std::fs::read(&job.path) else { return };
-    if fingerprint(&data) != job.hash {
-        return;
-    }
+    // Read and checked once, then kept while the pieces are asked for (up
+    // to 160 a second per player: reading and hashing the whole file for
+    // each held up the network thread).
+    static SERVING: Mutex<Option<(String, [u8; 8], Arc<Vec<u8>>)>> = Mutex::new(None);
+    let data = {
+        let mut serving = SERVING.lock().unwrap();
+        match &*serving {
+            Some((i, h, d)) if *i == job.id && *h == job.hash => d.clone(),
+            _ => {
+                let Ok(d) = std::fs::read(&job.path) else { return };
+                if fingerprint(&d) != job.hash {
+                    return;
+                }
+                let d = Arc::new(d);
+                *serving = Some((job.id.clone(), job.hash, d.clone()));
+                d
+            }
+        }
+    };
     let count = data.len().div_ceil(PIECE_SIZE);
     let Some(piece) = data.chunks(PIECE_SIZE).nth(index) else { return };
     let mut p = vec![PIECE];

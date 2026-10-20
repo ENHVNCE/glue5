@@ -22,7 +22,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 use anyhow::Result;
 
@@ -57,7 +57,38 @@ pub struct Cache {
     dirty: Mutex<Vec<u32>>,
     changed: AtomicBool,
     saving: Mutex<()>,
+    /// Held while the copy is open: another process on it (two instances
+    /// on a desktop) would evict, punch and save over this one's index.
+    _lock: Arc<File>,
 }
+
+/// The copy in `root` taken by this process, or an error if another
+/// process has it. Shared by this process's copies of it (a stream started
+/// again opens it while the stopped one still exists).
+fn lock(root: &Path) -> io::Result<Arc<File>> {
+    static LOCKS: Mutex<Option<HashMap<PathBuf, Weak<File>>>> = Mutex::new(None);
+    let key = root.canonicalize()?;
+    let mut locks = LOCKS.lock().unwrap();
+    let locks = locks.get_or_insert_default();
+    if let Some(f) = locks.get(&key).and_then(Weak::upgrade) {
+        return Ok(f);
+    }
+    let f = OpenOptions::new().create(true).write(true).truncate(false).open(root.join(LOCK))?;
+    match f.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            return Err(io::Error::other("the copy is in use by another Glue 5 (only one can use it at a time)"));
+        }
+        Err(std::fs::TryLockError::Error(e)) => return Err(e),
+    }
+    let f = Arc::new(f);
+    locks.retain(|_, w| w.strong_count() > 0);
+    locks.insert(key, Arc::downgrade(&f));
+    Ok(f)
+}
+
+/// The lock file's name in a copy.
+const LOCK: &str = ".glue5-lock";
 
 struct Slot {
     path: String,
@@ -95,6 +126,7 @@ impl Cache {
     /// The copy in `root` of the files of `catalog`.
     pub fn open(root: &Path, catalog: &Catalog) -> Result<Cache> {
         fs::create_dir_all(root)?;
+        let lock = lock(root)?;
         sys::raise_open_file_limit();
         let index = load_index(&root.join("index"));
         // A partial copy from before (its marker is written below): what it
@@ -163,6 +195,7 @@ impl Cache {
             dirty: Mutex::new(Vec::new()),
             changed: AtomicBool::new(true),
             saving: Mutex::new(()),
+            _lock: lock,
         };
         if cache.all_here() {
             cache.finish()?;
@@ -626,6 +659,10 @@ impl std::ops::Deref for Handle<'_> {
 
 /// Deletes the copy in `root`.
 pub fn clear(root: &Path) -> io::Result<()> {
+    // Not a copy another process uses.
+    if root.is_dir() {
+        let _taken = lock(root)?;
+    }
     match fs::remove_dir_all(root) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
         _ => Ok(()),
