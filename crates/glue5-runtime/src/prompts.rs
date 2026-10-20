@@ -207,7 +207,10 @@ fn bar_method(mem: Mem, movie: u32, method: &[u8], args: u64, count: u32) {
                     }
                     GFX_BOOL => clickable = mem.u8(value + 16) != 0,
                     GFX_STRING => {
-                        let text = c_str(mem, mem.u64(value + 16), 256);
+                        // A managed string (0x40) points at its text's pointer.
+                        let at = mem.u64(value + 16);
+                        let at = if mem.u8(value + 8) & 0x40 != 0 { mem.u64(at) } else { at };
+                        let text = c_str(mem, at, 256);
                         if text.starts_with("b_") || text.starts_with("t_") {
                             slot.icons.extend(text.split('%').filter(|t| !t.is_empty()).map(str::to_owned));
                         } else if slot.label.is_empty() {
@@ -290,7 +293,7 @@ const CONTROL_VALUE_SIZE: u64 = 72;
 const PAD: u32 = 0;
 /// `rage::ioSource` devices: a pad's button (parameter: its bit), analog
 /// button (its bit's index), axis (0x1000 + LX, LY, RX, RY; 0x1016.. the
-/// left stick's directions, 0x101A.. the right's).
+/// left stick's up, down, left, right, 0x101A.. the right's).
 const PAD_BUTTON: u32 = 9;
 const PAD_ANALOG: u32 = 11;
 const PAD_AXIS: u32 = 12;
@@ -308,10 +311,10 @@ unsafe fn input_pad(env: *mut Env, input: u32) -> Option<Pad> {
     match (device, parameter) {
         (PAD_BUTTON, bits) if bits != 0 && bits <= 0xFFFF => Some(Pad::Buttons(bits as u16)),
         (PAD_ANALOG, index) if index < 16 => Some(Pad::Buttons(1 << index)),
-        (PAD_AXIS, 0x1000 | 0x1016..=0x1017) => Some(stick(false, true, false)),
-        (PAD_AXIS, 0x1001 | 0x1018..=0x1019) => Some(stick(false, false, true)),
-        (PAD_AXIS, 0x1002 | 0x101A..=0x101B) => Some(stick(true, true, false)),
-        (PAD_AXIS, 0x1003 | 0x101C..=0x101D) => Some(stick(true, false, true)),
+        (PAD_AXIS, 0x1000 | 0x1018..=0x1019) => Some(stick(false, true, false)),
+        (PAD_AXIS, 0x1001 | 0x1016..=0x1017) => Some(stick(false, false, true)),
+        (PAD_AXIS, 0x1002 | 0x101C..=0x101D) => Some(stick(true, true, false)),
+        (PAD_AXIS, 0x1003 | 0x101A..=0x101B) => Some(stick(true, false, true)),
         _ => None,
     }
 }
