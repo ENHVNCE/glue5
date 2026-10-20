@@ -536,13 +536,12 @@ impl Passes {
         }
     }
 
-    /// `src` scaled into `rect` (x, y, width, height) of `target`, black around it.
+    /// `src` scaled into `rect` (x, y, width, height) of the pass's target.
     fn blit(
         &mut self,
         device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
+        pass: &mut wgpu::RenderPass<'_>,
         src: &wgpu::TextureView,
-        target: &wgpu::TextureView,
         format: TextureFormat,
         rect: (u32, u32, u32, u32),
     ) {
@@ -562,21 +561,20 @@ impl Passes {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
             ],
         });
-        draw_into(encoder, target, rect, &pipeline, &bg);
+        draw_in(pass, rect, &pipeline, &bg);
     }
 
     /// The upscaled scene `scene_up` with the HUD of `frame` over it, into
-    /// `rect` of `target` (see `COMPOSITE_WGSL`).
+    /// `rect` of the pass's target (see `COMPOSITE_WGSL`).
     #[cfg_attr(not(target_vendor = "apple"), allow(dead_code))]
     #[allow(clippy::too_many_arguments)]
     fn composite(
         &mut self,
         device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
+        pass: &mut wgpu::RenderPass<'_>,
         scene_up: &wgpu::TextureView,
         frame: &Present,
         scene: &wgpu::TextureView,
-        target: &wgpu::TextureView,
         format: TextureFormat,
         rect: (u32, u32, u32, u32),
     ) {
@@ -598,7 +596,7 @@ impl Passes {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&sampler) },
             ],
         });
-        draw_into(encoder, target, rect, &pipeline, &bg);
+        draw_in(pass, rect, &pipeline, &bg);
     }
 }
 
@@ -642,15 +640,13 @@ fn linear_sampler(device: &wgpu::Device) -> wgpu::Sampler {
     })
 }
 
-/// One full-screen triangle into `rect` of `target`, black around it.
-fn draw_into(
-    encoder: &mut wgpu::CommandEncoder,
-    target: &wgpu::TextureView,
+/// One full-screen triangle into `rect` of the pass's target.
+fn draw_in(
+    pass: &mut wgpu::RenderPass<'_>,
     (x, y, w, h): (u32, u32, u32, u32),
     pipeline: &wgpu::RenderPipeline,
     bg: &wgpu::BindGroup,
 ) {
-    let mut pass = begin_pass(encoder, target, wgpu::Color::BLACK);
     pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, bg, &[]);
@@ -908,25 +904,30 @@ impl Output {
         let size = (frame.texture.width(), frame.texture.height());
         let mut buffers = Vec::new();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("present") });
-        match src {
-            Some(p) => {
-                let rect = fit((p.width, p.height), size);
-                match scaled {
-                    Some(Scaled::Frame(view)) => self.passes.blit(device, &mut encoder, view, &target, format, rect),
-                    Some(Scaled::Scene(view)) => {
-                        let scene = p.scene.as_ref().unwrap().color.create_view(&wgpu::TextureViewDescriptor {
-                            format: Some(p.view.texture().format().remove_srgb_suffix()),
-                            ..Default::default()
-                        });
-                        self.passes.composite(device, &mut encoder, view, p, &scene, &target, format, rect);
-                    }
-                    None => self.passes.blit(device, &mut encoder, &p.view, &target, format, rect),
+        // The application's UI over it, in the same pass (its uploads go
+        // before it; a second pass would load and store the whole window
+        // again on tiling GPUs).
+        let overlay = self.overlay.prepare(device, queue, &mut encoder, format, [size.0, size.1]);
+        let mut pass = begin_pass(&mut encoder, &target, if src.is_some() { wgpu::Color::BLACK } else { BACKGROUND })
+            .forget_lifetime();
+        if let Some(p) = src {
+            let rect = fit((p.width, p.height), size);
+            match scaled {
+                Some(Scaled::Frame(view)) => self.passes.blit(device, &mut pass, view, format, rect),
+                Some(Scaled::Scene(view)) => {
+                    let scene = p.scene.as_ref().unwrap().color.create_view(&wgpu::TextureViewDescriptor {
+                        format: Some(p.view.texture().format().remove_srgb_suffix()),
+                        ..Default::default()
+                    });
+                    self.passes.composite(device, &mut pass, view, p, &scene, format, rect);
                 }
+                None => self.passes.blit(device, &mut pass, &p.view, format, rect),
             }
-            None => drop(begin_pass(&mut encoder, &target, BACKGROUND)),
         }
-        // The application's UI over it (its queue writes go before the submit).
-        self.overlay.draw(device, queue, &mut encoder, &target, format, [size.0, size.1]);
+        if let Some(overlay) = overlay {
+            self.overlay.render(&mut pass, overlay);
+        }
+        drop(pass);
         buffers.push(encoder.finish());
         buffers
     }

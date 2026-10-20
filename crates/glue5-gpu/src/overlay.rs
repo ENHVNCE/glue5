@@ -63,19 +63,19 @@ impl OverlayRenderer {
         OverlayRenderer { overlay, renderer: None }
     }
 
-    /// Draws the overlay into `target` (already holding the game's frame).
-    pub fn draw(
+    /// The latest submission's texture and buffer uploads, recorded into
+    /// `encoder` before the pass that [`OverlayRenderer::render`]s it.
+    pub fn prepare(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
         format: wgpu::TextureFormat,
         size: [u32; 2],
-    ) {
-        let (primitives, mut textures, pixels_per_point) = self.overlay.take();
+    ) -> Option<Prepared> {
+        let (primitives, textures, pixels_per_point) = self.overlay.take();
         if primitives.is_empty() && textures.is_empty() {
-            return;
+            return None;
         }
         if self.renderer.as_ref().is_none_or(|(f, _)| *f != format) {
             self.renderer = Some((format, egui_wgpu::Renderer::new(device, format, Default::default())));
@@ -89,25 +89,29 @@ impl OverlayRenderer {
         let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: size, pixels_per_point };
         if !primitives.is_empty() {
             renderer.update_buffers(device, queue, encoder, &primitives, &screen);
-            let mut pass = encoder
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("overlay"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: target,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                    })],
-                    ..Default::default()
-                })
-                .forget_lifetime();
-            renderer.render(&mut pass, &primitives, &screen);
         }
-        for id in &textures.free {
+        Some(Prepared { primitives, textures, screen })
+    }
+
+    /// Draws a prepared submission into `pass` (over the game's frame), then
+    /// frees the textures it no longer uses.
+    pub fn render(&mut self, pass: &mut wgpu::RenderPass<'static>, mut prepared: Prepared) {
+        let renderer = &mut self.renderer.as_mut().unwrap().1;
+        if !prepared.primitives.is_empty() {
+            renderer.render(pass, &prepared.primitives, &prepared.screen);
+        }
+        for id in &prepared.textures.free {
             renderer.free_texture(id);
         }
-        textures.clear();
+        prepared.textures.clear();
     }
+}
+
+/// A submission whose uploads are recorded, to draw.
+pub struct Prepared {
+    primitives: Arc<Vec<ClippedPrimitive>>,
+    textures: TexturesDelta,
+    screen: egui_wgpu::ScreenDescriptor,
 }
 
 #[cfg(test)]
