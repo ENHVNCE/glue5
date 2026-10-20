@@ -402,7 +402,8 @@ impl Gpu {
                         ps.map_or(0, |p| p.depth),
                     ],
                     hud_mask: ps.is_some_and(|p| p.hud_mask),
-                };
+                }
+                .canonical();
                 let cell = self.pipeline_for(Arc::new(recipe), vs.clone(), ps.cloned());
                 self.fast_pipes.insert(key.as_slice().into(), cell.clone());
                 cell

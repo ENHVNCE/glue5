@@ -374,7 +374,10 @@ shader pair, vertex layout, blend/depth/raster states and target formats, so
 they cannot all be enumerated, and the combinations appear during play.
 Every pipeline the game asks for is recorded
 (`<user dir>/cache/pipelines.jsonl`, with the vertex shader's input
-signature, which places the layout's elements).
+signature, which places the layout's elements). A recipe keeps only what
+its pipeline depends on (the state words it ignores are zeroed): engine
+states that differ elsewhere share one pipeline, about one in eight of the
+seed's.
 
 Before the game starts, Play compiles the known pipelines on every core: the
 app's seed (`crates/glue5-gpu/seed/pipelines.jsonl`, recipes merged from
