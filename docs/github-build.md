@@ -3,8 +3,10 @@
 GitHub builds the app for you, for free. You only need a GitHub account
 and your `game.wasm` file.
 
-> ⚠️ **One rule:** never press **Publish release**. Always press **Save
-> draft**. A draft is private: only you can see it.
+> ⚠️ **Two rules:** never press **Publish release**. Always press **Save
+> draft**. A draft is private: only you can see it. And never put
+> `game.wasm` in your copy's files (**Add file**, a commit): they are
+> public, and the build does not read it from there.
 
 ## The first time
 
