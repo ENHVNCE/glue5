@@ -147,13 +147,19 @@ impl Vfs {
     /// Maps an absolute engine path to the host.
     pub fn resolve(&self, path: &str) -> Result<Host, Errno> {
         let path = normalize(path);
+        // On Windows a component with a colon (`C:`, `file:stream`) would
+        // leave the roots once joined.
+        if cfg!(windows) && path.contains(':') {
+            return Err(errno::NOENT);
+        }
         if path == "/game" || path.starts_with("/game/") {
             let Some(game) = &self.game else {
                 // The engine's own device serves /game; the browser build had nothing here either.
                 log::warn!("vfs: {path} asked of the file system while the game streams");
                 return Err(errno::NOENT);
             };
-            let rel = path.trim_start_matches("/game").trim_start_matches('/');
+            // (Once: `/game/gameconfig.xml` is `gameconfig.xml`.)
+            let rel = path.strip_prefix("/game").unwrap_or("").trim_start_matches('/');
             if rel.is_empty() {
                 return Ok(Host { path: game.clone(), read_only: true });
             }
@@ -372,7 +378,13 @@ impl Vfs {
     }
 
     pub fn unlink(&self, path: &str) -> Result<(), Errno> {
-        fs::remove_file(self.writable(path)?).map_err(io_errno)
+        let host = self.writable(path)?;
+        // A folder is EISDIR, as on Linux (remove() then takes rmdir):
+        // macOS and Windows refuse it with a permission error.
+        if fs::symlink_metadata(&host).is_ok_and(|m| m.is_dir()) {
+            return Err(errno::ISDIR);
+        }
+        fs::remove_file(host).map_err(io_errno)
     }
 
     pub fn rmdir(&self, path: &str) -> Result<(), Errno> {

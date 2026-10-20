@@ -143,6 +143,9 @@ fi
 # A pristine copy of the pinned sources (LF, whatever core.autocrlf says),
 # then our patches on top.
 src=$tools/wabt-src
+# No stamp while the sources change: a build in between (or after this
+# stops half way) asks for setup instead of mixing old and new headers.
+rm -f "$tools/wasm2c.stamp"
 rm -rf "$src" && mkdir -p "$src"
 git -c core.autocrlf=input -C "$wabt" archive --format=tar HEAD | tar -x -C "$src"
 git -c core.autocrlf=input -C "$wabt/third_party/picosha2" archive --format=tar --prefix=third_party/picosha2/ HEAD |

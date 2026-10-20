@@ -262,13 +262,20 @@ impl Gpu {
     // ---- textures read through copies ---------------------------------------------
 
     /// Refreshes the copies the program's textures are read through.
-    pub fn prepare_proxies(&mut self, prog: &Program) {
+    /// `slots`: the texture slots that may need one (see `proxy_slots`).
+    pub fn prepare_proxies(&mut self, prog: &Program, slots: u128) {
+        if slots == 0 {
+            return;
+        }
         let st = prog.stage as usize;
         for &i in &prog.textures {
             let b = &prog.bindings[i];
             let Kind::Texture { sample, .. } = b.kind else {
                 continue;
             };
+            if slots & 1 << (b.binding - shader::SRVS) == 0 {
+                continue;
+            }
             let Some(res) = self
                 .objs
                 .srv(self.s.srv[st][(b.binding - shader::SRVS) as usize])
@@ -287,7 +294,7 @@ impl Gpu {
                 _ => continue,
             };
             if t.samples > 1 {
-                crate::log_once(&format!("msproxy{}", prog.label), || {
+                crate::log_once_for("msproxy", u64::from(prog.id), || {
                     format!("{}: multisampled depth read as float: not supported", prog.label)
                 });
                 continue;
@@ -296,6 +303,29 @@ impl Gpu {
                 self.refresh_proxy(res, kind);
             }
         }
+    }
+
+    /// The texture slots `prog` reads through copies with the textures bound
+    /// now (`prepare_proxies`' kinds): changes only with what makes
+    /// `for_bound_formats` pick another variant, which keeps it.
+    pub fn proxy_slots(&self, prog: &Program) -> u128 {
+        let st = prog.stage as usize;
+        let mut slots = 0;
+        for &i in &prog.textures {
+            let b = &prog.bindings[i];
+            let Kind::Texture { sample, .. } = b.kind else {
+                continue;
+            };
+            let slot = b.binding - shader::SRVS;
+            let tex = self.objs.srv(self.s.srv[st][slot as usize]).filter(|v| !v.is_buffer).and_then(|v| self.objs.tex(v.res));
+            let proxied = tex.is_some_and(|t| {
+                matches!((format::is_depth(t.format), sample), (true, Sample::Uint | Sample::Float | Sample::Sint) | (false, Sample::Depth))
+            });
+            if proxied {
+                slots |= 1 << slot;
+            }
+        }
+        slots
     }
 
     fn refresh_proxy(&mut self, id: u32, kind: usize) {
@@ -446,7 +476,7 @@ impl Gpu {
         let (dst, dst_sub, dx, dy, dz, src, src_sub, has_box) =
             (c.w(0), c.w(1), c.w(2), c.w(3), c.w(4), c.w(5), c.w(6), c.w(7) != 0);
         let bx = [c.w(8), c.w(9), c.w(10), c.w(11), c.w(12), c.w(13)]; // left top front right bottom back
-        self.flush_clears();
+        self.flush_clears_of(&[src, dst]);
         let epoch = self.epoch;
         if let (Some(s), Some(d)) = (self.objs.buf(src), self.objs.buf(dst)) {
             let (Some(sg), Some(dg)) = (s.gpu.clone(), d.gpu.clone()) else {
@@ -563,7 +593,7 @@ impl Gpu {
     }
 
     pub fn copy_resource(&mut self, dst: u32, src: u32) {
-        self.flush_clears();
+        self.flush_clears_of(&[src, dst]);
         let epoch = self.epoch;
         if let (Some(s), Some(d)) = (self.objs.buf(src), self.objs.buf(dst)) {
             if let (Some(sg), Some(dg)) = (s.gpu.clone(), d.gpu.clone()) {
@@ -617,7 +647,7 @@ impl Gpu {
     }
 
     pub fn resolve(&mut self, dst: u32, dst_sub: u32, src: u32, src_sub: u32) {
-        self.flush_clears();
+        self.flush_clears_of(&[src, dst]);
         let epoch = self.epoch;
         let (Some(s), Some(d)) = (self.objs.tex(src), self.objs.tex(dst)) else {
             return;
@@ -661,10 +691,10 @@ impl Gpu {
     }
 
     pub fn generate_mips(&mut self, srv: u32) {
-        self.flush_clears();
         let Some(id) = self.objs.srv(srv).map(|v| v.res) else {
             return;
         };
+        self.flush_clears_of(&[id]);
         let Some(t) = self.objs.tex(id) else { return };
         if t.mips < 2 || format::is_depth(t.format) || t.format.is_compressed() || t.is_3d() || t.samples > 1 {
             return;
@@ -731,12 +761,12 @@ impl Gpu {
     // ---- UAVs ------------------------------------------------------------------------------
 
     pub fn clear_uav(&mut self, id: u32, values: [u32; 4]) {
-        self.flush_clears();
         let zero = values == [0; 4];
         let Some(view) = self.objs.uav(id) else {
             return;
         };
         let (res, mip, is_buffer) = (view.res, view.a, view.is_buffer);
+        self.flush_clears_of(&[res]);
         let epoch = self.epoch;
         if is_buffer {
             let Some(b) = self.objs.buf(res) else { return };
@@ -881,7 +911,7 @@ impl Gpu {
         let bx = [c.w(3), c.w(4), c.w(5), c.w(6), c.w(7), c.w(8)];
         let (to, row_pitch, slice_pitch, is_buffer, size, flag) =
             (c.addr(9), c.w(11), c.w(12), c.w(13) != 0, c.w(14), c.addr(15));
-        self.flush_clears();
+        self.flush_clears_of(&[src]);
         self.waited_on = true;
         let epoch = self.epoch;
         let done = |flag: u64| Work::Store { at: flag, value: 0 };
@@ -895,13 +925,14 @@ impl Gpu {
             let from = if has_box { bx[0] as u64 } else { 0 };
             let len =
                 if has_box { (bx[3] - bx[0]) as u64 } else { (size as u64).min(bytes) }.min(bytes.saturating_sub(from));
-            let staging = self.staging.get(&self.device, len.next_multiple_of(4).max(4));
+            // Copies go 4 bytes at a time: from the word the box starts in.
+            let skip = from & 3;
+            let copied = (skip + len).next_multiple_of(4).max(4);
+            let staging = self.staging.get(&self.device, copied);
             self.objs.buf(src).unwrap().used.set(epoch);
-            self.encoder().copy_buffer_to_buffer(&g, base + (from & !3), &staging, 0, len.next_multiple_of(4).max(4));
-            self.maps.push((
-                staging,
-                Box::new(move |s| Work::Readback { staging: s, copy: Copy::Bytes { to, len: len as usize }, flag }),
-            ));
+            self.encoder().copy_buffer_to_buffer(&g, base + (from - skip), &staging, 0, copied);
+            let (skip, len) = (skip as usize, len as usize);
+            self.maps.push((staging, Box::new(move |s| Work::Readback { staging: s, copy: Copy::Bytes { to, skip, len }, flag })));
             return;
         }
         let Some(t) = self.objs.tex(src) else {
@@ -916,6 +947,13 @@ impl Gpu {
         let pick = match t.upload {
             format::Upload::Direct => None,
             format::Upload::A8 => Some(3),
+            format::Upload::Unorm16 => {
+                crate::log_once("rb-unorm16", || "readback of 16-bit normalized texels kept as half floats skipped".into());
+                if flag != 0 {
+                    self.works.push(done(flag));
+                }
+                return;
+            }
             format::Upload::Bc(_) => {
                 crate::log_once("rb-bc", || "readback of a decoded BC texture skipped".into());
                 if flag != 0 {

@@ -116,8 +116,12 @@ pub(crate) unsafe fn init_main_thread(env: *mut Env, pthread: u64) {
     let init = unsafe {
         exports::_emscripten_thread_init(env, pthread, 0, 1, 1, DEFAULT_PTHREAD_STACK, 0).and_then(|()| init_tls(env))
     };
+    // (Called by the engine: a panic would abort, with no message.)
     if let Err(trap) = init {
-        panic!("main thread init: {trap}");
+        crate::exit::fail(format!("the engine's main thread could not start ({trap})"));
+        loop {
+            std::thread::park();
+        }
     }
 }
 
@@ -131,10 +135,21 @@ unsafe fn init_tls(env: *mut Env) -> Result<(), Trap> {
 pub(crate) unsafe fn create(env: *mut Env, pthread: u64, start: u64, arg: u64) -> u32 {
     rt().threads.reap(env);
     let name = engine_name(rt().memory.mem(), arg);
+    // The sound's threads (the mixer, the audio engine feeding it) above the
+    // others: on a phone held to its efficiency cores (hot) they lost to the
+    // workers, and the mixer's 64 ms of queued sound ran out (dropouts).
+    // They take little (a third of an efficiency core). Not the render
+    // thread: with it above the workers, loading after a cutscene took 6-10 s.
+    // (Apple's classes; on Android interactive threads form the frames'
+    // performance hint session instead.)
+    let qos = match &name {
+        Some(n) if cfg!(target_vendor = "apple") && n.starts_with("[RAGE Audio]") => crate::qos::Qos::Interactive,
+        _ => crate::qos::Qos::Initiated,
+    };
     let spawned = thread::Builder::new()
         .name(name.unwrap_or_else(|| format!("pthread {pthread:#x}")))
         .stack_size(PTHREAD_STACK)
-        .spawn(move || run_pthread(pthread, start, arg));
+        .spawn(move || run_pthread(pthread, start, arg, qos));
     match spawned {
         Ok(_) => 0,
         Err(e) => {
@@ -162,11 +177,11 @@ fn engine_name(mem: crate::memory::Mem, arg: u64) -> Option<String> {
     (name.len() >= 3 && name.len() < 48).then(|| String::from_utf8_lossy(&name).into_owned())
 }
 
-fn run_pthread(pthread: u64, start: u64, arg: u64) {
+fn run_pthread(pthread: u64, start: u64, arg: u64, qos: crate::qos::Qos) {
     // Loading waits on the engine's workers and streaming threads: the render
     // thread and the mixer above them (interactive) made a black screen after
-    // a cutscene take 6-10 s instead of 1-2 on an iPhone 13 Pro.
-    crate::qos::set(crate::qos::Qos::Initiated);
+    // a cutscene take 6-10 s instead of 1-2 on an iPhone 13 Pro (see `create`).
+    crate::qos::set(qos);
     let env = new_env();
     let mem = rt().memory.mem();
     let result = (|| -> Result<(), Trap> {

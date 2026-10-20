@@ -114,13 +114,24 @@ impl Binding {
 }
 
 /// The constant buffers a stage reads, merged into one uniform struct at
-/// binding 0 (one dynamic offset per stage instead of up to 14 bindings).
+/// binding 0 (one dynamic offset per stage instead of up to 14 bindings),
+/// but for the largest (the bones, lighting, shadows): those keep their own
+/// binding (at their slot), copied once per version instead of into each
+/// draw's pack.
 #[derive(Clone, Debug)]
 pub struct Pack {
     /// (D3D slot, size, offset), by slot.
     pub members: Vec<PackMember>,
     pub size: u32,
+    /// Bound on their own (offset unused), by slot.
+    pub own: Vec<PackMember>,
 }
+
+/// Constant buffers this large get a binding of their own, at most this
+/// many a stage (a pipeline has two stages: its dynamic uniform buffers,
+/// with the packs, stay within the 8 every GPU has).
+pub const OWN_SIZE: u32 = 512;
+pub const OWN_MAX: usize = 3;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PackMember {
@@ -228,9 +239,10 @@ impl Modules {
     pub fn take_idle(&self, idle: u64, max: usize, out: &mut Vec<wgpu::ShaderModule>) {
         let now = now_secs();
         let mut map = self.0.lock().unwrap();
+        // (A module may have been used after `now`, while this waited.)
         let idle_keys: Vec<String> = map
             .iter()
-            .filter(|(_, (module, used))| module.is_some() && now - *used >= idle)
+            .filter(|(_, (module, used))| module.is_some() && now.saturating_sub(*used) >= idle)
             .map(|(k, _)| k.clone())
             .take(max.saturating_sub(out.len()))
             .collect();
@@ -249,6 +261,9 @@ pub struct Library {
     /// Programs by hash: prepared once, shared by every shader object with
     /// that hash. `None`: not usable.
     programs: Mutex<HashMap<u64, Arc<OnceLock<Option<Arc<Program>>>>>>,
+    /// Hashes of the programs asked for by name (a scan of the index each
+    /// time otherwise: the pause map asks at every draw).
+    names: Mutex<HashMap<String, Option<u64>>>,
 }
 
 struct Entry {
@@ -281,7 +296,7 @@ impl Library {
             );
         }
         log::info!("gpu: {} translated shaders in {}", index.len(), dir.display());
-        Ok(Library { dir: dir.to_owned(), index, programs: Mutex::default() })
+        Ok(Library { dir: dir.to_owned(), index, programs: Mutex::default(), names: Mutex::default() })
     }
 
     pub fn label(&self, hash: u64) -> String {
@@ -290,7 +305,16 @@ impl Library {
 
     /// A named translated program, prepared once like engine-created shaders.
     pub fn named(&self, device: &wgpu::Device, label: &str, stage: Stage) -> Option<Arc<Program>> {
-        let hash = *self.index.iter().find(|(_, e)| e.label == label)?.0;
+        let mut names = self.names.lock().unwrap();
+        let hash = match names.get(label) {
+            Some(&hash) => hash,
+            None => {
+                let hash = self.index.iter().find(|(_, e)| e.label == label).map(|(h, _)| *h);
+                names.insert(label.to_owned(), hash);
+                hash
+            }
+        }?;
+        drop(names);
         self.slot(hash).get_or_init(|| self.prepare(device, hash, stage)).clone()
     }
 
@@ -337,19 +361,25 @@ impl Library {
         };
         let source = match stage {
             Stage::Pixel => with_opaque_sample_inputs(&source).unwrap_or(source),
+            Stage::Compute if device.features().contains(wgpu::Features::SUBGROUP) => {
+                with_subgroup_reduction(&source).unwrap_or(source)
+            }
             _ => source,
         };
-        let (text, pack) = pack_uniforms(&source);
+        // Two stages a pipeline, each with its pack and own buffers.
+        let dynamic = device.limits().max_dynamic_uniform_buffers_per_pipeline_layout as usize;
+        let (text, pack) = pack_uniforms_owning(&source, OWN_MAX.min((dynamic / 2).saturating_sub(1)));
         let clip_distances = text.contains("@builtin(clip_distances)");
         let text = if clip_distances && !device.features().contains(wgpu::Features::CLIP_DISTANCES) {
             without_clip_distances(&text).context("unexpected clip distances output")?
         } else {
             text
         };
-        if let Some(pack) = &pack
-            && pack.size > device.limits().max_uniform_buffer_binding_size as u32
-        {
-            bail!("constant buffers total {} bytes, over the uniform binding limit", pack.size);
+        if let Some(pack) = &pack {
+            let limit = device.limits().max_uniform_buffer_binding_size as u32;
+            if pack.size > limit || pack.own.iter().any(|m| m.size > limit) {
+                bail!("constant buffers of {} bytes, over the uniform binding limit", pack.size);
+            }
         }
         // Validated now, made again when a pipeline needs it: the engine
         // creates all its shaders (thousands) while loading.
@@ -690,26 +720,53 @@ fn struct_body<'a>(text: &'a str, name: &str) -> Option<&'a str> {
 
 /// Merges the constant buffers (every `var<uniform>` but the constant table)
 /// into one struct at binding 0; members keep their names, 16-byte aligned,
-/// in slot order. The runtime copies the bound buffers back to back.
+/// in slot order. The runtime copies the bound buffers back to back. The
+/// largest keep their own declaration ([`Pack::own`]); at least one is
+/// packed.
 pub fn pack_uniforms(text: &str) -> (String, Option<Pack>) {
+    pack_uniforms_owning(text, OWN_MAX)
+}
+
+/// [`pack_uniforms`] with at most `own_max` constant buffers on their own.
+pub fn pack_uniforms_owning(text: &str, own_max: usize) -> (String, Option<Pack>) {
     let mut members = Vec::new();
     let mut group = 0;
     let mut names = Vec::new();
+    let rows = |ty: &str| {
+        struct_body(text, ty).and_then(|b| RE_ARRAY_LEN.captures(b)).map_or(1, |a| a[1].parse::<u32>().unwrap())
+    };
+    // The largest, slot 0 (the pack's binding) aside.
+    let mut sizes: Vec<(u32, u32)> = RE_UNIFORM
+        .captures_iter(text)
+        .filter_map(|c| {
+            let slot: u32 = c[2].parse().unwrap();
+            (slot != CONSTANT_TABLE).then(|| (rows(&c[4]) * 16, slot))
+        })
+        .collect();
+    sizes.sort_by(|a, b| b.cmp(a));
+    let own: Vec<(u32, u32)> = sizes
+        .iter()
+        .copied()
+        // Not `rage_matrices` (slot 1): the jitter goes into each vertex
+        // stage's copy (see `scene.rs`).
+        .filter(|&(size, slot)| size >= OWN_SIZE && slot != PACKED_CBUFFERS && slot != 1)
+        .take(own_max.min(sizes.len().saturating_sub(1)))
+        .collect();
     let out = RE_UNIFORM.replace_all(text, |c: &regex::Captures| {
         let slot: u32 = c[2].parse().unwrap();
-        if slot == CONSTANT_TABLE {
+        if slot == CONSTANT_TABLE || own.iter().any(|o| o.1 == slot) {
             return c[0].to_owned();
         }
         group = c[1].parse().unwrap();
         let ty = &c[4];
-        let rows =
-            struct_body(text, ty).and_then(|b| RE_ARRAY_LEN.captures(b)).map_or(1, |a| a[1].parse::<u32>().unwrap());
-        members.push((slot, c[3].to_owned(), ty.to_owned(), rows * 16));
+        members.push((slot, c[3].to_owned(), ty.to_owned(), rows(ty) * 16));
         String::new()
     });
     if members.is_empty() {
         return (text.to_owned(), None);
     }
+    let mut own: Vec<PackMember> = own.into_iter().map(|(size, slot)| PackMember { slot, size, offset: 0 }).collect();
+    own.sort_by_key(|m| m.slot);
     members.sort_by_key(|m| m.0);
     let mut out = out.into_owned();
     for (_, name, _, _) in &members {
@@ -731,7 +788,7 @@ pub fn pack_uniforms(text: &str) -> (String, Option<Pack>) {
         Some(at) => out.insert_str(at, &format!("\n{decl}")),
         None => out.push_str(&decl),
     }
-    (out, Some(Pack { members: pack, size: offset }))
+    (out, Some(Pack { members: pack, size: offset, own }))
 }
 
 fn view_dim(name: &str) -> Option<wgpu::TextureViewDimension> {
@@ -860,6 +917,20 @@ fn ps_input_locations(text: &str) -> Vec<u32> {
     RE_PS_MAIN
         .captures(text)
         .map_or_else(Vec::new, |c| RE_LOCATION.captures_iter(&c[2]).map(|c| c[1].parse().unwrap()).collect())
+}
+
+/// Tiled lighting's depth downsample (`DepthDownsampleCS_Default` and
+/// `_B`, exactly as translated: their text's FNV-1a) with its reduction made
+/// of subgroup operations (see `depth_downsample.wgsl`): the same results.
+fn with_subgroup_reduction(text: &str) -> Option<String> {
+    const TRANSLATED: [(u64, u32); 2] = [(0x48e4fc2565a175b7, 16), (0x3231d97411b0d134, 8)];
+    let fnv = text.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    let &(_, tile) = TRANSLATED.iter().find(|(h, _)| *h == fnv)?;
+    Some(
+        include_str!("depth_downsample.wgsl")
+            .replace("@TILE@", &tile.to_string())
+            .replace("@THREADS@", &(tile * tile).to_string()),
+    )
 }
 
 /// The radar's geometry shader supplies three edge distances at location 5.
@@ -1248,6 +1319,183 @@ fn main(@location(0u) v0 : vec2<f32>) -> tint_symbol_1 {
         assert!(text.contains("@group(0u) @binding(0u) var<uniform> cbpack_v : cbpack_t;"));
         assert!(!text.contains("@binding(7u)"));
         naga::front::wgsl::parse_str(&text).unwrap();
+    }
+
+    /// The depth downsample with subgroup operations gives the translation's
+    /// results, bit for bit, on random depths and tiles past the edges
+    /// (GLUE5_GAME_DIR, a GPU with subgroups).
+    #[test]
+    #[ignore]
+    fn subgroup_depth_downsample_matches_the_translation() {
+        let game = std::env::var_os("GLUE5_GAME_DIR").expect("GLUE5_GAME_DIR");
+        let dir = glue5_runtime::layout::shader_dir(Path::new(&game));
+        let gpu = crate::Device::open(&crate::instance(), None).unwrap();
+        assert!(gpu.device.features().contains(wgpu::Features::SUBGROUP), "no subgroups here");
+        for name in ["23a7a3c1c0d38f46", "09596507b8362aed"] {
+            let original = std::fs::read_to_string(dir.join(format!("{name}.wgsl"))).unwrap();
+            let consts: Vec<u64> =
+                serde_json::from_str(&std::fs::read_to_string(dir.join(format!("{name}.consts.json"))).unwrap()).unwrap();
+            let replaced = with_subgroup_reduction(&original).expect("the translation as it was");
+            let tile = if name.starts_with("23") { 16 } else { 8 };
+            let a = run_downsample(&gpu, &original, &consts, tile);
+            let b = run_downsample(&gpu, &replaced, &consts, tile);
+            assert!(a.chunks(16).any(|t| t != &a[..16]), "{name}: the same everywhere, nothing compared");
+            assert_eq!(a.len(), b.len());
+            assert!(a == b, "{name}: results differ");
+        }
+    }
+
+    /// Runs a depth downsample over 1000x600 random depths: its output's bits.
+    fn run_downsample(gpu: &crate::Device, text: &str, consts: &[u64], tile: u32) -> Vec<u8> {
+        let (device, queue) = (&gpu.device, &gpu.queue);
+        let (w, h) = (1000u32, 600u32);
+        let (gw, gh) = (w.div_ceil(tile), h.div_ceil(tile));
+        let mut seed = 0x9e3779b97f4a7c15u64;
+        let mut random = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let (text, pack) = pack_uniforms(text);
+        let module = create_module(device, "downsample", &text).unwrap();
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None,
+            layout: None,
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        // Constant buffers: slot 10 row 3 the depth's size (as integers),
+        // slot 11 row 17 the projection terms.
+        let pack = pack.unwrap();
+        let mut cb = vec![0u8; pack.size as usize];
+        for m in &pack.members {
+            let rows: Vec<[u32; 4]> = match m.slot {
+                10 => vec![[0; 4], [0; 4], [0; 4], [w, h, 0, 0]],
+                _ => (0..18).map(|_| [0.5f32, 1.0, 0.1, 0.002].map(f32::to_bits)).collect(),
+            };
+            let bytes: Vec<u8> = rows.iter().flatten().flat_map(|v| v.to_le_bytes()).collect();
+            let n = bytes.len().min(m.size as usize);
+            cb[m.offset as usize..m.offset as usize + n].copy_from_slice(&bytes[..n]);
+        }
+        let mut table = vec![0u32; consts.len() * 4];
+        for (i, v) in consts.iter().enumerate() {
+            table[i * 4] = *v as u32;
+        }
+        use wgpu::util::DeviceExt;
+        let uniform = |data: &[u8]| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: data,
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+        };
+        let (cb, table) = (uniform(&cb), uniform(&table.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>()));
+        let texture = |format, texels: Vec<u8>, (tw, th): (u32, u32), usage| {
+            device.create_texture_with_data(
+                queue,
+                &wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d { width: tw, height: th, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats: &[],
+                },
+                Default::default(),
+                &texels,
+            )
+        };
+        // Depths, a quarter of them far (1: the sky), and four channels of
+        // anything.
+        let depth: Vec<u8> = (0..w * h)
+            .flat_map(|_| {
+                let r = random();
+                let d = if r % 4 == 0 { 1.0 } else { (r >> 40) as f32 / (1u64 << 24) as f32 };
+                half::f16::from_f32(d).to_le_bytes()
+            })
+            .collect();
+        let other: Vec<u8> = (0..w * h * 4).flat_map(|_| half::f16::from_f32((random() >> 40) as f32 / 1e3).to_le_bytes()).collect();
+        let sampled = wgpu::TextureUsages::TEXTURE_BINDING;
+        let t7 = texture(wgpu::TextureFormat::R16Float, depth, (w, h), sampled);
+        let t8 = texture(wgpu::TextureFormat::Rgba16Float, other, (w, h), sampled);
+        let out = texture(
+            wgpu::TextureFormat::Rgba32Float,
+            vec![0; (gw * gh * 16) as usize],
+            (gw, gh),
+            wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        );
+        let views = [&t7, &t8, &out].map(|t| t.create_view(&Default::default()));
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: cb.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 15, resource: table.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 39, resource: wgpu::BindingResource::TextureView(&views[0]) },
+                wgpu::BindGroupEntry { binding: 40, resource: wgpu::BindingResource::TextureView(&views[1]) },
+                wgpu::BindGroupEntry { binding: 161, resource: wgpu::BindingResource::TextureView(&views[2]) },
+            ],
+        });
+        let bpr = (gw * 16).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (bpr * gh) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(gw, gh, 1);
+        }
+        encoder.copy_texture_to_buffer(
+            out.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bpr), rows_per_image: Some(gh) },
+            },
+            out.size(),
+        );
+        queue.submit([encoder.finish()]);
+        readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let data = readback.slice(..).get_mapped_range().unwrap();
+        (0..gh).flat_map(|y| data[(y * bpr) as usize..(y * bpr + gw * 16) as usize].to_vec()).collect()
+    }
+
+    #[test]
+    fn large_constant_buffers_keep_their_own_binding() {
+        let decl = |slot: u32, rows: u32| {
+            format!(
+                "struct cb{slot}_struct {{\n  tint_symbol : array<vec4<f32>, {rows}u>,\n}}\n\n\
+                 @group(0u) @binding({slot}u) var<uniform> cb{slot}_{slot} : cb{slot}_struct;\n\n"
+            )
+        };
+        // The matrices (256 B), lighting (960 B), the bones (12,240 B).
+        let text = format!(
+            "{}{}{}@vertex\nfn main() -> @builtin(position) vec4<f32> {{\n  return cb1_1.tint_symbol[0u] + \
+             cb3_3.tint_symbol[0u] + cb4_4.tint_symbol[0u];\n}}\n",
+            decl(1, 16),
+            decl(3, 60),
+            decl(4, 765)
+        );
+        let (out, pack) = pack_uniforms(&text);
+        let pack = pack.unwrap();
+        assert_eq!(pack.own.iter().map(|m| (m.slot, m.size)).collect::<Vec<_>>(), [(3, 960), (4, 12240)]);
+        assert_eq!((pack.members.len(), pack.size), (1, 256));
+        assert!(out.contains("@group(0u) @binding(4u) var<uniform> cb4_4 : cb4_struct;"));
+        assert!(out.contains("cbpack_v.cb1_1.tint_symbol[0u]") && out.contains("cb4_4.tint_symbol[0u]"));
+        naga::front::wgsl::parse_str(&out).unwrap();
+        // Never all of them, nor more than asked.
+        assert!(pack_uniforms(&format!("{}@vertex fn main() -> @builtin(position) vec4<f32> {{ return cb4_4.tint_symbol[0u]; }}", decl(4, 765))).1.unwrap().own.is_empty());
+        assert_eq!(pack_uniforms_owning(&text, 1).1.unwrap().own.len(), 1);
     }
 
     /// Every translated shader of the game (GLUE5_GAME_DIR) still validates

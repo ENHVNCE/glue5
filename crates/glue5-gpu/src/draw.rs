@@ -21,13 +21,16 @@ const CHUNK_PASSES: u32 = 16;
 const ZERO_VB: u64 = 4096;
 
 /// Bind groups by the ids of what they hold (ids are never reused). Two
-/// generations: the oldest is dropped when the newest is full.
+/// generations: the oldest is dropped when the newest is full, or when it
+/// ages ([`BindCache::age`]).
 #[derive(Default)]
 pub struct BindCache {
-    current: FxHashMap<Box<[u32]>, (wgpu::BindGroup, u64)>,
-    old: FxHashMap<Box<[u32]>, (wgpu::BindGroup, u64)>,
+    current: BindGroups,
+    old: BindGroups,
     serial: u64,
 }
+
+type BindGroups = FxHashMap<Box<[u32]>, (wgpu::BindGroup, u64)>;
 
 const BIND_GROUPS: usize = 16384;
 
@@ -41,23 +44,59 @@ impl BindCache {
         Some(v)
     }
 
-    fn insert(&mut self, key: &[u32], bg: wgpu::BindGroup) -> u64 {
-        if self.current.len() >= BIND_GROUPS {
-            self.old = std::mem::take(&mut self.current);
-        }
+    /// Returns its serial, and the generation dropped to make room, if one
+    /// was (thousands of bind groups: the caller drops them elsewhere).
+    fn insert(&mut self, key: &[u32], bg: wgpu::BindGroup) -> (u64, Option<BindGroups>) {
+        let dropped = (self.current.len() >= BIND_GROUPS)
+            .then(|| std::mem::replace(&mut self.old, std::mem::take(&mut self.current)));
         self.serial += 1;
         self.current.insert(key.into(), (bg, self.serial));
-        self.serial
+        (self.serial, dropped)
     }
 
     pub fn len(&self) -> usize {
         self.current.len() + self.old.len()
+    }
+
+    /// Starts a new generation: the groups no draw takes until the next one
+    /// go then. Most are of textures streamed out or areas left (~2 KB of
+    /// the driver's and wgpu's each; an iPhone kept ~27,000 for minutes).
+    /// Returns the generation dropped, to free elsewhere.
+    pub fn age(&mut self) -> BindGroups {
+        std::mem::replace(&mut self.old, std::mem::take(&mut self.current))
     }
 }
 
 /// Identity of the constant buffers a pack reads: (buffer id, version, first
 /// constant) per member.
 type PackIds = [(u32, u32, u32); 16];
+
+/// Where a stage's constants went: its pack, and its own buffers (in the
+/// order of `Pack::own`).
+#[derive(Clone, Copy)]
+struct Constants {
+    pack: Alloc,
+    own: [Option<Alloc>; shader::OWN_MAX],
+}
+
+/// A bind group's dynamic offsets, in binding order: its pack's, then its
+/// own constant buffers'.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct Offsets {
+    values: [u32; 1 + shader::OWN_MAX],
+    len: u8,
+}
+
+impl Offsets {
+    fn push(&mut self, offset: u32) {
+        self.values[self.len as usize] = offset;
+        self.len += 1;
+    }
+
+    pub fn as_slice(&self) -> &[u32] {
+        &self.values[..self.len as usize]
+    }
+}
 
 /// The last packs of a (program, stage): the same constants in the same
 /// frame reuse their copy.
@@ -237,10 +276,13 @@ impl Gpu {
         if let Some(t) = self.objs.tex_mut(self.s.ds.tex) {
             let view = t.target_view(t.format, self.s.ds.mip, self.s.ds.slice);
             t.used.set(epoch);
-            if ro != 3 {
-                t.mark_written();
+            t.mark_aspects_written(ro & 1 == 0, ro & 2 == 0);
+            let mut clear = take_clear(&mut clears, self.s.ds.tex, self.s.ds.mip, self.s.ds.slice);
+            // A read-only aspect cannot be cleared as the pass loads it: the
+            // clear goes first, as a pass of its own (D3D clears it anyway).
+            if let Some(c) = clear.take_if(|c| (c.depth.is_some() && ro & 1 != 0) || (c.stencil.is_some() && ro & 2 != 0)) {
+                clears.push(c);
             }
-            let clear = take_clear(&mut clears, self.s.ds.tex, self.s.ds.mip, self.s.ds.slice);
             if targets.is_empty() {
                 (width, height) = ((t.width >> self.s.ds.mip).max(1), (t.height >> self.s.ds.mip).max(1));
             }
@@ -405,13 +447,13 @@ impl Gpu {
 
     // ---- bind groups -----------------------------------------------------------------
 
-    /// The bind group of a program's stage and its dynamic offset.
+    /// The bind group of a program's stage and its dynamic offsets.
     fn bind_group(
         &mut self,
         prog: &Program,
         stage: Stage,
         layout: &wgpu::BindGroupLayout,
-    ) -> Option<(wgpu::BindGroup, u64, Option<u32>)> {
+    ) -> Option<(wgpu::BindGroup, u64, Offsets)> {
         // The scene's draws move by its jitter (temporal upscaling, see scene.rs).
         let jitter = match (stage, &self.pass_info) {
             (Stage::Vertex, Some(p)) => self.scene.clip_jitter((p.width, p.height)),
@@ -435,7 +477,10 @@ impl Gpu {
         let epoch = self.epoch;
         let mut key = std::mem::take(&mut self.key);
         key.clear();
-        key.extend([prog.id, stage as u32, pack.map_or(0, |a| a.chunk_id)]);
+        key.extend([prog.id, stage as u32, pack.map_or(0, |c| c.pack.chunk_id)]);
+        if let Some(c) = &pack {
+            key.extend(c.own.iter().flatten().map(|a| a.chunk_id));
+        }
         for b in &prog.bindings {
             match &b.kind {
                 Kind::Uniform => {}
@@ -444,11 +489,12 @@ impl Gpu {
                     let ok = self.objs.state(id).is_some_and(|s| s.sampler.is_some() && s.comparison == *comparison);
                     key.push(if ok { id } else { 0 });
                 }
-                Kind::Texture { dim, .. } => {
+                Kind::Texture { dim, sample, .. } => {
                     let slot = b.binding - shader::SRVS;
                     let id = self.s.srv[st][slot as usize];
-                    let res =
-                        self.objs.srv(id).filter(|v| !v.is_buffer && !self.reads_target(prog, stage, slot, v, *dim));
+                    let res = self.objs.srv(id).filter(|v| {
+                        !v.is_buffer && !self.reads_target(prog, stage, slot, v, *dim) && !self.compares_depth_target(v, *sample, stage)
+                    });
                     match res.and_then(|v| self.objs.tex(v.res)) {
                         Some(t) => {
                             t.used.set(epoch);
@@ -498,12 +544,21 @@ impl Gpu {
             Some((bg, serial)) => Some((bg, serial)),
             None => self.create_bind_group(prog, stage, layout, pack).map(|bg| {
                 self.stats.bind_groups += 1;
-                let serial = self.binds.insert(&key, bg.clone());
+                let (serial, dropped) = self.binds.insert(&key, bg.clone());
+                // Freed off the command thread (a hitch of tens of ms there).
+                if let Some(dropped) = dropped {
+                    self.pool.background(move || drop(dropped));
+                }
                 (bg, serial)
             }),
         };
         self.key = key;
-        result.map(|(bg, serial)| (bg, serial, pack.map(|a| a.offset)))
+        let mut offsets = Offsets::default();
+        if let Some(c) = &pack {
+            offsets.push(c.pack.offset);
+            c.own.iter().flatten().for_each(|a| offsets.push(a.offset));
+        }
+        result.map(|(bg, serial)| (bg, serial, offsets))
     }
 
     fn storage_view(&self, st: usize, binding: u32) -> (u32, Option<&View>) {
@@ -523,7 +578,7 @@ impl Gpu {
         prog: &Program,
         stage: Stage,
         layout: &wgpu::BindGroupLayout,
-        pack: Option<Alloc>,
+        constants: Option<Constants>,
     ) -> Option<wgpu::BindGroup> {
         let st = stage as usize;
         let mut resources: Vec<(u32, Res)> = Vec::with_capacity(prog.bindings.len());
@@ -539,8 +594,14 @@ impl Gpu {
                     Res::Buffer(consts.clone(), 0, None)
                 }
                 Kind::Uniform => {
-                    let (pack, alloc) = (prog.pack.as_ref()?, pack?);
-                    Res::Buffer(self.uniforms.buffer(alloc.chunk).clone(), 0, Some(pack.size as u64))
+                    let (pack, constants) = (prog.pack.as_ref()?, constants?);
+                    let (alloc, size) = if b.binding == shader::PACKED_CBUFFERS {
+                        (constants.pack, pack.size)
+                    } else {
+                        let i = pack.own.iter().position(|m| m.slot == b.binding)?;
+                        (constants.own[i]?, pack.own[i].size)
+                    };
+                    Res::Buffer(self.uniforms.buffer(alloc.chunk).clone(), 0, Some(size as u64))
                 }
                 Kind::Sampler { comparison } => {
                     let id = self.s.sampler[st][(b.binding - shader::SAMPLERS) as usize];
@@ -553,7 +614,8 @@ impl Gpu {
                 }
                 Kind::Texture { sample, dim, multisampled } => {
                     let id = self.s.srv[st][(b.binding - shader::SRVS) as usize];
-                    let target = self.objs.srv(id).is_some_and(|v| self.is_target(v, *dim));
+                    let target =
+                        self.objs.srv(id).is_some_and(|v| self.is_target(v, *dim) || self.compares_depth_target(v, *sample, stage));
                     match if target { None } else { self.srv_view(id, *dim, *sample) } {
                         Some(v) => Res::View(v),
                         None => Res::View(self.dummies.texture(&self.device, *dim, *sample, *multisampled)),
@@ -654,13 +716,15 @@ impl Gpu {
     /// either are non-filtering (nearest instead of linear). Also the
     /// textures unfilterable on such GPUs, whatever this one does: what
     /// recipes record (see `Recipe::for_device`).
-    fn for_bound_formats(&mut self, prog: Arc<Program>, stage: Stage) -> (Arc<Program>, u128) {
+    /// Also the slots of the textures it reads through copies (for
+    /// `prepare_proxies`, which then looks up only those).
+    fn for_bound_formats(&mut self, prog: Arc<Program>, stage: Stage) -> (Arc<Program>, u128, u128) {
         let st = stage as usize;
         // Nothing it depends on changed since the last draw with this program.
-        if let Some((id, seen, variant, float32)) = &self.bound_formats[st]
+        if let Some((id, seen, variant, float32, proxies)) = &self.bound_formats[st]
             && (*id, *seen) == (prog.id, self.formats_seen[st])
         {
-            return (variant.clone(), *float32);
+            return (variant.clone(), *float32, *proxies);
         }
         let (mut float32, mut depth) = (0u128, 0u128);
         for b in &prog.bindings {
@@ -683,8 +747,9 @@ impl Gpu {
         }
         let unfiltered = if self.caps.float32_filter { 0 } else { float32 };
         let variant = prog.for_bindings(&self.device, unfiltered, depth);
-        self.bound_formats[st] = Some((prog.id, self.formats_seen[st], variant.clone(), float32));
-        (variant, float32)
+        let proxies = self.proxy_slots(&variant);
+        self.bound_formats[st] = Some((prog.id, self.formats_seen[st], variant.clone(), float32, proxies));
+        (variant, float32, proxies)
     }
 
     /// Whether a depth texture can be sampled by this draw: not while it is
@@ -695,6 +760,17 @@ impl Gpu {
         }
         let ro = self.s.ds_flags & 3;
         ro & 1 != 0 && (ro & 2 != 0 || !format.has_stencil_aspect())
+    }
+
+    /// Whether a comparison (`texture_depth`) read is of the pass's depth
+    /// attachment while that is written: unbound for the draw, as D3D11
+    /// does (float reads go through a copy instead, see `for_bound_formats`).
+    /// With only depth read-only (stencil written) D3D would read it, but
+    /// wgpu cannot sample an attachment one of whose aspects is written.
+    fn compares_depth_target(&self, srv: &View, sample: Sample, stage: Stage) -> bool {
+        sample == Sample::Depth
+            && self.pass.is_some()
+            && self.objs.tex(srv.res).is_some_and(|t| format::is_depth(t.format) && !self.may_sample_depth(srv.res, t.format, stage))
     }
 
     /// Whether a texture SRV reads what the open render pass draws into.
@@ -727,7 +803,7 @@ impl Gpu {
     fn reads_target(&self, prog: &Program, stage: Stage, slot: u32, srv: &View, dim: TextureViewDimension) -> bool {
         let hit = stage != Stage::Compute && self.is_target(srv, dim);
         if hit {
-            crate::log_once(&format!("srvrt{}{slot}", prog.label), || {
+            crate::log_once_for("srvrt", u64::from(prog.id) << 8 | u64::from(slot), || {
                 format!(
                     "{}: t{slot} reads a render target of its pass: unbound for the draw, as D3D11 does",
                     prog.label
@@ -896,13 +972,13 @@ impl Gpu {
         {
             return self.skip("no input layout");
         }
-        let (vs, vs_float32) = self.for_bound_formats(vs, Stage::Vertex);
-        let (ps, ps_float32) = match ps {
+        let (vs, vs_float32, vs_proxies) = self.for_bound_formats(vs, Stage::Vertex);
+        let (ps, ps_float32, ps_proxies) = match ps {
             Some(ps) => {
-                let (ps, float32) = self.for_bound_formats(ps, Stage::Pixel);
-                (Some(ps), float32)
+                let (ps, float32, proxies) = self.for_bound_formats(ps, Stage::Pixel);
+                (Some(ps), float32, proxies)
             }
-            None => (None, 0),
+            None => (None, 0, 0),
         };
         // Same state, other textures, can mean another program variant
         // (or, here, only another recipe).
@@ -911,9 +987,9 @@ impl Gpu {
             self.last_programs = programs;
             self.pdirty = true;
         }
-        self.prepare_proxies(&vs);
+        self.prepare_proxies(&vs, vs_proxies);
         if let Some(ps) = &ps {
-            self.prepare_proxies(ps);
+            self.prepare_proxies(ps, ps_proxies);
         }
         if !self.ensure_pass() {
             return self.skip("no render target");
@@ -977,9 +1053,16 @@ impl Gpu {
                         0
                     };
                     let offset = (v.offset as i64 + shift).max(0).min(b.bytes as i64) as u64;
-                    avail[slot as usize] = b.bytes - offset;
-                    b.used.set(epoch);
-                    vbs.push((slot, Some((g.clone(), b.uid)), b.base + offset));
+                    if offset < b.bytes {
+                        avail[slot as usize] = b.bytes - offset;
+                        b.used.set(epoch);
+                        vbs.push((slot, Some((g.clone(), b.uid)), b.base + offset));
+                    } else {
+                        // Bound at its end: nothing to read (a draw that
+                        // reads it is clamped away below); the zeros bound
+                        // instead, as an empty slice would stop the GPU thread.
+                        vbs.push((slot, None, 0));
+                    }
                 }
                 None => {
                     avail[slot as usize] = ZERO_VB;
@@ -994,6 +1077,9 @@ impl Gpu {
             let Some((b, g)) = self.objs.buf(id).and_then(|b| b.gpu.as_ref().map(|g| (b, g))) else {
                 return self.skip("no index buffer");
             };
+            if offset as u64 >= b.bytes {
+                return self.skip("index buffer bound past its end");
+            }
             let format = if fmt == format::INDEX_U16 { wgpu::IndexFormat::Uint16 } else { wgpu::IndexFormat::Uint32 };
             let size = if fmt == format::INDEX_U16 { 2 } else { 4 };
             index_max = (b.bytes.saturating_sub(offset as u64) / size).saturating_sub(start as u64);
@@ -1079,12 +1165,11 @@ impl Gpu {
             bound.pipeline = pipe_id;
         }
         for (i, g) in [g0, g1].into_iter().enumerate() {
-            if let Some((bg, serial, dynamic)) = g {
-                let d = dynamic.unwrap_or(u32::MAX);
-                if bound.groups[i] != Some((serial, d)) {
-                    pass.set_bind_group(i as u32, &bg, dynamic.as_slice());
-                    bound.groups[i] = Some((serial, d));
-                }
+            if let Some((bg, serial, offsets)) = g
+                && bound.groups[i] != Some((serial, offsets))
+            {
+                pass.set_bind_group(i as u32, &bg, offsets.as_slice());
+                bound.groups[i] = Some((serial, offsets));
             }
         }
         for (slot, buf, offset) in &vbs {
@@ -1183,8 +1268,8 @@ impl Gpu {
         let Some(cs) = self.program(self.s.shader[2]) else {
             return self.skip("no compute shader");
         };
-        let (cs, _) = self.for_bound_formats(cs, Stage::Compute);
-        self.prepare_proxies(&cs);
+        let (cs, _, proxies) = self.for_bound_formats(cs, Stage::Compute);
+        self.prepare_proxies(&cs, proxies);
         self.end_pass();
         // Storage textures are declared with a guessed format; the pipeline
         // needs the bound textures' formats.
@@ -1202,7 +1287,7 @@ impl Gpu {
         let Some(compute) = self.computes.get(&self.device, &cs, &subs) else {
             return self.skip("compute pipeline failed");
         };
-        let Some((bg, _, dynamic)) = self.bind_group(&compute.program, Stage::Compute, &compute.layout) else {
+        let Some((bg, _, offsets)) = self.bind_group(&compute.program, Stage::Compute, &compute.layout) else {
             return self.skip("compute bind group");
         };
         self.stats.dispatches += 1;
@@ -1214,7 +1299,7 @@ impl Gpu {
             timestamp_writes: ts.and_then(|i| self.profiler.as_ref().map(|p| p.compute(i))),
         });
         pass.set_pipeline(&compute.pipeline);
-        pass.set_bind_group(0, &bg, dynamic.as_slice());
+        pass.set_bind_group(0, &bg, offsets.as_slice());
         pass.dispatch_workgroups(x, y, z);
     }
 }
@@ -1232,8 +1317,12 @@ fn pack_constants(
     stage: Stage,
     pack: &shader::Pack,
     jitter: Option<[f32; 2]>,
-) -> Alloc {
+) -> Constants {
     let st = stage as usize;
+    let mut own = [None; shader::OWN_MAX];
+    for (i, m) in pack.own.iter().enumerate() {
+        own[i] = Some(own_constants(objs, cbs[st].get(m.slot as usize).copied().unwrap_or_default(), uniforms, device, m.size));
+    }
     let mut current: PackIds = [(0, 0, 0); 16];
     for (i, m) in pack.members.iter().enumerate().take(16) {
         let cb = cbs[st].get(m.slot as usize).copied().unwrap_or_default();
@@ -1247,23 +1336,13 @@ fn pack_constants(
         .iter()
         .find(|(frame, ids, j, _)| *frame == uniforms.frame && *ids == current && *j == jitter_key)
     {
-        return *alloc;
+        return Constants { pack: *alloc, own };
     }
     let alloc = uniforms.alloc(device, pack.size);
     let dst = uniforms.bytes(alloc, pack.size);
     for (m, &(buf, _, first)) in pack.members.iter().zip(&current) {
         let out = &mut dst[m.offset as usize..(m.offset + m.size) as usize];
-        let src = objs.buf(buf).and_then(|b| b.shadow.as_deref());
-        let copied = match src {
-            Some(s) => {
-                let from = (first as usize * 16).min(s.len());
-                let n = (s.len() - from).min(out.len());
-                out[..n].copy_from_slice(&s[from..from + n]);
-                n
-            }
-            None => 0,
-        };
-        out[copied..].fill(0); // D3D reads zeros past a buffer's end
+        copy_constants(objs.buf(buf).and_then(|b| b.shadow.as_deref()), first, out);
         // `rage_matrices`, with gWorldViewProj.
         if let Some(clip) = jitter
             && m.slot == 1
@@ -1276,5 +1355,45 @@ fn pack_constants(
         cache.entries.remove(0);
     }
     cache.entries.push((uniforms.frame, current, jitter_key, alloc));
+    Constants { pack: alloc, own }
+}
+
+/// A constant buffer bound on its own (`size` bytes from its `first`
+/// constant): copied once per version and frame, for every stage binding it.
+fn own_constants(
+    objs: &Objects,
+    cb: crate::exec::CbBinding,
+    uniforms: &mut Uniforms,
+    device: &wgpu::Device,
+    size: u32,
+) -> Alloc {
+    let buf = objs.buf(cb.buf);
+    let version = buf.map_or(u32::MAX, |b| b.version);
+    if let Some((frame, v, first, copied, alloc)) = buf.and_then(|b| b.constants.get())
+        && (frame, v, first) == (uniforms.frame, version, cb.first)
+        && copied >= size
+    {
+        return alloc;
+    }
+    let alloc = uniforms.alloc(device, size);
+    copy_constants(buf.and_then(|b| b.shadow.as_deref()), cb.first, uniforms.bytes(alloc, size));
+    if let Some(b) = buf {
+        b.constants.set(Some((uniforms.frame, version, cb.first, size, alloc)));
+    }
     alloc
+}
+
+/// A constant buffer's data from its `first` constant into `out`, zeros
+/// past its end (as D3D reads them).
+fn copy_constants(src: Option<&[u8]>, first: u32, out: &mut [u8]) {
+    let copied = match src {
+        Some(s) => {
+            let from = (first as usize * 16).min(s.len());
+            let n = (s.len() - from).min(out.len());
+            out[..n].copy_from_slice(&s[from..from + n]);
+            n
+        }
+        None => 0,
+    };
+    out[copied..].fill(0);
 }

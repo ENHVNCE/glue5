@@ -9,10 +9,14 @@
 
 use std::sync::{Arc, Mutex};
 
-const CHUNK: u64 = 4 << 20;
-/// Chunks kept for reuse, at most: loading needs many at once, play few,
-/// and memory is scarce on phones.
-const KEEP: usize = 16;
+/// A chunk's size: each batch takes the one being filled with it, however
+/// little is in it (4-7 batches a frame), so chunks are small; a larger
+/// upload (a texture's top mips) takes a buffer of its own, in multiples of
+/// this, kept for the next ones of its size.
+pub const CHUNK: u64 = 1 << 20;
+/// Bytes of free chunks kept for reuse, at most: loading needs many at
+/// once, play few, and memory is scarce on phones.
+const KEEP: u64 = 32 << 20;
 
 /// Mapped chunks, ready to be written.
 pub type FreeChunks = Arc<Mutex<Vec<wgpu::Buffer>>>;
@@ -57,14 +61,18 @@ impl Uploads {
         if let Some((full, _)) = self.current.take() {
             self.used.push(full);
         }
+        // The smallest free one that fits, not twice the size needed (a
+        // texture's buffer is no chunk for small uploads).
+        let need = size.max(CHUNK).next_multiple_of(CHUNK);
         let reused = {
             let mut free = self.free.lock().unwrap();
-            free.iter().position(|b| b.size() >= size).map(|i| free.swap_remove(i))
+            let fits = free.iter().enumerate().filter(|(_, b)| b.size() >= size && b.size() <= 2 * need);
+            fits.min_by_key(|(_, b)| b.size()).map(|(i, _)| i).map(|i| free.swap_remove(i))
         };
         let buffer = reused.unwrap_or_else(|| {
             self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("upload staging"),
-                size: size.max(CHUNK).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT),
+                size: need,
                 usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: true,
             })
@@ -83,7 +91,7 @@ impl Uploads {
         self.bytes += size;
         let (chunk, at) = self.allocate(size, wgpu::COPY_BUFFER_ALIGNMENT);
         {
-            let mut view = chunk.slice(at..at + size).get_mapped_range_mut().expect("staging memory is mapped");
+            let Some(mut view) = self.mapped(&chunk, at, size) else { return };
             view.slice(..data.len()).copy_from_slice(data);
             view.slice(data.len()..).fill(0);
         }
@@ -112,7 +120,7 @@ impl Uploads {
         self.bytes += size;
         let (chunk, base) = self.allocate(size, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64);
         {
-            let mut view = chunk.slice(base..base + size).get_mapped_range_mut().expect("staging memory is mapped");
+            let Some(mut view) = self.mapped(&chunk, base, size) else { return };
             for layer in 0..layers {
                 for row in 0..rows {
                     let src = ((layer * src_rows + row) * bpr) as usize;
@@ -136,6 +144,22 @@ impl Uploads {
         );
     }
 
+    /// `size` bytes of `chunk` at `at` to write into. None when the chunk
+    /// could not be made (memory ran out, the device was lost): it is
+    /// forgotten and the upload dropped, the game going on without it.
+    fn mapped(&mut self, chunk: &wgpu::Buffer, at: u64, size: u64) -> Option<wgpu::BufferViewMut> {
+        match chunk.slice(at..at + size).get_mapped_range_mut() {
+            Ok(view) => Some(view),
+            Err(e) => {
+                crate::log_once("staging", || format!("gpu: no staging memory ({e}): uploads dropped"));
+                if self.current.as_ref().is_some_and(|(c, _)| c == chunk) {
+                    self.current = None;
+                }
+                None
+            }
+        }
+    }
+
     /// The uploads to submit before the next commands, and the chunks they
     /// copy from (unmapped; to [`recycle`] after the submit).
     pub fn finish(&mut self) -> (Option<wgpu::CommandEncoder>, Vec<wgpu::Buffer>) {
@@ -156,7 +180,7 @@ pub fn recycle(chunks: Vec<wgpu::Buffer>, free: &FreeChunks) {
         let (back, free) = (chunk.clone(), free.clone());
         chunk.slice(..).map_async(wgpu::MapMode::Write, move |r| {
             let mut free = free.lock().unwrap();
-            if r.is_ok() && free.len() < KEEP {
+            if r.is_ok() && free.iter().map(wgpu::Buffer::size).sum::<u64>() + back.size() <= KEEP {
                 free.push(back);
             } else {
                 back.destroy();

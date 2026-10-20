@@ -112,7 +112,7 @@ pub struct PassInfo {
 #[derive(Default)]
 pub struct Bound {
     pub pipeline: usize,
-    pub groups: [Option<(u64, u32)>; 2],
+    pub groups: [Option<(u64, crate::draw::Offsets)>; 2],
     pub vb: [Option<(u32, u64)>; 16],
     pub ib: Option<(u32, u32, u64)>,
     pub viewport: Option<[f32; 6]>,
@@ -194,7 +194,9 @@ pub struct Gpu {
     /// `for_bound_formats`): the textures bound, the depth target, objects
     /// destroyed; and the variant last picked for that count.
     pub formats_seen: [u64; 3],
-    pub bound_formats: [Option<(u32, u64, Arc<Program>, u128)>; 3],
+    /// (program id, changes seen, variant, its 32-bit float textures, the
+    /// texture slots it reads through copies).
+    pub bound_formats: [Option<(u32, u64, Arc<Program>, u128, u128)>; 3],
     /// Render passes recorded since the last submit.
     pub chunk_passes: u32,
     /// When the work not yet handed over started gathering (see `idle`).
@@ -370,12 +372,14 @@ impl Gpu {
             }
             op::SCREENSHOT => {
                 let len = c.w(1) as usize;
-                let name = String::from_utf8_lossy(&c.bytes_from(2)[..len.min(c.payload.len() * 4)]).into_owned();
+                let bytes = c.bytes_from(2);
+                let name = String::from_utf8_lossy(&bytes[..len.min(bytes.len())]).into_owned();
                 self.screenshot(c.w(0), &name);
             }
             op::LOG => {
                 let len = c.w(0) as usize;
-                let text = String::from_utf8_lossy(&c.bytes_from(1)[..len.min(c.payload.len() * 4)]).into_owned();
+                let bytes = c.bytes_from(1);
+                let text = String::from_utf8_lossy(&bytes[..len.min(bytes.len())]).into_owned();
                 if text == "stats" {
                     self.log_stats();
                 } else {
@@ -785,6 +789,7 @@ impl Gpu {
                 used: Default::default(),
                 uploaded: Default::default(),
                 in_bind_group: Default::default(),
+                constants: Default::default(),
                 counter: None,
             })),
         );
@@ -945,6 +950,22 @@ impl Gpu {
                 converted = out;
                 (&converted[..], w * 4, h, h, (w, h), w * 4)
             }
+            Upload::Unorm16 => {
+                let row = w * format::block(t.format).0;
+                let mut out = Vec::with_capacity((row * h * d) as usize);
+                for layer in 0..d {
+                    for r in 0..h {
+                        let src = (layer * rows.max(h) * bpr + r * bpr) as usize;
+                        let line = data.get(src..).unwrap_or_default();
+                        for i in 0..row as usize / 2 {
+                            let v = line.get(2 * i..2 * i + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
+                            out.extend_from_slice(&half::f16::from_f32(f32::from(v) / 65535.0).to_le_bytes());
+                        }
+                    }
+                }
+                converted = out;
+                (&converted[..], row, h, h, (w, h), row)
+            }
             Upload::Bc(_) => unreachable!("decoded on another thread"),
         };
         let extent = wgpu::Extent3d { width, height, depth_or_array_layers: d };
@@ -968,12 +989,14 @@ impl Gpu {
     /// A texture's regions go in the order they came.
     fn finish_decodes(&mut self) {
         let mut later: Vec<Decode> = Vec::new();
+        // The textures with a region waiting (a set: hundreds wait at times).
+        let mut waiting = rustc_hash::FxHashSet::default();
         for d in std::mem::take(&mut self.decodes) {
             let Some(t) = self.objs.tex(d.id).filter(|t| t.tex == d.texture) else {
                 continue; // destroyed meanwhile
             };
             let used_now = t.used.get() == self.epoch;
-            let texels = if later.iter().any(|l| l.texture == d.texture) {
+            let texels = if waiting.contains(&d.id) {
                 None
             } else if used_now {
                 let Ok(texels) = d.data.recv() else { continue };
@@ -986,6 +1009,7 @@ impl Gpu {
                 }
             };
             let Some(texels) = texels else {
+                waiting.insert(d.id);
                 later.push(d);
                 continue;
             };
@@ -1123,6 +1147,21 @@ impl Gpu {
             prev.stencil = clear.stencil.or(prev.stencil);
         } else {
             self.clears.push(clear);
+        }
+    }
+
+    /// Records the pending clears of `ids` (a command reads or writes them)
+    /// as passes of their own; the others stay pending, to become the load
+    /// operation of their texture's next pass.
+    pub fn flush_clears_of(&mut self, ids: &[u32]) {
+        if !self.clears.iter().any(|c| ids.contains(&c.tex)) {
+            return;
+        }
+        self.end_pass();
+        let (now, later) = std::mem::take(&mut self.clears).into_iter().partition(|c| ids.contains(&c.tex));
+        self.clears = later;
+        for clear in now {
+            self.record_clear(clear);
         }
     }
 
