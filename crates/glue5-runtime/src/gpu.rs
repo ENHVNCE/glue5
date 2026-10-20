@@ -182,7 +182,8 @@ impl Reader {
     }
 
     /// The next command before `head`, if any (wraps are followed).
-    pub fn next(&mut self, head: u32) -> Option<Command<'static>> {
+    /// (Its payload lasts until the reader releases it.)
+    pub fn next(&mut self, head: u32) -> Option<Command<'_>> {
         loop {
             if self.tail == head {
                 return None;
@@ -255,10 +256,9 @@ pub(crate) static COMPLETED: AtomicU32 = AtomicU32::new(0);
 /// everything the engine waits on (fences, readbacks, queries).
 pub fn null() -> GpuBackend {
     Box::new(|ring| {
-        std::thread::Builder::new()
-            .name("gpu (null)".into())
-            .spawn(move || run_null(ring))
-            .expect("spawning the GPU thread");
+        if let Err(e) = std::thread::Builder::new().name("gpu (null)".into()).spawn(move || run_null(ring)) {
+            crate::exit::fail(format!("no thread for the renderer: {e}"));
+        }
     })
 }
 

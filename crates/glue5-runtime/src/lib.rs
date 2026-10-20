@@ -68,6 +68,20 @@ pub fn cores() -> usize {
     *CORES.get_or_init(|| std::thread::available_parallelism().map_or(4, |n| n.get()))
 }
 
+/// A mutex's value, also after a panic while it was held: what the
+/// network threads and the engine's hooks share stays usable, so a host
+/// thread's failure ends with the application's message rather than an
+/// abort in the next hook that takes the lock.
+pub(crate) trait Locked<T> {
+    fn locked(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> Locked<T> for std::sync::Mutex<T> {
+    fn locked(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 /// Writes `path` whole, through a copy beside it renamed over it: a write
 /// cut short (a full disk, the app killed) leaves the file as it was, not
 /// one cut short (a character, its stats, a job: the only copies there are).

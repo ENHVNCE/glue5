@@ -49,6 +49,7 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
+use crate::Locked;
 use crate::dht::{self, Dht};
 
 /// The lobby ports, also the ports looked at for players on the same
@@ -91,10 +92,11 @@ const HOSTING: Duration = Duration::from_secs(6);
 const PATIENCE: Duration = Duration::from_secs(30);
 /// Lobbies at most at a time: the game's and friends' visited.
 const LOBBIES: usize = 4;
-/// Players known per lobby, and addresses being reached, at most: a GTA
-/// session has 32 players; the rest would only be strangers' floods.
-const PLAYERS: usize = 64;
-const TRYING: usize = 256;
+/// Players known per lobby, and addresses being reached, at most: bounds
+/// for floods of strangers' greetings, well above what lobbies hold (the
+/// public one has every player looking for a session at once).
+const PLAYERS: usize = 512;
+const TRYING: usize = 1024;
 /// Addresses kept per player it greeted from.
 const SEEN: usize = 4;
 /// How often a lobby's players are asked for on the DHT (a player who
@@ -151,7 +153,7 @@ static CARD: Mutex<Option<Card>> = Mutex::new(None);
 
 /// This player's card, from now on.
 pub(crate) fn set_card(card: Card) {
-    *CARD.lock().unwrap() = Some(card);
+    *CARD.locked() = Some(card);
 }
 
 impl Card {
@@ -355,7 +357,7 @@ fn bind(ports: impl IntoIterator<Item = u16>) -> std::io::Result<UdpSocket> {
 /// The player's socket and the thread serving it, started once.
 pub fn start() -> std::io::Result<&'static P2p> {
     static STARTING: Mutex<()> = Mutex::new(());
-    let _one = STARTING.lock().unwrap();
+    let _one = STARTING.locked();
     if let Some(p2p) = P2P.get() {
         return Ok(p2p);
     }
@@ -495,7 +497,7 @@ impl P2p {
     /// this game build).
     pub fn join_lobby(&self, name: &str) {
         let now = Instant::now();
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         if state.lobbies.first().is_some_and(|l| l.name == name) {
             return;
         }
@@ -510,7 +512,7 @@ impl P2p {
     /// or a private one): the lobbies visited, and their players, are left.
     pub(crate) fn switch_lobby(&self, name: &str) {
         let now = Instant::now();
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         if state.lobbies.len() == 1 && state.lobbies[0].name == name {
             return;
         }
@@ -528,7 +530,7 @@ impl P2p {
         // looks for a session there (a private one has none to wait for).
         if name.is_empty() {
             self.flags.store(0, Ordering::Relaxed);
-            *self.waiting.lock().unwrap() = None;
+            *self.waiting.locked() = None;
         }
     }
 
@@ -537,7 +539,7 @@ impl P2p {
     /// lobby visited makes room.
     pub(crate) fn visit_lobby(&self, name: &str, via: SocketAddrV4) {
         let now = Instant::now();
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         let lobby = Lobby::new(name, now);
         let id = lobby.id;
         if state.lobby(&id).is_none() {
@@ -559,13 +561,13 @@ impl P2p {
     /// answer.
     pub(crate) fn players(&self) -> Vec<(Card, SocketAddrV4)> {
         let now = Instant::now();
-        let state = self.state.lock().unwrap();
+        let state = self.state.locked();
         state.peers.values().filter(|p| p.direct(now)).filter_map(|p| Some((p.card.clone()?, p.addr?))).collect()
     }
 
     /// The lobbies the player is in (their names), the game's first.
     pub(crate) fn lobbies(&self) -> Vec<String> {
-        self.state.lock().unwrap().lobbies.iter().map(|l| l.name.clone()).collect()
+        self.state.locked().lobbies.iter().map(|l| l.name.clone()).collect()
     }
 
     /// Whether the engine may look for a session now (it asks until it
@@ -578,12 +580,12 @@ impl P2p {
             return true;
         }
         let now = Instant::now();
-        let since = *self.waiting.lock().unwrap().get_or_insert_with(|| {
+        let since = *self.waiting.locked().get_or_insert_with(|| {
             self.flags.store(WAITING, Ordering::Relaxed);
             log::info!("p2p: waiting for the lobby's players");
             now
         });
-        let state = self.state.lock().unwrap();
+        let state = self.state.locked();
         let Some(lobby) = state.lobbies.first() else { return true };
         let discovered = state.dht.settled(&lobby.key) || now - lobby.joined > DISCOVERY;
         let reaching = state.trying.values().any(|(_, l)| *l == lobby.id);
@@ -613,7 +615,7 @@ impl P2p {
         d.extend_from_slice(payload);
         const DST: std::ops::Range<usize> = MAGIC.len() + 7..MAGIC.len() + 11;
         let now = Instant::now();
-        let state = self.state.lock().unwrap();
+        let state = self.state.locked();
         let socket = self.socket();
         for peer in state.peers.values() {
             if peer.vip != dst && !is_broadcast(dst) {
@@ -639,7 +641,7 @@ impl P2p {
 
     /// The DHT, for the friends' lookups.
     pub(crate) fn dht<R>(&self, f: impl FnOnce(&mut Dht) -> R) -> R {
-        f(&mut self.state.lock().unwrap().dht)
+        f(&mut self.state.locked().dht)
     }
 
     /// Directly while the player answers there, else through who
@@ -656,7 +658,7 @@ impl P2p {
         d.extend_from_slice(&self.id.to_be_bytes());
         d.extend_from_slice(&self.vip.load(Ordering::Relaxed).to_be_bytes());
         d.push(flags | self.flags.load(Ordering::Relaxed));
-        if let Some(card) = CARD.lock().unwrap().as_ref() {
+        if let Some(card) = CARD.locked().as_ref() {
             card.write(&mut d);
         }
         let _ = self.socket().send_to(&d, to);
@@ -717,7 +719,7 @@ impl P2p {
             if now - dht_ticked >= TICK {
                 dht_ticked = now;
                 let mut out = dht::Output::default();
-                self.state.lock().unwrap().dht.tick(now, &mut out);
+                self.state.locked().dht.tick(now, &mut out);
                 self.dht_output(out);
                 crate::friends::tick(self, now);
             }
@@ -742,7 +744,7 @@ impl P2p {
             return;
         }
         let now = Instant::now();
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         let mut new = Vec::new();
         let mut friends = Vec::new();
         // This player (its announces, under other ports when its NAT gives
@@ -777,7 +779,7 @@ impl P2p {
     }
 
     fn tick(&self, now: Instant) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         let lobbies: Vec<LobbyId> = state.lobbies.iter().map(|l| l.id).collect();
         state.peers.retain(|id, p| {
             let alive = (now - p.heard < GONE || now - p.introduced < GONE) && lobbies.contains(&p.lobby);
@@ -846,7 +848,7 @@ impl P2p {
     /// port, where broadcasts do not get through; the players there are
     /// introduced to the others by the one reached.
     fn sweep(&self) {
-        let lobbies: Vec<LobbyId> = self.state.lock().unwrap().lobbies.iter().map(|l| l.id).collect();
+        let lobbies: Vec<LobbyId> = self.state.locked().lobbies.iter().map(|l| l.id).collect();
         if lobbies.is_empty() {
             return;
         }
@@ -865,14 +867,14 @@ impl P2p {
     fn receive(&self, from: SocketAddrV4, d: &[u8]) {
         if Dht::is_dht(d) {
             let mut out = dht::Output::default();
-            self.state.lock().unwrap().dht.receive(from, d, &mut out);
+            self.state.locked().dht.receive(from, d, &mut out);
             self.dht_output(out);
             return;
         }
         if d.len() < MAGIC.len() + 1 || d[..MAGIC.len()] != MAGIC {
             return;
         }
-        self.state.lock().unwrap().heard.insert(*from.ip(), Instant::now());
+        self.state.locked().heard.insert(*from.ip(), Instant::now());
         let kind = d[MAGIC.len()];
         if kind >= FRIENDS {
             crate::friends::receive(self, from, kind, &d[MAGIC.len() + 1..]);
@@ -907,10 +909,11 @@ impl P2p {
                 let dst = u32::from_be_bytes(d[6..10].try_into().unwrap());
                 let dst_port = u16::from_be_bytes(d[10..12].try_into().unwrap());
                 let vip = self.vip.load(Ordering::Relaxed);
-                let state = self.state.lock().unwrap();
+                let state = self.state.locked();
                 // Only from players of the lobbies: from where one is heard,
                 // or where the sender greeted from (another of its addresses).
-                if !state.peers.values().any(|p| p.addr == Some(from) || (p.vip == src && p.seen.contains(&from))) {
+                // (A relay may forward from another of its own addresses.)
+                if !state.peers.values().any(|p| p.addr == Some(from) || p.seen.contains(&from)) {
                     return;
                 }
                 if dst == vip || is_broadcast(dst) {
@@ -931,7 +934,7 @@ impl P2p {
 
     fn on_hello(&self, from: SocketAddrV4, lobby: LobbyId, id: u64, vip: u32, flags: u8, card: Option<Card>) {
         let now = Instant::now();
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         if state.lobby(&lobby).is_none() {
             return;
         }
@@ -963,8 +966,11 @@ impl P2p {
         }
         // The nearest of its addresses that answer: one heard lately is
         // given up only for a nearer one (a greeting with its id from
-        // elsewhere would take its traffic), or once it goes quiet.
-        if !peer.direct(now) || peer.addr.is_none_or(|a| nearness(from) < nearness(a)) {
+        // elsewhere would take its traffic), or once it has been quiet for
+        // more than a keepalive (the player moved: Wi-Fi to mobile data, a
+        // NAT that remapped; a spoofer cannot hold off its greetings).
+        let quiet = now - peer.heard > KEEPALIVE + KEEPALIVE / 2;
+        if !peer.direct(now) || quiet || peer.addr.is_none_or(|a| nearness(from) < nearness(a)) {
             peer.addr = Some(from);
         }
         if peer.addr == Some(from) {
@@ -1006,7 +1012,7 @@ impl P2p {
 
     fn on_peers(&self, from: SocketAddrV4, lobby: LobbyId, about: &[(u64, u32, SocketAddrV4)]) {
         let now = Instant::now();
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         // Only a player of the lobby introduces others.
         if state.lobby(&lobby).is_none() || !state.peers.values().any(|p| p.addr == Some(from) && p.lobby == lobby) {
             return;
@@ -1032,8 +1038,10 @@ impl P2p {
             }
         }
         punch.truncate(TRYING.saturating_sub(state.trying.len()));
+        // (Introduced again and again, an address keeps the time it was
+        // first tried, and expires.)
         for addr in &punch {
-            state.trying.insert(*addr, (now, lobby));
+            state.trying.entry(*addr).or_insert((now, lobby));
         }
         drop(state);
         for addr in punch {

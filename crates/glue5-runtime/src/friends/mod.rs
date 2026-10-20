@@ -40,6 +40,7 @@ use serde::{Deserialize, Serialize};
 use crypto::{Identity, Key, Salt, Tag};
 use session::{Handshake, Pattern, Transport};
 
+use crate::Locked;
 use crate::dht;
 
 /// The file of friends, the player's key and code, in the user directory.
@@ -533,7 +534,7 @@ impl Saving {
     /// could not (a full disk), the changes are saved again later: else they
     /// would wait for some other change, and be lost at exit.
     fn write(self) {
-        let mut written = self.written.lock().unwrap();
+        let mut written = self.written.locked();
         if self.version <= *written {
             return;
         }
@@ -931,7 +932,9 @@ impl Service {
             if stale {
                 f.presence_sent = Some((now, presence.clone()));
                 out.push(t.addr, seal(t, &Message::Presence(presence.clone())));
-            } else if now - t.sent > PING {
+            } else if now - t.sent > if t.heard == t.established { RESEND } else { PING } {
+                // A channel nothing came on yet: often, until the other side
+                // takes it (it waits for a datagram on it; see `pending`).
                 out.push(t.addr, seal(t, &Message::Ping));
             }
             // Fresh keys now and then: the side that starts handshakes.
@@ -1736,7 +1739,7 @@ fn send(p2p: &crate::p2p::P2p, out: Out) {
 fn with<R>(f: impl FnOnce(&mut Service, &mut Out) -> R) -> Option<R> {
     let mut out = Out::default();
     let r = {
-        let mut service = SERVICE.lock().unwrap();
+        let mut service = SERVICE.locked();
         f(service.as_mut()?, &mut out)
     };
     if !out.send.is_empty()
@@ -1766,7 +1769,7 @@ pub(crate) fn tick(p2p: &crate::p2p::P2p, now: Instant) {
     let players = p2p.players();
     let mut out = Out::default();
     let (wanted, saving) = {
-        let mut service = SERVICE.lock().unwrap();
+        let mut service = SERVICE.locked();
         let Some(s) = service.as_mut() else { return };
         s.tick(now, lobbies, &players, p2p.port(), &mut out);
         (s.lookups(unix()), s.saving(now, false))
@@ -1775,7 +1778,7 @@ pub(crate) fn tick(p2p: &crate::p2p::P2p, now: Instant) {
     if let Some(saving) = saving {
         saving.write();
     }
-    let mut current = LOOKUPS.lock().unwrap();
+    let mut current = LOOKUPS.locked();
     let keys: Vec<dht::Id> = wanted.iter().map(|(k, _)| *k).collect();
     p2p.dht(|dht| {
         for old in current.iter().filter(|k| !keys.contains(k)) {
@@ -1792,7 +1795,7 @@ pub(crate) fn tick(p2p: &crate::p2p::P2p, now: Instant) {
 /// A datagram of the friends' kinds (after the magic and the kind).
 pub(crate) fn receive(p2p: &crate::p2p::P2p, from: SocketAddrV4, kind: u8, d: &[u8]) {
     let mut out = Out::default();
-    if let Some(s) = SERVICE.lock().unwrap().as_mut() {
+    if let Some(s) = SERVICE.locked().as_mut() {
         s.receive(from, kind, d, Instant::now(), &mut out);
     }
     send(p2p, out);
@@ -1801,7 +1804,7 @@ pub(crate) fn receive(p2p: &crate::p2p::P2p, from: SocketAddrV4, kind: u8, d: &[
 /// An address the DHT gave for a key not a lobby's.
 pub(crate) fn found(p2p: &crate::p2p::P2p, key: dht::Id, addr: SocketAddrV4) {
     let mut out = Out::default();
-    if let Some(s) = SERVICE.lock().unwrap().as_mut() {
+    if let Some(s) = SERVICE.locked().as_mut() {
         s.found(key, addr, Instant::now(), &mut out);
     }
     send(p2p, out);
@@ -1813,7 +1816,7 @@ pub(crate) fn found(p2p: &crate::p2p::P2p, key: dht::Id, addr: SocketAddrV4) {
 /// network once there is something to do on it). `name`: the player's name.
 pub fn start(user_dir: &Path, name: &str) {
     let id = crate::online::gamer_id_in(user_dir);
-    let mut service = SERVICE.lock().unwrap();
+    let mut service = SERVICE.locked();
     if service.is_some() {
         return;
     }
@@ -1836,7 +1839,6 @@ fn start_network() {
     }
 }
 
-/// The player's name as its friends see it.
 /// Writes what the network changed and is not saved yet (it waits up to a
 /// few seconds otherwise): the application ends.
 pub fn flush() {
@@ -1845,6 +1847,7 @@ pub fn flush() {
     }
 }
 
+/// The player's name as its friends see it.
 pub fn set_name(name: &str) {
     with(|s, _| s.local.name = clean_name(name));
 }

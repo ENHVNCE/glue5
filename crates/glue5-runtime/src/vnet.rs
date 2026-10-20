@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use glue5_game::{Env, orig};
 
+use crate::Locked;
 use crate::memory::Mem;
 
 /// `netSocket` fields (this build).
@@ -62,7 +63,7 @@ pub(crate) fn deliver(from_ip: u32, from_port: u16, to_port: u16, data: &[u8]) {
         crate::jobs::receive(from_ip, data);
         return;
     }
-    let mut sockets = SOCKETS.lock().unwrap();
+    let mut sockets = SOCKETS.locked();
     if let Some(queue) = sockets.queues.get_mut(&to_port)
         && queue.len() < QUEUE
     {
@@ -101,7 +102,7 @@ pub(crate) unsafe extern "C" fn native_bind(env: *mut Env, socket: u64) -> u32 {
     }
     // The lowest free, as a system's descriptors: the engine puts them in
     // fd_sets of 1024 (a number past that would write past its set).
-    let mut sockets = SOCKETS.lock().unwrap();
+    let mut sockets = SOCKETS.locked();
     let handle = (1u32..).find(|h| !sockets.ports.contains_key(h)).unwrap();
     sockets.queues.entry(port).or_default();
     sockets.ports.insert(handle, port);
@@ -123,7 +124,7 @@ pub(crate) unsafe extern "C" fn native_bind(env: *mut Env, socket: u64) -> u32 {
 pub(crate) unsafe extern "C" fn native_shutdown(env: *mut Env, socket: u64) {
     let m = unsafe { Mem::of(env) };
     if let Ok(handle) = u32::try_from(m.u64(socket + SOCKET_HANDLE) as i64) {
-        let mut sockets = SOCKETS.lock().unwrap();
+        let mut sockets = SOCKETS.locked();
         if let Some(port) = sockets.ports.remove(&handle)
             && !sockets.ports.values().any(|&p| p == port)
         {
@@ -169,7 +170,7 @@ pub(crate) unsafe extern "C" fn socket_receive(
         m.set_u32(error, 0);
     }
     let port = m.u16(socket + SOCKET_ADDRESS + ADDRESS_PORT);
-    let packet = SOCKETS.lock().unwrap().queues.get_mut(&port).and_then(VecDeque::pop_front);
+    let packet = SOCKETS.locked().queues.get_mut(&port).and_then(VecDeque::pop_front);
     let Some(packet) = packet else { return 0 };
     let len = packet.data.len().min(max as usize);
     m.bytes_mut(buf, len).copy_from_slice(&packet.data[..len]);
@@ -206,7 +207,7 @@ pub(crate) unsafe extern "C" fn socket_select(
         let deadline = (timeout != 0).then(|| {
             Instant::now() + Duration::from_secs(m.u64(timeout)) + Duration::from_micros(m.u32(timeout + 8).into())
         });
-        let mut sockets = SOCKETS.lock().unwrap();
+        let mut sockets = SOCKETS.locked();
         while !handles(read).any(|fd| sockets.has_data(fd)) {
             let Some(left) = deadline.map(|d| d.saturating_duration_since(Instant::now())) else {
                 sockets = ARRIVED.wait(sockets).unwrap();

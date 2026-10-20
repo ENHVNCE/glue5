@@ -23,6 +23,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use glue5_game::{Env, orig};
 
+use crate::Locked;
 use crate::cloud::{NET_STATUS_FAILED, NET_STATUS_SUCCEEDED, finish};
 use crate::memory::Mem;
 
@@ -116,7 +117,7 @@ struct Job {
 static LIBRARY: Mutex<Option<Vec<Job>>> = Mutex::new(None);
 
 fn library() -> MutexGuard<'static, Option<Vec<Job>>> {
-    let mut library = LIBRARY.lock().unwrap();
+    let mut library = LIBRARY.locked();
     if library.is_none() {
         let rt = crate::rt();
         let mut jobs = game_jobs(&crate::layout::data_dir(&rt.config.game_dir).join("common/data/ugc"));

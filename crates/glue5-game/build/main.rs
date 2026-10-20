@@ -56,8 +56,9 @@ fn run() -> Result<()> {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let root = manifest.parent().and_then(Path::parent).context("workspace root")?.to_path_buf();
     let out = PathBuf::from(env::var("OUT_DIR")?);
-    // (A relative target directory is cargo's, from the workspace root:
-    // build scripts run in their crate's directory.)
+    // (A relative target directory is cargo's, from where it runs: the
+    // workspace's root as the tasks run it; build scripts run in their
+    // crate's directory.)
     let tools = env::var_os("CARGO_TARGET_DIR")
         .map(|t| root.join(t))
         .unwrap_or_else(|| root.join("target"))

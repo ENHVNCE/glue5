@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 
 use super::{Job, Kind, MAX_FILE, add, fingerprint, is_content_id, jobs, parse_job, shared_dir};
 
+use crate::Locked;
+
 /// The port on the virtual LAN (the engine's sockets take 6672 and 50000 up).
 pub(crate) const PORT: u16 = 47900;
 const BROADCAST: u32 = u32::MAX;
@@ -93,7 +95,7 @@ fn announce() {
 /// Asks for the pieces missing, a window at a time.
 fn ask() {
     let now = Instant::now();
-    let mut downloads = DOWNLOADS.lock().unwrap();
+    let mut downloads = DOWNLOADS.locked();
     let Some(downloads) = downloads.as_mut() else { return };
     downloads.retain(|id, d| {
         if now.duration_since(d.heard) > GIVE_UP {
@@ -144,7 +146,7 @@ pub(crate) fn receive(from: u32, d: &[u8]) {
 
 fn on_announce(from: u32, d: &[u8]) {
     let have = jobs();
-    let mut downloads = DOWNLOADS.lock().unwrap();
+    let mut downloads = DOWNLOADS.locked();
     let downloads = downloads.get_or_insert_default();
     for e in d.as_chunks::<34>().0 {
         let Ok(id) = std::str::from_utf8(&e[..22]) else { continue };
@@ -185,7 +187,7 @@ fn on_get(from: u32, id: &[u8], hash: &[u8], index: usize) {
     // each held up the network thread).
     static SERVING: Mutex<Option<(String, [u8; 8], Arc<Vec<u8>>)>> = Mutex::new(None);
     let data = {
-        let mut serving = SERVING.lock().unwrap();
+        let mut serving = SERVING.locked();
         match &*serving {
             Some((i, h, d)) if *i == job.id && *h == job.hash => d.clone(),
             _ => {
@@ -212,7 +214,7 @@ fn on_get(from: u32, id: &[u8], hash: &[u8], index: usize) {
 
 fn on_piece(from: u32, id: &[u8], hash: &[u8], index: usize, count: usize, piece: &[u8]) {
     let Ok(id) = std::str::from_utf8(id) else { return };
-    let mut guard = DOWNLOADS.lock().unwrap();
+    let mut guard = DOWNLOADS.locked();
     let Some(downloads) = guard.as_mut() else { return };
     let Some(d) = downloads.get_mut(id) else { return };
     if d.hash != hash || d.from != from || count != d.pieces.len() || index >= count {

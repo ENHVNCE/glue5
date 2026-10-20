@@ -110,7 +110,7 @@ pub fn instance() -> wgpu::Instance {
 /// The renderer as the runtime's GPU backend; presents on `screen` if given.
 pub fn backend(settings: Settings, screen: Option<Screen>) -> GpuBackend {
     Box::new(move |ring: GpuRing| {
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("gpu".into())
             .spawn(move || match init(ring, settings, screen) {
                 Ok(gpu) => {
@@ -121,8 +121,11 @@ pub fn backend(settings: Settings, screen: Option<Screen>) -> GpuBackend {
                     log::error!("gpu: {e:#}");
                     drain(ring);
                 }
-            })
-            .expect("spawning the GPU thread");
+            });
+        // (Called by the engine: a panic here would abort, with no message.)
+        if let Err(e) = spawned {
+            glue5_runtime::exit::fail(format!("no thread for the renderer: {e}"));
+        }
     })
 }
 

@@ -116,8 +116,12 @@ pub(crate) unsafe fn init_main_thread(env: *mut Env, pthread: u64) {
     let init = unsafe {
         exports::_emscripten_thread_init(env, pthread, 0, 1, 1, DEFAULT_PTHREAD_STACK, 0).and_then(|()| init_tls(env))
     };
+    // (Called by the engine: a panic would abort, with no message.)
     if let Err(trap) = init {
-        panic!("main thread init: {trap}");
+        crate::exit::fail(format!("the engine's main thread could not start ({trap})"));
+        loop {
+            std::thread::park();
+        }
     }
 }
 

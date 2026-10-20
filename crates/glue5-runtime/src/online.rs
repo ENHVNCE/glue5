@@ -261,7 +261,11 @@ fn in_lobby_for(kind: crate::friends::SessionKind) {
         // Its key, the way in: 128 bits from the system (as long a name as
         // friends take).
         let mut key = [0u8; 16];
-        getrandom::fill(&mut key).expect("the system's random numbers");
+        if let Err(e) = getrandom::fill(&mut key) {
+            // (In a hook: no panic. The lobby stays as it is.)
+            log::error!("online: no random numbers for a private lobby: {e}");
+            return;
+        }
         p2p.switch_lobby(&key.iter().map(|b| format!("{b:02x}")).collect::<String>());
     }
 }

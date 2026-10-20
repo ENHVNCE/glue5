@@ -378,7 +378,13 @@ impl Vfs {
     }
 
     pub fn unlink(&self, path: &str) -> Result<(), Errno> {
-        fs::remove_file(self.writable(path)?).map_err(io_errno)
+        let host = self.writable(path)?;
+        // A folder is EISDIR, as on Linux (remove() then takes rmdir):
+        // macOS and Windows refuse it with a permission error.
+        if fs::symlink_metadata(&host).is_ok_and(|m| m.is_dir()) {
+            return Err(errno::ISDIR);
+        }
+        fs::remove_file(host).map_err(io_errno)
     }
 
     pub fn rmdir(&self, path: &str) -> Result<(), Errno> {
