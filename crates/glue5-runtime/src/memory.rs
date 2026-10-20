@@ -333,8 +333,22 @@ fn asking<R>(f: impl FnOnce() -> R) -> R {
     r
 }
 
+/// Hook for libc++'s `operator_new_impl` (its nothrow `operator new`, which
+/// std::stable_sort takes its buffers from: a cutscene's load events, the
+/// HUD's markers, past 128 of them): rage's `operator delete` frees them,
+/// into the thread's rage heap, which owns no dlmalloc block (it stops the
+/// game, or takes the block as its own). Rage's `operator new` makes them,
+/// as zlib's default allocator does.
+pub(crate) unsafe extern "C" fn nothrow_new(env: *mut Env, size: u64) -> u64 {
+    match u32::try_from(size.max(1)) {
+        Ok(size) => unsafe { orig::zcalloc(env, 0, 1, size) },
+        Err(_) => 0,
+    }
+}
+
 /// This module's hooks.
 pub(crate) fn hooks(hooks: &mut glue5_game::Hooks) {
+    hooks.nothrow_new = Some(nothrow_new);
     hooks.grow_heap = Some(grow_heap);
     hooks.memory_available = Some(memory_available);
     hooks.largest_block = Some(largest_block);
