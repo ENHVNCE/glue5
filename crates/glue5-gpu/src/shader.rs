@@ -350,6 +350,9 @@ impl Library {
         };
         let source = match stage {
             Stage::Pixel => with_opaque_sample_inputs(&source).unwrap_or(source),
+            Stage::Compute if device.features().contains(wgpu::Features::SUBGROUP) => {
+                with_subgroup_reduction(&source).unwrap_or(source)
+            }
             _ => source,
         };
         let (text, pack) = pack_uniforms(&source);
@@ -875,6 +878,20 @@ fn ps_input_locations(text: &str) -> Vec<u32> {
         .map_or_else(Vec::new, |c| RE_LOCATION.captures_iter(&c[2]).map(|c| c[1].parse().unwrap()).collect())
 }
 
+/// Tiled lighting's depth downsample (`DepthDownsampleCS_Default` and
+/// `_B`, exactly as translated: their text's FNV-1a) with its reduction made
+/// of subgroup operations (see `depth_downsample.wgsl`): the same results.
+fn with_subgroup_reduction(text: &str) -> Option<String> {
+    const TRANSLATED: [(u64, u32); 2] = [(0x48e4fc2565a175b7, 16), (0x3231d97411b0d134, 8)];
+    let fnv = text.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    let &(_, tile) = TRANSLATED.iter().find(|(h, _)| *h == fnv)?;
+    Some(
+        include_str!("depth_downsample.wgsl")
+            .replace("@TILE@", &tile.to_string())
+            .replace("@THREADS@", &(tile * tile).to_string()),
+    )
+}
+
 /// The radar's geometry shader supplies three edge distances at location 5.
 /// WebGPU has no geometry stage: use full coverage, keeping the pixel
 /// shader's texture, depth and clipping calculations. Zero distances would
@@ -1261,6 +1278,155 @@ fn main(@location(0u) v0 : vec2<f32>) -> tint_symbol_1 {
         assert!(text.contains("@group(0u) @binding(0u) var<uniform> cbpack_v : cbpack_t;"));
         assert!(!text.contains("@binding(7u)"));
         naga::front::wgsl::parse_str(&text).unwrap();
+    }
+
+    /// The depth downsample with subgroup operations gives the translation's
+    /// results, bit for bit, on random depths and tiles past the edges
+    /// (GLUE5_GAME_DIR, a GPU with subgroups).
+    #[test]
+    #[ignore]
+    fn subgroup_depth_downsample_matches_the_translation() {
+        let game = std::env::var_os("GLUE5_GAME_DIR").expect("GLUE5_GAME_DIR");
+        let dir = glue5_runtime::layout::shader_dir(Path::new(&game));
+        let gpu = crate::Device::open(&crate::instance(), None).unwrap();
+        assert!(gpu.device.features().contains(wgpu::Features::SUBGROUP), "no subgroups here");
+        for name in ["23a7a3c1c0d38f46", "09596507b8362aed"] {
+            let original = std::fs::read_to_string(dir.join(format!("{name}.wgsl"))).unwrap();
+            let consts: Vec<u64> =
+                serde_json::from_str(&std::fs::read_to_string(dir.join(format!("{name}.consts.json"))).unwrap()).unwrap();
+            let replaced = with_subgroup_reduction(&original).expect("the translation as it was");
+            let tile = if name.starts_with("23") { 16 } else { 8 };
+            let a = run_downsample(&gpu, &original, &consts, tile);
+            let b = run_downsample(&gpu, &replaced, &consts, tile);
+            assert!(a.chunks(16).any(|t| t != &a[..16]), "{name}: the same everywhere, nothing compared");
+            assert_eq!(a.len(), b.len());
+            assert!(a == b, "{name}: results differ");
+        }
+    }
+
+    /// Runs a depth downsample over 1000x600 random depths: its output's bits.
+    fn run_downsample(gpu: &crate::Device, text: &str, consts: &[u64], tile: u32) -> Vec<u8> {
+        let (device, queue) = (&gpu.device, &gpu.queue);
+        let (w, h) = (1000u32, 600u32);
+        let (gw, gh) = (w.div_ceil(tile), h.div_ceil(tile));
+        let mut seed = 0x9e3779b97f4a7c15u64;
+        let mut random = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let (text, pack) = pack_uniforms(text);
+        let module = create_module(device, "downsample", &text).unwrap();
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None,
+            layout: None,
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        // Constant buffers: slot 10 row 3 the depth's size (as integers),
+        // slot 11 row 17 the projection terms.
+        let pack = pack.unwrap();
+        let mut cb = vec![0u8; pack.size as usize];
+        for m in &pack.members {
+            let rows: Vec<[u32; 4]> = match m.slot {
+                10 => vec![[0; 4], [0; 4], [0; 4], [w, h, 0, 0]],
+                _ => (0..18).map(|_| [0.5f32, 1.0, 0.1, 0.002].map(f32::to_bits)).collect(),
+            };
+            let bytes: Vec<u8> = rows.iter().flatten().flat_map(|v| v.to_le_bytes()).collect();
+            let n = bytes.len().min(m.size as usize);
+            cb[m.offset as usize..m.offset as usize + n].copy_from_slice(&bytes[..n]);
+        }
+        let mut table = vec![0u32; consts.len() * 4];
+        for (i, v) in consts.iter().enumerate() {
+            table[i * 4] = *v as u32;
+        }
+        use wgpu::util::DeviceExt;
+        let uniform = |data: &[u8]| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: data,
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+        };
+        let (cb, table) = (uniform(&cb), uniform(&table.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>()));
+        let texture = |format, texels: Vec<u8>, (tw, th): (u32, u32), usage| {
+            device.create_texture_with_data(
+                queue,
+                &wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d { width: tw, height: th, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats: &[],
+                },
+                Default::default(),
+                &texels,
+            )
+        };
+        // Depths, a quarter of them far (1: the sky), and four channels of
+        // anything.
+        let depth: Vec<u8> = (0..w * h)
+            .flat_map(|_| {
+                let r = random();
+                let d = if r % 4 == 0 { 1.0 } else { (r >> 40) as f32 / (1u64 << 24) as f32 };
+                half::f16::from_f32(d).to_le_bytes()
+            })
+            .collect();
+        let other: Vec<u8> = (0..w * h * 4).flat_map(|_| half::f16::from_f32((random() >> 40) as f32 / 1e3).to_le_bytes()).collect();
+        let sampled = wgpu::TextureUsages::TEXTURE_BINDING;
+        let t7 = texture(wgpu::TextureFormat::R16Float, depth, (w, h), sampled);
+        let t8 = texture(wgpu::TextureFormat::Rgba16Float, other, (w, h), sampled);
+        let out = texture(
+            wgpu::TextureFormat::Rgba32Float,
+            vec![0; (gw * gh * 16) as usize],
+            (gw, gh),
+            wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        );
+        let views = [&t7, &t8, &out].map(|t| t.create_view(&Default::default()));
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: cb.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 15, resource: table.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 39, resource: wgpu::BindingResource::TextureView(&views[0]) },
+                wgpu::BindGroupEntry { binding: 40, resource: wgpu::BindingResource::TextureView(&views[1]) },
+                wgpu::BindGroupEntry { binding: 161, resource: wgpu::BindingResource::TextureView(&views[2]) },
+            ],
+        });
+        let bpr = (gw * 16).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (bpr * gh) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(gw, gh, 1);
+        }
+        encoder.copy_texture_to_buffer(
+            out.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bpr), rows_per_image: Some(gh) },
+            },
+            out.size(),
+        );
+        queue.submit([encoder.finish()]);
+        readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let data = readback.slice(..).get_mapped_range().unwrap();
+        (0..gh).flat_map(|y| data[(y * bpr) as usize..(y * bpr + gw * 16) as usize].to_vec()).collect()
     }
 
     /// Every translated shader of the game (GLUE5_GAME_DIR) still validates
