@@ -3,7 +3,7 @@
 //! so the command thread never blocks on the GPU for them.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
@@ -43,6 +43,12 @@ pub enum Work {
         staging: Staging,
         pairs: u32,
         period: f32,
+    },
+    /// A frame's heartbeat: `value`, which the GPU wrote into `staging`
+    /// with the frame if it ran it ([`Done::heartbeat`]).
+    Heartbeat {
+        staging: Staging,
+        value: u64,
     },
     Screenshot {
         staging: Staging,
@@ -141,16 +147,31 @@ impl Staging {
 
 pub struct Done {
     tx: Sender<(wgpu::SubmissionIndex, Vec<Work>)>,
+    pool: Arc<StagingPool>,
 }
 
 impl Done {
     pub fn start(device: wgpu::Device, mem: Mem, pool: Arc<StagingPool>) -> Done {
         let (tx, rx) = channel();
+        let thread_pool = pool.clone();
         std::thread::Builder::new()
             .name("gpu done".into())
-            .spawn(move || run(device, mem, pool, rx))
+            .spawn(move || run(device, mem, thread_pool, rx))
             .expect("spawning the GPU completion thread");
-        Done { tx }
+        Done { tx, pool }
+    }
+
+    /// A small buffer the GPU writes `value` into first thing in the next
+    /// submission; map it after that submit, as [`Work::Heartbeat`].
+    ///
+    /// A driver can lose the GPU's context without saying so: after a GPU
+    /// page fault, Mali on MediaTek has the kernel terminate the context,
+    /// and its submissions go on "completing" without running. The picture
+    /// then stops for good while the game runs on; the heartbeats show it.
+    pub fn heartbeat(&self, device: &wgpu::Device, queue: &wgpu::Queue, value: u64) -> wgpu::Buffer {
+        let buffer = self.pool.get(device, 8);
+        queue.write_buffer(&buffer, 0, &value.to_le_bytes());
+        buffer
     }
 
     /// Runs `work` once `submission` has completed.
@@ -260,6 +281,11 @@ fn finish(device: &wgpu::Device, mem: Mem, pool: &StagingPool, work: Work) {
             }
             release(pool, staging);
         }
+        Work::Heartbeat { staging, value } => {
+            let got = mapped(device, &staging).map(|data| u64::from_le_bytes(data[..8].try_into().unwrap()));
+            release(pool, staging);
+            heartbeat(got, value);
+        }
         Work::Screenshot { staging, width, height, bpr, format, path } => {
             let pixels = mapped(device, &staging).map(|data| data.to_vec());
             release(pool, staging);
@@ -273,5 +299,29 @@ fn finish(device: &wgpu::Device, mem: Mem, pool: &StagingPool, work: Work) {
                 });
             }
         }
+    }
+}
+
+/// Frames in a row whose heartbeat the GPU did not write.
+static MISSED: AtomicU32 = AtomicU32::new(0);
+
+/// Frames in a row without their heartbeat that make the GPU lost: more
+/// than a few, which a phone suspending the app with frames in flight may
+/// drop (iOS fails command buffers in the background).
+const MISSED_MAX: u32 = 30;
+
+/// A frame's heartbeat back: `got` read where the GPU was to write `value`
+/// (None: not mapped, which a device lost reports on its own).
+fn heartbeat(got: Option<u64>, value: u64) {
+    let Some(got) = got else { return };
+    if got == value {
+        MISSED.store(0, Ordering::Relaxed);
+        return;
+    }
+    if MISSED.fetch_add(1, Ordering::Relaxed) + 1 == MISSED_MAX {
+        glue5_runtime::exit::fail(format!(
+            "the GPU no longer runs the game's frames: they complete without their work done \
+             ({MISSED_MAX} in a row; frame {value} read {got}), the driver has lost the GPU's context"
+        ));
     }
 }

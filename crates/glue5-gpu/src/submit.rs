@@ -176,6 +176,8 @@ fn run(
     let mut graves: Vec<Grave> = Vec::new();
     let mut graves_frames = 0;
     let mut last_shown: Option<Instant> = None;
+    // Frames' heartbeats so far (see `Done::heartbeat`).
+    let mut beats = 0;
     while let Ok((batch, encoded)) = rx.recv() {
         let Ok(mut buffers) = encoded.recv() else { return };
         // The window's frames: with frame generation, one made between the
@@ -200,6 +202,11 @@ fn run(
             }
         }
         let t = Instant::now();
+        // A frame's heartbeat, which the GPU writes before its commands.
+        let beat = batch.frame.then(|| {
+            beats += 1;
+            (done.heartbeat(&device, &queue, beats), beats)
+        });
         let submission = queue.submit(buffers);
         // Batches the GPU has finished (objects destroyed in them can be reused).
         let (finished, epoch) = (finished.clone(), batch.epoch);
@@ -213,6 +220,7 @@ fn run(
         // device_reset.rs).
         let mut works: Vec<Work> = batch.maps.into_iter().map(|(buffer, make)| make(Staging::map(buffer))).collect();
         works.extend(batch.works);
+        works.extend(beat.map(|(buffer, value)| Work::Heartbeat { staging: Staging::map(buffer), value }));
         done.after(submission.clone(), works);
         stats.submit_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let generated = frames.len() > 1;
