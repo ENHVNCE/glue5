@@ -63,7 +63,8 @@ pub struct Recipe {
 pub fn slots(elements: &[Element]) -> Vec<(u32, u32)> {
     let mut out: Vec<(u32, u32)> = Vec::new();
     for e in elements {
-        if e[3] < 32 && !out.iter().any(|(s, _)| *s == e[3]) {
+        // (16 vertex buffer slots, as SET_VERTEX_BUFFERS takes.)
+        if e[3] < 16 && !out.iter().any(|(s, _)| *s == e[3]) {
             out.push((e[3], e[5]));
         }
     }

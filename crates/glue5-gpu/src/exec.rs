@@ -370,12 +370,14 @@ impl Gpu {
             }
             op::SCREENSHOT => {
                 let len = c.w(1) as usize;
-                let name = String::from_utf8_lossy(&c.bytes_from(2)[..len.min(c.payload.len() * 4)]).into_owned();
+                let bytes = c.bytes_from(2);
+                let name = String::from_utf8_lossy(&bytes[..len.min(bytes.len())]).into_owned();
                 self.screenshot(c.w(0), &name);
             }
             op::LOG => {
                 let len = c.w(0) as usize;
-                let text = String::from_utf8_lossy(&c.bytes_from(1)[..len.min(c.payload.len() * 4)]).into_owned();
+                let bytes = c.bytes_from(1);
+                let text = String::from_utf8_lossy(&bytes[..len.min(bytes.len())]).into_owned();
                 if text == "stats" {
                     self.log_stats();
                 } else {

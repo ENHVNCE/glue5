@@ -228,9 +228,10 @@ impl Modules {
     pub fn take_idle(&self, idle: u64, max: usize, out: &mut Vec<wgpu::ShaderModule>) {
         let now = now_secs();
         let mut map = self.0.lock().unwrap();
+        // (A module may have been used after `now`, while this waited.)
         let idle_keys: Vec<String> = map
             .iter()
-            .filter(|(_, (module, used))| module.is_some() && now - *used >= idle)
+            .filter(|(_, (module, used))| module.is_some() && now.saturating_sub(*used) >= idle)
             .map(|(k, _)| k.clone())
             .take(max.saturating_sub(out.len()))
             .collect();

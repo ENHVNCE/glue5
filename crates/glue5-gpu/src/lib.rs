@@ -168,7 +168,9 @@ fn save_pipeline_cache(compiler: &pipeline::Compiler, adapter: &wgpu::Adapter, d
         && let Some(data) = cache.get_data()
     {
         let path = dir.join(pipeline_cache_name(&adapter.get_info()));
-        if let Err(e) = std::fs::write(&path, data) {
+        // Through a copy: a cache cut short is refused whole next time.
+        let tmp = path.with_extension("bin.tmp");
+        if let Err(e) = std::fs::write(&tmp, data).and_then(|()| std::fs::rename(&tmp, &path)) {
             log::warn!("gpu: saving {}: {e}", path.display());
         }
     }

@@ -83,7 +83,7 @@ impl Uploads {
         self.bytes += size;
         let (chunk, at) = self.allocate(size, wgpu::COPY_BUFFER_ALIGNMENT);
         {
-            let mut view = chunk.slice(at..at + size).get_mapped_range_mut().expect("staging memory is mapped");
+            let Some(mut view) = self.mapped(&chunk, at, size) else { return };
             view.slice(..data.len()).copy_from_slice(data);
             view.slice(data.len()..).fill(0);
         }
@@ -112,7 +112,7 @@ impl Uploads {
         self.bytes += size;
         let (chunk, base) = self.allocate(size, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64);
         {
-            let mut view = chunk.slice(base..base + size).get_mapped_range_mut().expect("staging memory is mapped");
+            let Some(mut view) = self.mapped(&chunk, base, size) else { return };
             for layer in 0..layers {
                 for row in 0..rows {
                     let src = ((layer * src_rows + row) * bpr) as usize;
@@ -134,6 +134,22 @@ impl Uploads {
             target,
             extent,
         );
+    }
+
+    /// `size` bytes of `chunk` at `at` to write into. None when the chunk
+    /// could not be made (memory ran out, the device was lost): it is
+    /// forgotten and the upload dropped, the game going on without it.
+    fn mapped(&mut self, chunk: &wgpu::Buffer, at: u64, size: u64) -> Option<wgpu::BufferViewMut> {
+        match chunk.slice(at..at + size).get_mapped_range_mut() {
+            Ok(view) => Some(view),
+            Err(e) => {
+                crate::log_once("staging", || format!("gpu: no staging memory ({e}): uploads dropped"));
+                if self.current.as_ref().is_some_and(|(c, _)| c == chunk) {
+                    self.current = None;
+                }
+                None
+            }
+        }
     }
 
     /// The uploads to submit before the next commands, and the chunks they

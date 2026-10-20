@@ -240,7 +240,12 @@ impl Gpu {
             if ro != 3 {
                 t.mark_written();
             }
-            let clear = take_clear(&mut clears, self.s.ds.tex, self.s.ds.mip, self.s.ds.slice);
+            let mut clear = take_clear(&mut clears, self.s.ds.tex, self.s.ds.mip, self.s.ds.slice);
+            // A read-only aspect cannot be cleared as the pass loads it: the
+            // clear goes first, as a pass of its own (D3D clears it anyway).
+            if let Some(c) = clear.take_if(|c| (c.depth.is_some() && ro & 1 != 0) || (c.stencil.is_some() && ro & 2 != 0)) {
+                clears.push(c);
+            }
             if targets.is_empty() {
                 (width, height) = ((t.width >> self.s.ds.mip).max(1), (t.height >> self.s.ds.mip).max(1));
             }
@@ -977,9 +982,16 @@ impl Gpu {
                         0
                     };
                     let offset = (v.offset as i64 + shift).max(0).min(b.bytes as i64) as u64;
-                    avail[slot as usize] = b.bytes - offset;
-                    b.used.set(epoch);
-                    vbs.push((slot, Some((g.clone(), b.uid)), b.base + offset));
+                    if offset < b.bytes {
+                        avail[slot as usize] = b.bytes - offset;
+                        b.used.set(epoch);
+                        vbs.push((slot, Some((g.clone(), b.uid)), b.base + offset));
+                    } else {
+                        // Bound at its end: nothing to read (a draw that
+                        // reads it is clamped away below); the zeros bound
+                        // instead, as an empty slice would stop the GPU thread.
+                        vbs.push((slot, None, 0));
+                    }
                 }
                 None => {
                     avail[slot as usize] = ZERO_VB;
@@ -994,6 +1006,9 @@ impl Gpu {
             let Some((b, g)) = self.objs.buf(id).and_then(|b| b.gpu.as_ref().map(|g| (b, g))) else {
                 return self.skip("no index buffer");
             };
+            if offset as u64 >= b.bytes {
+                return self.skip("index buffer bound past its end");
+            }
             let format = if fmt == format::INDEX_U16 { wgpu::IndexFormat::Uint16 } else { wgpu::IndexFormat::Uint32 };
             let size = if fmt == format::INDEX_U16 { 2 } else { 4 };
             index_max = (b.bytes.saturating_sub(offset as u64) / size).saturating_sub(start as u64);

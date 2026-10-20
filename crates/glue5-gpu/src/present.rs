@@ -367,6 +367,10 @@ pub struct Window {
 /// within 1% fill the frame: a band one pixel wide would look like a fault,
 /// a 1% stretch does not show.
 fn fit((sw, sh): (u32, u32), (dw, dh): (u32, u32)) -> (u32, u32, u32, u32) {
+    // A window with no area (Windows lets one shrink to no height).
+    if dw == 0 || dh == 0 {
+        return (0, 0, dw, dh);
+    }
     let (sw, sh) = (sw.max(1) as f64, sh.max(1) as f64);
     if ((sw / sh) / (dw as f64 / dh as f64) - 1.0).abs() < 0.01 {
         return (0, 0, dw, dh);
@@ -939,6 +943,9 @@ impl Output {
             self.frame_interval = if self.frame_interval.is_zero() { dt } else { (self.frame_interval * 7 + dt) / 8 };
         }
         let rect = fit((src.width, src.height), self.presentation.size());
+        if rect.2 == 0 || rect.3 == 0 {
+            return None;
+        }
         let mut size = (rect.2, rect.3);
         if self.presentation.upscaler().is_temporal() {
             // At most what they are made for; the present pass scales the rest.
@@ -953,8 +960,11 @@ impl Output {
         if self.presentation.upscaler() != Upscaler::Fsr {
             self.fsr.release();
         }
+        // Temporal upscalers only scale up (an image a little less tall
+        // than the frame still fills the window: see `fit`).
+        let up = size.0 >= src.width && size.1 >= src.height;
         match self.presentation.upscaler() {
-            Upscaler::Fsr if size.0 >= src.width => {
+            Upscaler::Fsr if up => {
                 let (sharpness, dt) = (self.presentation.sharpness(), self.frame_interval.as_secs_f32());
                 let up = self.fsr.upscale(device, src, size, sharpness, dt);
                 // (MetalFX's effects freed.)
@@ -977,8 +987,8 @@ impl Output {
         let kind = match self.presentation.upscaler() {
             _ if none => None,
             // (The spatial scaler only scales up.)
-            Upscaler::MetalFx if size.0 > src.width => Some(Kind::Spatial),
-            Upscaler::MetalFxTemporal if size.0 >= src.width => Some(Kind::Temporal),
+            Upscaler::MetalFx if size.0 > src.width && size.1 > src.height => Some(Kind::Spatial),
+            Upscaler::MetalFxTemporal if size.0 >= src.width && size.1 >= src.height => Some(Kind::Temporal),
             _ => None,
         };
         let interpolate = self.presentation.frame_generation();
