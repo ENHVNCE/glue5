@@ -12,6 +12,11 @@ use sdl3::video::Window;
 /// units (an `f32`'s bits); 0 without one, or with one that floats.
 static OVERLAP: AtomicU32 = AtomicU32::new(0);
 
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+fn set(units: f32) {
+    OVERLAP.store(units.max(0.0).to_bits(), Ordering::Relaxed);
+}
+
 /// The on-screen keyboard's height over the window's bottom edge, in
 /// points: 0 when there is none, when it floats (an iPad's undocked one),
 /// and on platforms without one.
@@ -22,5 +27,78 @@ pub fn overlap(window: &Window) -> f32 {
 /// Starts following the keyboard (once, on the main thread, with the
 /// window made).
 pub fn init(window: &Window) {
+    #[cfg(target_os = "ios")]
+    ios::observe(window);
     let _ = window;
 }
+
+/// iOS: UIKit tells where the keyboard goes as it starts moving (shown,
+/// hidden, resized, undocked), in the screen's coordinates; UIKit's points
+/// are SDL's window units there.
+#[cfg(target_os = "ios")]
+mod ios {
+    use std::ptr::NonNull;
+
+    use block2::RcBlock;
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::{NSRect, NSString};
+    use sdl3::video::Window;
+
+    #[link(name = "UIKit", kind = "framework")]
+    unsafe extern "C" {
+        static UIKeyboardWillChangeFrameNotification: &'static NSString;
+        static UIKeyboardWillHideNotification: &'static NSString;
+        static UIKeyboardFrameEndUserInfoKey: &'static NSString;
+    }
+
+    pub(super) fn observe(window: &Window) {
+        use sdl3::sys::properties::SDL_GetPointerProperty;
+        use sdl3::sys::video::{SDL_GetWindowProperties, SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER};
+        let pointer = unsafe {
+            SDL_GetPointerProperty(SDL_GetWindowProperties(window.raw()), SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, std::ptr::null_mut())
+        };
+        // SDL's UIWindow, kept by the block for as long as the app runs.
+        let Some(ui_window) = (unsafe { Retained::retain(pointer.cast::<AnyObject>()) }) else {
+            log::warn!("keyboard: no UIWindow");
+            return;
+        };
+        let moved = RcBlock::new(move |notification: NonNull<AnyObject>| {
+            super::set(overlap(&ui_window, unsafe { notification.as_ref() }).unwrap_or(0.0));
+        });
+        let hidden = RcBlock::new(|_: NonNull<AnyObject>| super::set(0.0));
+        unsafe {
+            let center: Retained<AnyObject> = msg_send![class!(NSNotificationCenter), defaultCenter];
+            for (name, block) in [(UIKeyboardWillChangeFrameNotification, &moved), (UIKeyboardWillHideNotification, &hidden)] {
+                // The centre keeps the observer (and the block) until the app ends.
+                let _: Retained<AnyObject> = msg_send![
+                    &center,
+                    addObserverForName: name,
+                    object: None::<&AnyObject>,
+                    queue: None::<&AnyObject>,
+                    usingBlock: &**block
+                ];
+            }
+        }
+    }
+
+    /// The keyboard's end frame from a notification, as the height it covers
+    /// over the window's bottom edge; 0 when it does not reach that edge
+    /// (floating, undocked, split).
+    fn overlap(ui_window: &AnyObject, notification: &AnyObject) -> Option<f32> {
+        unsafe {
+            let info: Option<Retained<AnyObject>> = msg_send![notification, userInfo];
+            let value: Option<Retained<AnyObject>> = msg_send![&*info?, objectForKey: UIKeyboardFrameEndUserInfoKey];
+            let frame: NSRect = msg_send![&*value?, CGRectValue];
+            let screen: Option<Retained<AnyObject>> = msg_send![ui_window, screen];
+            let space: Retained<AnyObject> = msg_send![&*screen?, coordinateSpace];
+            let frame: NSRect = msg_send![ui_window, convertRect: frame, fromCoordinateSpace: &*space];
+            let bounds: NSRect = msg_send![ui_window, bounds];
+            let bottom = bounds.origin.y + bounds.size.height;
+            let reaches = frame.size.height > 0.0 && frame.origin.y + frame.size.height >= bottom - 1.0;
+            Some(if reaches { (bottom - frame.origin.y).clamp(0.0, bounds.size.height) as f32 } else { 0.0 })
+        }
+    }
+}
+

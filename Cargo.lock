@@ -961,6 +961,7 @@ version = "0.1.0"
 dependencies = [
  "android_logger",
  "anyhow",
+ "block2",
  "clap",
  "egui",
  "env_logger",
