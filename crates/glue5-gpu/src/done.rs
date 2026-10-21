@@ -3,8 +3,8 @@
 //! so the command thread never blocks on the GPU for them.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 
 use glue5_runtime::gpu::{OCCLUSION_VISIBLE_COUNT, store_query};
@@ -95,7 +95,10 @@ pub enum Copy {
 /// A mappable buffer being read back; returned to the pool afterwards.
 pub struct Staging {
     pub buffer: wgpu::Buffer,
-    mapped: Arc<AtomicU8>,
+    /// Whether mapping succeeded, from the map's callback.
+    result: Receiver<bool>,
+    /// It is mapped (once waited for, see `mapped`).
+    mapped: bool,
 }
 
 /// MAP_READ buffers, reused.
@@ -131,17 +134,14 @@ impl StagingPool {
 impl Staging {
     /// Starts mapping `buffer`; call right after the submit that fills it.
     pub fn map(buffer: wgpu::Buffer) -> Staging {
-        let mapped = Arc::new(AtomicU8::new(0));
-        let m = mapped.clone();
-        buffer
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |r| {
-                if let Err(e) = &r {
-                    log::warn!("gpu: mapping a readback: {e}");
-                }
-                m.store(if r.is_ok() { 1 } else { 2 }, Ordering::Release)
-            });
-        Staging { buffer, mapped }
+        let (tx, result) = sync_channel(1);
+        buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            if let Err(e) = &r {
+                log::warn!("gpu: mapping a readback: {e}");
+            }
+            let _ = tx.send(r.is_ok());
+        });
+        Staging { buffer, result, mapped: false }
     }
 }
 
@@ -186,37 +186,44 @@ fn run(device: wgpu::Device, mem: Mem, pool: Arc<StagingPool>, rx: Receiver<(wgp
     // The engine paces its frames on what this thread completes.
     glue5_runtime::qos::set(glue5_runtime::qos::Qos::Interactive);
     while let Ok((submission, works)) = rx.recv() {
-        if let Err(e) = device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: None }) {
-            log::error!("gpu: waiting for a submission: {e}");
-        }
+        let done = match device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: None }) {
+            Ok(_) => true,
+            Err(e) => {
+                log::error!("gpu: waiting for a submission: {e}");
+                false
+            }
+        };
         for work in works {
-            finish(&device, mem, &pool, work);
+            finish(mem, &pool, work, done);
         }
     }
 }
 
 /// The mapped contents of a staging buffer, or `None` if mapping failed.
-fn mapped(device: &wgpu::Device, s: &Staging) -> Option<wgpu::BufferView> {
-    if s.mapped.load(Ordering::Acquire) == 0 {
-        // Callbacks of the submission waited for have run; a straggler gets one more poll.
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
-    }
-    if s.mapped.load(Ordering::Acquire) == 1 { s.buffer.slice(..).get_mapped_range().ok() } else { None }
+///
+/// Once its submission is `done`, the buffer is mapped and the map's
+/// callback has run or is about to: wgpu runs it on the thread that found
+/// the submission done, once that thread is through (the submit thread's
+/// submits and waits find them too). Without `done` (the wait failed: the
+/// device lost) it may never run.
+fn mapped(s: &mut Staging, done: bool) -> Option<wgpu::BufferView> {
+    s.mapped = if done { s.result.recv().unwrap_or(false) } else { s.result.try_recv().unwrap_or(false) };
+    if s.mapped { s.buffer.slice(..).get_mapped_range().ok() } else { None }
 }
 
 fn release(pool: &StagingPool, s: Staging) {
-    if s.mapped.load(Ordering::Acquire) == 1 {
+    if s.mapped {
         s.buffer.unmap();
         pool.put(s.buffer);
     }
 }
 
-fn finish(device: &wgpu::Device, mem: Mem, pool: &StagingPool, work: Work) {
+fn finish(mem: Mem, pool: &StagingPool, work: Work, done: bool) {
     match work {
         Work::Store { at, value } => mem.store_notify(at, value),
         Work::Query { at, result, seq } => store_query(mem, at, result, seq),
-        Work::Readback { staging, copy, flag } => {
-            if let Some(data) = mapped(device, &staging) {
+        Work::Readback { mut staging, copy, flag } => {
+            if let Some(data) = mapped(&mut staging, done) {
                 match copy {
                     Copy::Bytes { to, skip, len } => mem.bytes_mut(to, len).copy_from_slice(&data[skip..skip + len]),
                     Copy::Rows { to, rows, row_bytes, bpr, row_pitch, depth, slice_pitch, pick } => {
@@ -246,8 +253,8 @@ fn finish(device: &wgpu::Device, mem: Mem, pool: &StagingPool, work: Work) {
                 mem.store_notify(flag, 0);
             }
         }
-        Work::Occlusion { staging, queries } => {
-            let counts: Option<Vec<u64>> = mapped(device, &staging).map(|data| {
+        Work::Occlusion { mut staging, queries } => {
+            let counts: Option<Vec<u64>> = mapped(&mut staging, done).map(|data| {
                 queries
                     .iter()
                     .map(|q| {
@@ -268,26 +275,26 @@ fn finish(device: &wgpu::Device, mem: Mem, pool: &StagingPool, work: Work) {
                 store_query(mem, q.at, if q.predicate { (count != 0) as u64 } else { count }, q.seq);
             }
         }
-        Work::Profile { staging, resolved } => {
-            if let Some(data) = mapped(device, &staging) {
+        Work::Profile { mut staging, resolved } => {
+            if let Some(data) = mapped(&mut staging, done) {
                 resolved.add(&data);
             }
             release(pool, staging);
         }
         #[cfg(not(target_vendor = "apple"))]
-        Work::GpuTime { staging, pairs, period } => {
-            if let Some(data) = mapped(device, &staging) {
+        Work::GpuTime { mut staging, pairs, period } => {
+            if let Some(data) = mapped(&mut staging, done) {
                 crate::perf::timestamps_done(&data, pairs, period);
             }
             release(pool, staging);
         }
-        Work::Heartbeat { staging, value } => {
-            let got = mapped(device, &staging).map(|data| u64::from_le_bytes(data[..8].try_into().unwrap()));
+        Work::Heartbeat { mut staging, value } => {
+            let got = mapped(&mut staging, done).map(|data| u64::from_le_bytes(data[..8].try_into().unwrap()));
             release(pool, staging);
             heartbeat(got, value);
         }
-        Work::Screenshot { staging, width, height, bpr, format, path } => {
-            let pixels = mapped(device, &staging).map(|data| data.to_vec());
+        Work::Screenshot { mut staging, width, height, bpr, format, path } => {
+            let pixels = mapped(&mut staging, done).map(|data| data.to_vec());
             release(pool, staging);
             // Encoding takes tens of milliseconds: not on this thread.
             if let Some(pixels) = pixels {
