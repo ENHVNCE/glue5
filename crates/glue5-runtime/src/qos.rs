@@ -4,7 +4,7 @@
 //! Android the interactive threads form a performance hint session told how
 //! long frames take ([`frame`]), from which the system sets the CPU clocks;
 //! there and on Linux each class is also a nice value, Android's own for
-//! such a thread.
+//! such a thread, and interactive threads' timers have no slack.
 
 #[derive(Clone, Copy, Debug)]
 pub enum Qos {
@@ -32,7 +32,10 @@ pub fn set(qos: Qos) {
         libc::pthread_set_qos_class_self_np(class, 0);
     }
     #[cfg(any(target_os = "android", target_os = "linux"))]
-    nice::set(qos);
+    {
+        nice::set(qos);
+        slack::set(qos);
+    }
     #[cfg(target_os = "android")]
     if let Qos::Interactive = qos {
         hint::join();
@@ -90,6 +93,43 @@ mod nice {
             }
             allowed
         })
+    }
+}
+
+/// Timer slack: how late Linux may end a thread's timed sleeps and waits,
+/// to wake it with others' (50 µs by default, as Android's in the
+/// foreground). The engine's waits on a frame's path are short:
+/// `sysIpcYield` sleeps 20 µs at a time in its loops (the main thread's
+/// render lists, among others), 70 with the slack. Interactive threads get
+/// none; threads inherit it, so the others get back the process's. (Android
+/// 10-12 set every thread's back to 50 µs as the app comes back to the
+/// foreground; from 13 on the system's profiles go to the whole process,
+/// which leaves it.)
+#[cfg(any(target_os = "android", target_os = "linux"))]
+mod slack {
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::Qos;
+
+    pub fn set(qos: Qos) {
+        // The process's, as the first thread to get a class has it (no
+        // thread's changed yet).
+        static NORMAL: OnceLock<i32> = OnceLock::new();
+        let normal = *NORMAL.get_or_init(|| unsafe { libc::prctl(libc::PR_GET_TIMERSLACK) });
+        if normal <= 0 {
+            return;
+        }
+        let slack = match qos {
+            Qos::Interactive => 1,
+            _ => normal,
+        };
+        if unsafe { libc::prctl(libc::PR_SET_TIMERSLACK, slack as libc::c_ulong) } != 0 {
+            static TOLD: AtomicBool = AtomicBool::new(false);
+            if !TOLD.swap(true, Ordering::Relaxed) {
+                log::warn!("threads: timer slack {slack} ns: {}", std::io::Error::last_os_error());
+            }
+        }
     }
 }
 
