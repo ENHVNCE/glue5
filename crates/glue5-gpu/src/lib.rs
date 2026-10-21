@@ -40,7 +40,7 @@ mod uploads;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -96,6 +96,20 @@ pub unsafe fn enable_metal_hud() {
     unsafe {
         std::env::set_var("MTL_HUD_ENABLED", "1")
     };
+}
+
+/// Has the renderer free, at its next frame, what it keeps only to be faster
+/// and can make again: the system is short of memory (iOS's memory warning,
+/// Android's `onTrimMemory`). Callable from any thread.
+pub fn trim() {
+    TRIM.store(true, Ordering::Relaxed);
+}
+
+static TRIM: AtomicBool = AtomicBool::new(false);
+
+/// [`trim`] was asked for since the last call.
+pub(crate) fn take_trim() -> bool {
+    TRIM.swap(false, Ordering::Relaxed)
 }
 
 /// The wgpu instance for this platform (create surfaces with it).
@@ -313,7 +327,14 @@ impl Device {
         .context("creating the GPU device")?;
         log::info!("gpu: {} ({:?}, {}), features {:?}", info.name, info.backend, info.driver_info, features);
         device.on_uncaptured_error(error_handler(None));
-        device.set_device_lost_callback(|reason, message| log::error!("gpu: device lost ({reason:?}): {message}"));
+        device.set_device_lost_callback(|reason, message| {
+            log::error!("gpu: device lost ({reason:?}): {message}");
+            // Nothing is drawn any more: the game says so and ends, rather
+            // than run on behind a still picture.
+            if reason != wgpu::DeviceLostReason::Destroyed {
+                glue5_runtime::exit::fail(format!("the GPU device was lost: {message}"));
+            }
+        });
         Ok(Device { adapter, device, queue, features, profile })
     }
 }
@@ -379,7 +400,7 @@ fn init(ring: GpuRing, settings: Settings, screen: Option<Screen>) -> Result<exe
         Some(p) => p.thread.join().map_err(|_| anyhow::anyhow!("preparing the pipelines panicked"))??,
         None => prepare::prepare(&gpu, &settings, &Default::default())?,
     };
-    let prepare::Prepared { library, compiler, pipes, known } = prepared;
+    let prepare::Prepared { library, compiler, pipes, known, computes, known_computes, blits } = prepared;
     let Device { adapter, device, queue, features: _, profile } = gpu;
     device.on_uncaptured_error(error_handler(Some(ring)));
     let caps = compiler.caps;
@@ -432,7 +453,7 @@ fn init(ring: GpuRing, settings: Settings, screen: Option<Screen>) -> Result<exe
         pdirty: true,
         last_pipe: None,
         last_programs: (0, 0, 0, 0),
-        formats_seen: [0; 3],
+        srvs: Default::default(),
         bound_formats: Default::default(),
         chunk_passes: 0,
         batch_since: None,
@@ -444,12 +465,14 @@ fn init(ring: GpuRing, settings: Settings, screen: Option<Screen>) -> Result<exe
         known,
         pass_tails: Default::default(),
         recipes_new: Vec::new(),
+        known_computes,
+        computes_new: Vec::new(),
         key: Vec::new(),
         binds: Default::default(),
         packs: Default::default(),
         dummies: Default::default(),
-        blits: Default::default(),
-        computes: Default::default(),
+        blits,
+        computes,
         next_buffer_uid: 0,
         slabs,
         recycler,

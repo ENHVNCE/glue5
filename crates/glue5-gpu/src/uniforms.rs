@@ -4,8 +4,9 @@
 //! each submit.
 //!
 //! Two sets of chunks alternate by frame, so a frame's constants never wait
-//! for the GPU to finish reading the previous frame's; bind groups name a
-//! chunk's buffer, so each (program, resources) pair needs one per chunk.
+//! for the GPU to finish reading the previous frame's. The constants' bind
+//! groups name a chunk's buffer: a few per program layout and chunk (those
+//! of the textures do not depend on the chunks).
 
 pub const CHUNK: u32 = 4 << 20;
 
@@ -95,11 +96,7 @@ impl Uniforms {
         for c in &mut self.sets[self.set] {
             if let Some((lo, hi)) = c.dirty.take() {
                 let hi = hi.next_multiple_of(4).min(CHUNK);
-                // In pieces that fit the staging chunks.
-                for at in (lo..hi).step_by(crate::uploads::CHUNK as usize) {
-                    let end = (at + crate::uploads::CHUNK as u32).min(hi);
-                    uploads.buffer(&c.buffer, at as u64, &c.mirror[at as usize..end as usize]);
-                }
+                uploads.buffer(&c.buffer, lo as u64, &c.mirror[lo as usize..hi as usize]);
             }
         }
     }

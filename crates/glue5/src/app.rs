@@ -144,6 +144,9 @@ pub fn run() -> Result<()> {
             #[cfg(target_os = "android")]
             glue5_runtime::frame_pace::set_background(true);
         }
+        // The system is short of memory: iOS's memory warning, Android's
+        // onTrimMemory (any level).
+        Event::AppLowMemory { .. } => glue5_gpu::trim(),
         Event::AppDidEnterForeground { .. } => {
             life.background.store(false, Ordering::Relaxed);
             life.came_back.store(true, Ordering::Relaxed);

@@ -386,6 +386,9 @@ struct Display {
     surface: wgpu::Surface<'static>,
     /// Size and vsync it is configured with.
     configured: Option<(u32, u32, bool)>,
+    /// The last configuration a suboptimal image had configured anew.
+    #[cfg_attr(target_vendor = "apple", allow(dead_code))]
+    suboptimal: Option<(u32, u32, bool)>,
     /// The surface's format, and the one its images are viewed with (no sRGB).
     surface_format: Option<TextureFormat>,
     format: Option<TextureFormat>,
@@ -458,8 +461,16 @@ impl Display {
         let format = self.format?;
         let surface = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
+            // Configured anew once per configuration: the cause may be the
+            // configuration itself (as with Android's loader, which calls
+            // every image of a swapchain not pre-rotated suboptimal; wgpu
+            // hides it there), the driver saying so at every image after,
+            // and configuring waits for the GPU.
             wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
-                self.configured = None;
+                if self.suboptimal != self.configured {
+                    self.suboptimal = self.configured;
+                    self.configured = None;
+                }
                 t
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
@@ -735,6 +746,7 @@ impl Output {
         let display = Display {
             surface: window.surface,
             configured: None,
+            suboptimal: None,
             surface_format: None,
             format: None,
             #[cfg(target_vendor = "apple")]
@@ -816,6 +828,7 @@ impl Output {
         if let Some(surface) = self.presentation.0.surface.lock().unwrap().take() {
             display.surface = surface;
             display.configured = None;
+            display.suboptimal = None;
             log::debug!("gpu: presenting into the window's new surface");
         }
         display.acquire(
@@ -1060,8 +1073,14 @@ fn save_png(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture,
         texture.size(),
     );
     queue.submit([encoder.finish()]);
-    buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    let (tx, mapped) = std::sync::mpsc::sync_channel(1);
+    buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
     device.poll(wgpu::PollType::wait_indefinitely())?;
+    // Its callback runs on the thread that found the copy done: maybe the
+    // completion thread, once through (see done.rs).
+    mapped.recv()??;
     let data = buffer.slice(..).get_mapped_range()?;
     write_png(path, &data, w, h, bpr, texture.format())
 }
@@ -1110,6 +1129,9 @@ impl Gpu {
             // Bind groups unused for 10-20 s, freed off the command thread.
             let stale = self.binds.age();
             self.pool.background(move || drop(stale));
+        }
+        if crate::take_trim() {
+            self.trim();
         }
         if self.last_save.elapsed() >= Duration::from_secs(60) {
             self.save_caches();
@@ -1172,33 +1194,46 @@ impl Gpu {
         ));
     }
 
-    /// Pipeline recipes and the driver's pipeline cache, for the next run.
+    /// Pipeline recipes and the driver's pipeline cache, for the next run,
+    /// written by a compile thread: the driver's cache is megabytes to get
+    /// and write, and files may take long (the ring stood still meanwhile).
     pub fn save_caches(&mut self) {
         self.last_save = Instant::now();
         let Some(dir) = self.settings.cache_dir.clone() else {
             return;
         };
-        if !self.recipes_new.is_empty() {
-            use std::io::Write;
-            let lines: String = self.recipes_new.drain(..).map(|r| r.to_json().to_string() + "\n").collect();
-            let path = dir.join("pipelines.jsonl");
-            let result = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .and_then(|mut f| f.write_all(lines.as_bytes()));
-            if let Err(e) = result {
-                log::warn!("gpu: saving {}: {e}", path.display());
-            }
-        }
+        let recipes = std::mem::take(&mut self.recipes_new);
+        let computes = std::mem::take(&mut self.computes_new);
+        // The driver's cache only when pipelines were added.
         let compiled = self.compiler.compiled.load(std::sync::atomic::Ordering::Relaxed);
-        if compiled != self.saved_compiled {
-            // Off the command thread: the driver's cache is megabytes to get
-            // and write (the ring stood still meanwhile).
-            let (compiler, adapter) = (self.compiler.clone(), self.adapter.clone());
-            self.pool.background(move || crate::save_pipeline_cache(&compiler, &adapter, &dir));
-            self.saved_compiled = compiled;
+        let driver = (compiled != self.saved_compiled).then(|| (self.compiler.clone(), self.adapter.clone()));
+        self.saved_compiled = compiled;
+        if recipes.is_empty() && computes.is_empty() && driver.is_none() {
+            return;
         }
+        self.pool.background(move || {
+            if !recipes.is_empty() || !computes.is_empty() {
+                let lines = recipes.iter().map(|r| r.to_json()).chain(computes.iter().map(|r| r.to_json()));
+                append_recipes(&dir.join("pipelines.jsonl"), lines);
+            }
+            if let Some((compiler, adapter)) = driver {
+                crate::save_pipeline_cache(&compiler, &adapter, &dir);
+            }
+        });
+    }
+}
+
+/// Recipes added to the file of those recorded, a line each.
+fn append_recipes(path: &Path, recipes: impl Iterator<Item = serde_json::Value>) {
+    use std::io::Write;
+    let lines: String = recipes.map(|r| r.to_string() + "\n").collect();
+    let result = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut f| f.write_all(lines.as_bytes()));
+    if let Err(e) = result {
+        log::warn!("gpu: saving {}: {e}", path.display());
     }
 }
 

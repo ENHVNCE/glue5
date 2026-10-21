@@ -181,8 +181,9 @@ Windows' clang-cl).
 
 `crates/glue5-game/hooks.rs` lists the game functions the host replaces,
 by their wasm name; an unset hook keeps the original, and a hook can call
-it through `glue5_game::orig`. How the whole thing works is in the
-[design notes](design.md).
+it through `glue5_game::orig`. Those the host only calls are listed in its
+`CALLED_ONLY` too: the game's own calls then go to them directly. How the
+whole thing works is in the [design notes](design.md).
 
 [wasm2c]: https://github.com/WebAssembly/wabt/tree/main/wasm2c
 [xcodegen]: https://github.com/yonaskolb/XcodeGen

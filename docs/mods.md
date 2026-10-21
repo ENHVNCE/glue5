@@ -7,7 +7,7 @@ served by the app to your browser, on the same computer or from your phone
 to your computer.
 
 <p align="center">
-  <img src="images/studio.jpg" alt="GLUE 5 Studio: a mod open in the editor, its menu live from the game below" width="100%">
+  <img src="images/studio.webp" alt="GLUE 5 Studio: a mod open in the editor, its menu live from the game below" width="100%">
 </p>
 
 ## Using mods

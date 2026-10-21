@@ -374,7 +374,10 @@ shader pair, vertex layout, blend/depth/raster states and target formats, so
 they cannot all be enumerated, and the combinations appear during play.
 Every pipeline the game asks for is recorded
 (`<user dir>/cache/pipelines.jsonl`, with the vertex shader's input
-signature, which places the layout's elements).
+signature, which places the layout's elements). A recipe keeps only what
+its pipeline depends on (the state words it ignores are zeroed): engine
+states that differ elsewhere share one pipeline, about one in eight of the
+seed's.
 
 Before the game starts, Play compiles the known pipelines on every core: the
 app's seed (`crates/glue5-gpu/seed/pipelines.jsonl`, recipes merged from
@@ -400,7 +403,9 @@ Recipes include the program variants the renderer picks for what is bound
 (depth buffers read as textures, everywhere; 32-bit float textures read
 unfiltered, on GPUs that cannot filter them, such as the A15 and most
 Android GPUs). The light and foliage shaders use them, so they are recorded
-and prepared too.
+and prepared too. Compute pipelines are recorded and prepared alike (the
+shader, its variant, the formats of the storage textures bound); a dispatch
+whose pipeline is not ready makes it then, as its results are needed.
 
 Pipelines never recorded still compile in the background during play: a
 draw whose pipeline is not ready is skipped for that frame instead of
@@ -525,7 +530,10 @@ The present step scales the back buffer with one of four upscalers (Settings
 | FSR 2 (AMD, through sp-fidelity) | GPUs with the features it needs | the same as MetalFX Temporal |
 
 Upscalers run on the submit thread, on the same queue, after the game's
-commands and before the present pass, which draws their result 1:1. MetalFX
+commands and before the present pass, which draws their result 1:1. The
+game's commands and the upscaler's are submitted before the window's next
+image is taken: waiting for one does not hold the frame back from the GPU,
+and the present pass, drawing into it, is a submission of its own. MetalFX
 has command buffers of its own because wgpu does not let raw Metal commands
 share its encoder; FSR is wgpu compute passes. Upscalers are made for one
 input and one output size; while the sizes change (a window being resized)
