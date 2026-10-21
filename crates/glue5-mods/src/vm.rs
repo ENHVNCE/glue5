@@ -461,6 +461,7 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
     natives::install(&lua, &task)?;
     crate::globals::install(&lua)?;
     crate::memory::install(&lua, sched.instance)?;
+    crate::offsets::install(&lua)?;
     crate::handling::install(&lua)?;
     // The standard library, Luau over the natives and the tables above.
     crate::stdlib::install(&lua)?;

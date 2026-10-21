@@ -956,6 +956,8 @@ declare native: {
 -- The game's memory (addresses are the game's; a read pointer is an address too). Checked against the
 -- memory's size only: a wrong write can corrupt or crash the game. Offsets are not PC GTA V's.
 declare memory: {
+	-- Where fields of the game's objects are (this game build's offsets): memory.offsets.vehicle.rpm.
+	offsets: MemoryOffsets,
 	-- The entity's address (getScriptHandleBaseAddress), nil if there is none.
 	entity: (handle: Entity?) -> number?,
 	readU8: (address: number) -> number,
