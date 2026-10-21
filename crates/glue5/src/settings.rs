@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::paths::{MOBILE, TV};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// The game directory, once found or chosen.

@@ -141,10 +141,15 @@ pub fn run() -> Result<()> {
         // The game stops at the end of its frame: Android lets it run on
         // unseen, and iOS, until it suspends the app, fails its frames'
         // GPU work (not while only inactive: the game shows there).
+        // A phone may end an app in the background without a word: what
+        // it should keep is saved as it goes there, from here (Android's
+        // SDL then waits in the loop's wait for events until the app comes
+        // back: the loop does not run again before).
         Event::AppDidEnterBackground { .. } => {
             life.suspended.store(true, Ordering::Relaxed);
             glue5_runtime::frame_pace::set_background(true);
             glue5_gpu::set_background(true);
+            life.save();
         }
         // The system is short of memory: iOS's memory warning, Android's
         // onTrimMemory. SDL passes on every level of the latter, the app's
@@ -273,6 +278,35 @@ struct Lifecycle {
     came_back: AtomicBool,
     /// Was in the background for real (not only inactive) before that.
     suspended: AtomicBool,
+    /// What a trip to the background saves, as the loop last left it.
+    to_save: Mutex<ToSave>,
+}
+
+#[derive(Default)]
+struct ToSave {
+    /// The settings, and the user directory they go in.
+    settings: Option<(Settings, PathBuf)>,
+    /// (Not kept alive from here: a stopped stream's copy closes once its
+    /// client has finished.)
+    stream: std::sync::Weak<glue5_stream::Client>,
+}
+
+impl Lifecycle {
+    /// Saves what the app keeps: the settings, the stream's index, the
+    /// friends (as [`App::save`] does).
+    fn save(&self) {
+        let (settings, stream) = {
+            let to = self.to_save.lock().unwrap();
+            (to.settings.clone(), to.stream.upgrade())
+        };
+        if let Some((settings, dir)) = settings {
+            settings.save(&dir);
+        }
+        if let Some(stream) = stream {
+            stream.flush();
+        }
+        glue5_runtime::friends::flush();
+    }
 }
 
 /// What is being typed into: a field of the app's, or the game's text box.
@@ -468,6 +502,9 @@ impl App {
             } else {
                 self.ui.idle_for()
             };
+            if MOBILE {
+                self.offer_to_save();
+            }
             let first = wait_event(&mut self.events, wait);
             self.pads.read();
             let events: Vec<Event> = first.into_iter().chain(self.events.poll_iter()).collect();
@@ -1120,6 +1157,15 @@ impl App {
             Ok(surface) => self.presentation.replace_surface(surface),
             Err(e) => log::error!("no surface for the window: {e:#}"),
         }
+    }
+
+    /// What a trip to the background saves ([`Lifecycle::save`]): as now.
+    fn offer_to_save(&self) {
+        let mut to = self.lifecycle.to_save.lock().unwrap();
+        if to.settings.as_ref().is_none_or(|(settings, _)| *settings != self.settings) {
+            to.settings = Some((self.settings.clone(), self.user_dir.clone()));
+        }
+        to.stream = self.stream.as_ref().map_or_else(std::sync::Weak::new, Arc::downgrade);
     }
 
     /// The settings, the stream's index and the friends (the app ends).
