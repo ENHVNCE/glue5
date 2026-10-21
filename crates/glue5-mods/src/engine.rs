@@ -209,6 +209,7 @@ impl Engine {
                     unsafe { orig::script_kill_thread(env, r.thread_id) };
                 }
                 crate::menus::remove_instance(r.vm.instance());
+                unsafe { crate::memory::release(env, r.vm.instance()) };
                 let r = self.running.remove(i);
                 THREADS.with_borrow_mut(|t| t.retain(|&id| id != r.thread_id));
                 // Snippets still queued get an answer (unless a new console

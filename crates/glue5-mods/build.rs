@@ -823,6 +823,39 @@ declare storage: {
 	clear: () -> (),
 }
 
+-- The game's memory (addresses are the game's; a read pointer is an address too). Checked against the
+-- memory's size only: a wrong write can corrupt or crash the game. Offsets are not PC GTA V's.
+declare memory: {
+	-- The entity's address (getScriptHandleBaseAddress), nil if there is none.
+	entity: (handle: Entity?) -> number?,
+	readU8: (address: number) -> number,
+	readU16: (address: number) -> number,
+	readU32: (address: number) -> number,
+	readInt: (address: number) -> number,
+	-- Exact up to 2^53.
+	readU64: (address: number) -> number,
+	readPtr: (address: number) -> number,
+	readFloat: (address: number) -> number,
+	readVector3: (address: number) -> vector,
+	readString: (address: number) -> string,
+	writeU8: (address: number, value: number) -> (),
+	writeU16: (address: number, value: number) -> (),
+	writeU32: (address: number, value: number) -> (),
+	writeInt: (address: number, value: number) -> (),
+	writeU64: (address: number, value: number) -> (),
+	writePtr: (address: number, value: number) -> (),
+	writeFloat: (address: number, value: number) -> (),
+	writeVector3: (address: number, value: vector) -> (),
+	-- Writes the text and its end (a 0).
+	writeString: (address: number, text: string) -> (),
+	-- `bytes` bytes as a buffer (Luau's buffer library reads structures out of it).
+	read: (address: number, bytes: number) -> buffer,
+	write: (address: number, data: buffer) -> (),
+	-- Zeroed scratch memory to pass to natives (16 MB a mod at most), freed when the mod stops.
+	alloc: (bytes: number) -> number,
+	free: (address: number) -> (),
+}
+
 -- The game scripts' globals, by ScriptHookV's index (getGlobalPtr's): an int, float or bool is one
 -- value, a string spans several. Indices change with the game's scripts: check them against this game.
 declare globals: {

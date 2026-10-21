@@ -13,6 +13,7 @@ mod draw;
 mod engine;
 pub mod files;
 mod globals;
+mod memory;
 pub mod input;
 mod json;
 mod menus;

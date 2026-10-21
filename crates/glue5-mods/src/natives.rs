@@ -130,10 +130,15 @@ pub fn joaat(s: &str) -> u32 {
 const GUID_POOL: u64 = 12318120;
 
 /// The type of the live entity `handle` names (3 vehicle, 4 ped, 5
-/// object, `CEntity` +40), none if it names none: what
-/// `fwScriptGuid::GetBaseFromGuid` checks, without its `unreachable` for an
-/// index past the pool.
+/// object, `CEntity` +40), none if it names none.
 fn entity_type(mem: Mem, handle: i32) -> Option<u8> {
+    entity_address(mem, handle).map(|entity| mem.u8(entity + 40))
+}
+
+/// The address of the live entity (`CEntity`) `handle` names, none if it
+/// names none: what `fwScriptGuid::GetBaseFromGuid` checks, without its
+/// `unreachable` for an index past the pool.
+pub fn entity_address(mem: Mem, handle: i32) -> Option<u64> {
     if handle == -1 || handle == 0 {
         return None;
     }
@@ -151,7 +156,7 @@ fn entity_type(mem: Mem, handle: i32) -> Option<u8> {
     }
     match mem.u64(guid + 8) {
         0 => None,
-        entity => Some(mem.u8(entity + 40)),
+        entity => Some(entity),
     }
 }
 
