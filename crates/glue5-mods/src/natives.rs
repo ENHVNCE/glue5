@@ -375,14 +375,23 @@ pub fn call(lua: &Lua, index: usize, args: MultiValue) -> mlua::Result<MultiValu
                     Value::Nil => {}
                     _ => return Err(bad("a string")),
                 },
-                K::Vec3 => match value {
-                    Value::Vector(v) => {
-                        for (k, c) in [v.x(), v.y(), v.z()].into_iter().enumerate() {
-                            mem.set_u32(target + 8 * k as u64, c.to_bits());
+                K::Vec3 => {
+                    let v = match value {
+                        Value::Vector(v) => [v.x(), v.y(), v.z()],
+                        // ScriptHookV's way: x, y, z.
+                        ref x if number(x).is_some() => {
+                            let (y, z) = (args.next().unwrap_or(Value::Nil), args.next().unwrap_or(Value::Nil));
+                            match (number(x), number(&y), number(&z)) {
+                                (Some(x), Some(y), Some(z)) => [x as f32, y as f32, z as f32],
+                                _ => return Err(bad("a vector, or three numbers")),
+                            }
                         }
+                        _ => return Err(bad("a vector")),
+                    };
+                    for (k, c) in v.into_iter().enumerate() {
+                        mem.set_u32(target + 8 * k as u64, c.to_bits());
                     }
-                    _ => return Err(bad("a vector")),
-                },
+                }
                 K::Handle(h) => {
                     let id = match value {
                         Value::Nil => 0,
