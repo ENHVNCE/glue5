@@ -153,6 +153,26 @@ pub struct Sprite {
     pub shape: Shape,
     /// Added to what is under it (light, glows) rather than blended over.
     pub additive: bool,
+    /// The list's `groups[group]` it is in ([`NONE`]: none).
+    pub group: u32,
+}
+
+/// No group.
+pub const NONE: u32 = u32::MAX;
+
+/// What is drawn in a group is placed in its coordinates: moved to its
+/// origin, scaled and turned around it, cut to its clip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Group {
+    /// The group it is in ([`NONE`]: none); always an earlier one.
+    pub parent: u32,
+    /// Where its 0, 0 is, in its parent's coordinates.
+    pub origin: [f32; 2],
+    pub scale: f32,
+    pub rotation: f32,
+    /// What shows of it: centre x, y, width, height in its coordinates (on
+    /// screen, the box around them when it is turned).
+    pub clip: Option<[f32; 4]>,
 }
 
 /// What is drawn in a frame, in drawing order. Kept and reused: a list the
@@ -162,12 +182,14 @@ pub struct List {
     pub sprites: Vec<Sprite>,
     /// The paths' points.
     pub points: Vec<[f32; 2]>,
+    pub groups: Vec<Group>,
 }
 
 impl List {
     pub fn clear(&mut self) {
         self.sprites.clear();
         self.points.clear();
+        self.groups.clear();
     }
 
     pub fn is_empty(&self) -> bool {

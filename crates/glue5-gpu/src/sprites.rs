@@ -22,8 +22,8 @@ use egui::epaint::{
     ClippedPrimitive, Color32, CornerRadiusF32, FontId, Fonts, Galley, Mesh, PathStroke, Primitive,
     TessellationOptions, Tessellator, TextOptions, TextShape, TextureId, Vertex,
 };
-use egui::emath::{Align2, Pos2, Rect, Rot2, pos2, vec2};
-use glue5_runtime::sprites::{self, Align, Image, List, Rgba, Shape, Stroke};
+use egui::emath::{Align2, Pos2, Rect, Rot2, Vec2, pos2, vec2};
+use glue5_runtime::sprites::{self, Align, Image, List, NONE, Rgba, Shape, Stroke};
 
 /// The font atlas's side at most (and its texture's).
 const ATLAS: usize = 2048;
@@ -48,6 +48,24 @@ struct Texture {
     id: TextureId,
 }
 
+/// Where a group is: what is drawn in it at `p` (pixels in its own
+/// coordinates) is at `offset + rot * p * scale` on screen, cut to `clip`.
+#[derive(Clone, Copy)]
+struct Place {
+    offset: Vec2,
+    rot: Rot2,
+    angle: f32,
+    scale: f32,
+    clip: Rect,
+    hidden: bool,
+}
+
+impl Place {
+    fn at(&self, p: Pos2) -> Pos2 {
+        (self.offset + self.rot * (p.to_vec2() * self.scale)).to_pos2()
+    }
+}
+
 /// What laying out keeps between frames.
 #[derive(Default)]
 struct Layout {
@@ -57,6 +75,8 @@ struct Layout {
     meshes: Vec<Mesh>,
     path: Path,
     points: Vec<Pos2>,
+    /// Where each group of the list is.
+    places: Vec<Place>,
     /// Laid-out texts, by their text (held, so its address is not reused),
     /// size, alignment; whether the last list used them.
     galleys: HashMap<(usize, u32, u8), (Arc<str>, Arc<Galley>, bool)>,
@@ -244,13 +264,38 @@ impl Layout {
     fn list(&mut self, list: &List, size: [u32; 2], mut texture: impl FnMut(&Arc<Image>) -> Option<TextureId>) {
         let (w, h) = (size[0] as f32, size[1] as f32);
         let screen = Rect::from_min_size(Pos2::ZERO, vec2(w, h));
-        let at = |p: [f32; 2]| pos2(p[0] * w, p[1] * h);
+        let px = |p: [f32; 2]| pos2(p[0] * w, p[1] * h);
+        let root = Place { offset: Vec2::ZERO, rot: Rot2::IDENTITY, angle: 0.0, scale: 1.0, clip: screen, hidden: false };
+        // The groups', parents before children.
+        self.places.clear();
+        for g in &list.groups {
+            let parent = if g.parent == NONE { root } else { self.places.get(g.parent as usize).copied().unwrap_or(root) };
+            let angle = parent.angle + g.rotation.to_radians();
+            let mut place = Place {
+                offset: parent.at(px(g.origin)).to_vec2(),
+                rot: Rot2::from_angle(angle),
+                angle,
+                scale: parent.scale * g.scale,
+                ..parent
+            };
+            if let Some(c) = g.clip {
+                let half = vec2(c[2] * w, c[3] * h) / 2.0;
+                let centre = px([c[0], c[1]]);
+                let corners = [vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0)]
+                    .map(|d| place.at(centre + vec2(d.x * half.x, d.y * half.y)));
+                place.clip = place.clip.intersect(Rect::from_points(&corners));
+                place.hidden |= !place.clip.is_positive();
+            }
+            self.places.push(place);
+        }
+        let place_of = |places: &[Place], group: u32| if group == NONE { Some(root) } else { places.get(group as usize).copied() };
         let mut fonts = self.fonts.take().expect("fonts made by begin");
         // The texts first: their glyphs may grow the atlas, whose size the
         // tessellator needs.
         for sprite in &list.sprites {
             if let Shape::Text { text, size, align, .. } = &sprite.shape {
-                let px = (size * h).clamp(1.0, h.max(1.0));
+                let Some(place) = place_of(&self.places, sprite.group).filter(|p| !p.hidden) else { continue };
+                let px = (size * h * place.scale).clamp(1.0, h.max(1.0));
                 let key = (text.as_ptr() as usize, px.to_bits(), *align as u8);
                 if let Some((_, _, used)) = self.galleys.get_mut(&key) {
                     *used = true;
@@ -275,27 +320,34 @@ impl Layout {
         let feathering = 1.0;
         for sprite in &list.sprites {
             let add = sprite.additive;
+            let Some(place) = place_of(&self.places, sprite.group).filter(|p| !p.hidden) else { continue };
+            // The group's: its clip, its lengths (fractions of the screen's
+            // height, scaled), positions in it, its turn.
+            let screen = place.clip;
+            let k = h * place.scale;
+            let at = |p: [f32; 2]| place.at(px(p));
+            let turn = place.angle;
             match &sprite.shape {
                 Shape::Image { image, center, size, rotation, tint, uv, nine } => {
                     let (iw, ih) = image.size();
                     // What is drawn of it, in its pixels.
                     let (pw, ph) = ((uv[2] - uv[0]).abs() * iw as f32, (uv[3] - uv[1]).abs() * ih as f32);
-                    let width = size[0] * w;
-                    let height = if size[1] > 0.0 { size[1] * h } else { width * ph / pw.max(1e-3) };
+                    let width = size[0] * w * place.scale;
+                    let height = if size[1] > 0.0 { size[1] * k } else { width * ph / pw.max(1e-3) };
                     let c = at(*center);
                     let half = vec2(width, height) / 2.0;
                     if !visible(screen, c, half.length()) {
                         continue;
                     }
                     let Some(id) = texture(image) else { continue };
-                    let rot = Rot2::from_angle(rotation.to_radians());
+                    let rot = Rot2::from_angle(rotation.to_radians() + turn);
                     let mesh = self.batch(id, screen);
                     match nine {
                         None => quad(mesh, c, rot, [-half.x, -half.y, half.x, half.y], *uv, color(*tint, add)),
                         Some(b) => {
                             // Borders on screen as on a 1080-pixel-high one,
                             // smaller when the drawing is.
-                            let k = (h / 1080.0).min(half.x * 2.0 / (b[0] + b[2]).max(1e-3)).min(half.y * 2.0 / (b[1] + b[3]).max(1e-3));
+                            let k = (k / 1080.0).min(half.x * 2.0 / (b[0] + b[2]).max(1e-3)).min(half.y * 2.0 / (b[1] + b[3]).max(1e-3));
                             let xs = [-half.x, -half.x + b[0] * k, half.x - b[2] * k, half.x];
                             let ys = [-half.y, -half.y + b[1] * k, half.y - b[3] * k, half.y];
                             // The borders in the texture, inward from each side.
@@ -313,12 +365,12 @@ impl Layout {
                 }
                 Shape::Rect { center, size, rotation, fill, gradient, rounding, stroke: line } => {
                     let c = at(*center);
-                    let half = vec2(size[0] * w, size[1] * h) / 2.0;
-                    if !visible(screen, c, half.length() + line.map_or(0.0, |s| s.width * h)) {
+                    let half = vec2(size[0] * w, size[1] * h) * place.scale / 2.0;
+                    if !visible(screen, c, half.length() + line.map_or(0.0, |s| s.width * k)) {
                         continue;
                     }
-                    let rot = Rot2::from_angle(rotation.to_radians());
-                    let r = (rounding * h).min(half.x.min(half.y)).max(0.0);
+                    let rot = Rot2::from_angle(rotation.to_radians() + turn);
+                    let r = (rounding * k).min(half.x.min(half.y)).max(0.0);
                     path::rounded_rectangle(&mut self.points, Rect::from_center_size(Pos2::ZERO, half * 2.0), CornerRadiusF32::same(r));
                     for p in &mut self.points {
                         *p = c + rot * p.to_vec2();
@@ -349,13 +401,13 @@ impl Layout {
                     if let Some(s) = line {
                         path.clear();
                         path.add_line_loop(&points);
-                        path.stroke_closed(feathering, &stroke(s, h, add), mesh);
+                        path.stroke_closed(feathering, &stroke(s, k, add), mesh);
                     }
                     points.clear();
                     (self.points, self.path) = (points, path);
                 }
                 Shape::Text { text, at: from, size, rotation, align, color: c } => {
-                    let px = (size * h).clamp(1.0, h.max(1.0));
+                    let px = (size * k).clamp(1.0, h.max(1.0));
                     let key = (text.as_ptr() as usize, px.to_bits(), *align as u8);
                     let Some((_, galley, _)) = self.galleys.get(&key) else { continue };
                     let galley = galley.clone();
@@ -370,19 +422,19 @@ impl Layout {
                     }
                     let shape = TextShape::new(p - anchor.pos_in_rect(&galley.rect).to_vec2(), galley, color(*c, add))
                         .with_override_text_color(color(*c, add))
-                        .with_angle_and_anchor(rotation.to_radians(), anchor);
+                        .with_angle_and_anchor(rotation.to_radians() + turn, anchor);
                     let mesh = self.batch(FONT_TEXTURE, screen);
                     tess.tessellate_text(&shape, mesh);
                 }
                 Shape::Line { from, to, stroke: s } => {
                     let (a, b) = (at(*from), at(*to));
-                    if !visible(screen, a + (b - a) / 2.0, (b - a).length() / 2.0 + s.width * h) {
+                    if !visible(screen, a + (b - a) / 2.0, (b - a).length() / 2.0 + s.width * k) {
                         continue;
                     }
                     let mut path = std::mem::take(&mut self.path);
                     path.clear();
                     path.add_line_segment([a, b]);
-                    path.stroke_open(feathering, &stroke(s, h, add), self.batch(FONT_TEXTURE, screen));
+                    path.stroke_open(feathering, &stroke(s, k, add), self.batch(FONT_TEXTURE, screen));
                     self.path = path;
                 }
                 Shape::Path { points, closed, fill, stroke: line } => {
@@ -395,9 +447,9 @@ impl Layout {
                     pts.clear();
                     pts.extend(src.iter().map(|p| at(*p)));
                     let bounds = Rect::from_points(&pts);
-                    let margin = line.map_or(0.0, |s| s.width * h);
+                    let margin = line.map_or(0.0, |s| s.width * k);
                     if bounds.expand(margin).intersects(screen) {
-                        let line = line.map(|s| stroke(&s, h, add)).unwrap_or(PathStroke::NONE);
+                        let line = line.map(|s| stroke(&s, k, add)).unwrap_or(PathStroke::NONE);
                         let mesh = self.batch(FONT_TEXTURE, screen);
                         path.clear();
                         match (closed, fill) {
@@ -418,11 +470,11 @@ impl Layout {
                     (self.points, self.path) = (pts, path);
                 }
                 Shape::Circle { center, radius, fill, stroke: line } => {
-                    let (c, r) = (at(*center), radius * h);
-                    if r <= 0.0 || !visible(screen, c, r + line.map_or(0.0, |s| s.width * h)) {
+                    let (c, r) = (at(*center), radius * k);
+                    if r <= 0.0 || !visible(screen, c, r + line.map_or(0.0, |s| s.width * k)) {
                         continue;
                     }
-                    let line = line.map(|s| stroke(&s, h, add)).unwrap_or(PathStroke::NONE);
+                    let line = line.map(|s| stroke(&s, k, add)).unwrap_or(PathStroke::NONE);
                     let mut path = std::mem::take(&mut self.path);
                     path.clear();
                     path.add_circle(c, r);
@@ -431,8 +483,8 @@ impl Layout {
                     self.path = path;
                 }
                 Shape::Arc { center, radius, from, to, stroke: s } => {
-                    let (c, r) = (at(*center), radius * h);
-                    if r <= 0.0 || !visible(screen, c, r + s.width * h) {
+                    let (c, r) = (at(*center), radius * k);
+                    if r <= 0.0 || !visible(screen, c, r + s.width * k) {
                         continue;
                     }
                     let (mut pts, mut path) = (std::mem::take(&mut self.points), std::mem::take(&mut self.path));
@@ -441,12 +493,12 @@ impl Layout {
                     // A segment every 3 pixels or so of the arc.
                     let n = ((sweep.abs().to_radians() * r / 3.0).ceil() as usize).clamp(2, 512);
                     pts.extend((0..=n).map(|i| {
-                        let a = (from + sweep * i as f32 / n as f32).to_radians();
+                        let a = (from + sweep * i as f32 / n as f32).to_radians() + turn;
                         c + vec2(a.sin(), -a.cos()) * r
                     }));
                     path.clear();
                     path.add_open_points(&pts);
-                    path.stroke_open(feathering, &stroke(s, h, add), self.batch(FONT_TEXTURE, screen));
+                    path.stroke_open(feathering, &stroke(s, k, add), self.batch(FONT_TEXTURE, screen));
                     (self.points, self.path) = (pts, path);
                 }
             }

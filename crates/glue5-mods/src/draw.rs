@@ -33,7 +33,7 @@ use std::rc::Rc;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use glue5_runtime::sprites::{self, Align, Image, Rgba, Shape, Sprite, Stroke};
+use glue5_runtime::sprites::{self, Align, Group, Image, NONE, Rgba, Shape, Sprite, Stroke};
 use mlua::{AnyUserData, Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 /// An image's side at most, in pixels: what every GPU takes.
@@ -47,6 +47,8 @@ pub const IMAGE_BYTES: usize = 32 << 20;
 /// Drawings a mod may make in a turn, and paths' points.
 pub const DRAWINGS: usize = 16384;
 pub const POINTS: usize = 65536;
+/// Groups a mod may open in a turn.
+pub const GROUPS: usize = 4096;
 /// A text's length at most, in bytes (past it, it is cut).
 const TEXT: usize = 1024;
 /// Lines' width when none is given (a fraction of the screen's height:
@@ -64,6 +66,8 @@ pub(crate) struct Canvas {
     /// What this turn draws, and what the last whole turn drew (shown).
     rec: RefCell<Record>,
     ready: RefCell<Record>,
+    /// The groups open (`draw.push`, `draw.clip`), innermost last.
+    open: RefCell<Vec<u32>>,
     /// `ready` changed since it was published.
     committed: Cell<bool>,
     /// Texts by the address of their Luau string.
@@ -75,6 +79,7 @@ struct Record {
     /// With their z.
     items: Vec<(i32, Sprite)>,
     points: Vec<[f32; 2]>,
+    groups: Vec<Group>,
 }
 
 struct Text {
@@ -432,6 +437,30 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
             },
         )?,
     )?;
+    let c = canvas.clone();
+    draw.set(
+        "push",
+        lua.create_function(move |_, (x, y, style): (f64, f64, Option<AnyUserData>)| {
+            let s = Style::of(style)?;
+            c.push([fraction(x)?, fraction(y)?], s.scale, s.rotation, None)
+        })?,
+    )?;
+    let c = canvas.clone();
+    draw.set(
+        "clip",
+        lua.create_function(move |_, (x, y, w, h): (f64, f64, f64, f64)| {
+            let clip = [fraction(x)?, fraction(y)?, fraction(w)?.max(0.0), fraction(h)?.max(0.0)];
+            c.push([0.0, 0.0], 1.0, 0.0, Some(clip))
+        })?,
+    )?;
+    let c = canvas.clone();
+    draw.set(
+        "pop",
+        lua.create_function(move |_, ()| match c.open.borrow_mut().pop() {
+            Some(_) => Ok(()),
+            None => Err(mlua::Error::runtime("draw.pop: no group open (draw.push, draw.clip)")),
+        })?,
+    )?;
     draw.set(
         "rgba",
         lua.create_function(|_, (r, g, b, a): (f64, f64, f64, Option<f64>)| {
@@ -476,6 +505,9 @@ pub fn end_turn(lua: &Lua, whole: bool) {
     std::mem::swap(&mut *rec, &mut *ready);
     rec.items.clear();
     rec.points.clear();
+    rec.groups.clear();
+    // Groups left open close with the turn.
+    c.open.borrow_mut().clear();
     c.committed.set(true);
     c.texts.borrow_mut().retain(|_, t| std::mem::take(&mut t.used));
 }
@@ -487,9 +519,10 @@ struct Publisher {
     /// The canvases of this frame and those published last (by address).
     current: Vec<Rc<Canvas>>,
     published: Vec<usize>,
-    /// (z, canvas, item), sorted; where each canvas's points start.
+    /// (z, canvas, item), sorted; where each canvas's points and groups
+    /// start.
     order: Vec<(i32, u32, u32)>,
-    base: Vec<u32>,
+    base: Vec<(u32, u32)>,
 }
 
 thread_local! {
@@ -521,33 +554,59 @@ pub fn publish(canvases: impl IntoIterator<Item = Rc<Canvas>>) {
         for (ci, c) in p.current.iter().enumerate() {
             let ready = c.ready.borrow();
             p.order.extend(ready.items.iter().enumerate().map(|(i, (z, _))| (*z, ci as u32, i as u32)));
-            // Each mod's points after the ones before.
-            p.base.push(list.points.len() as u32);
+            // Each mod's points and groups after the ones before.
+            let (points, groups) = (list.points.len() as u32, list.groups.len() as u32);
+            p.base.push((points, groups));
             list.points.extend_from_slice(&ready.points);
+            list.groups.extend(ready.groups.iter().map(|g| Group { parent: shift(g.parent, groups), ..*g }));
         }
         // Unstable is enough: (canvas, item) make each key unique, in order.
         p.order.sort_unstable();
         for &(_, ci, i) in &p.order {
             let ready = p.current[ci as usize].ready.borrow();
-            let mut shape = ready.items[i as usize].1.shape.clone();
-            if let Shape::Path { points, .. } = &mut shape {
-                let b = p.base[ci as usize];
-                *points = points.start + b..points.end + b;
+            let item = &ready.items[i as usize].1;
+            let (points, groups) = p.base[ci as usize];
+            let mut shape = item.shape.clone();
+            if let Shape::Path { points: range, .. } = &mut shape {
+                *range = range.start + points..range.end + points;
             }
-            list.sprites.push(Sprite { shape, additive: ready.items[i as usize].1.additive });
+            list.sprites.push(Sprite { shape, additive: item.additive, group: shift(item.group, groups) });
         }
         p.current.clear();
         sprites::publish(list);
     });
 }
 
+/// A group index moved by `base` (none stays none).
+fn shift(group: u32, base: u32) -> u32 {
+    if group == NONE { NONE } else { group + base }
+}
+
+/// The innermost open group.
+fn c_top(open: &RefCell<Vec<u32>>) -> u32 {
+    open.borrow().last().copied().unwrap_or(NONE)
+}
+
 impl Canvas {
+    /// Opens a group in the one open.
+    fn push(&self, origin: [f32; 2], scale: f32, rotation: f32, clip: Option<[f32; 4]>) -> mlua::Result<()> {
+        let mut rec = self.rec.borrow_mut();
+        if rec.groups.len() >= GROUPS {
+            return Err(mlua::Error::runtime(format!("draw: {GROUPS} groups a turn at most")));
+        }
+        let parent = c_top(&self.open);
+        rec.groups.push(Group { parent, origin, scale, rotation, clip });
+        self.open.borrow_mut().push(rec.groups.len() as u32 - 1);
+        Ok(())
+    }
+
     fn add(&self, s: &Style, shape: Shape) -> mlua::Result<()> {
         let mut rec = self.rec.borrow_mut();
         if rec.items.len() >= DRAWINGS {
             return Err(mlua::Error::runtime(format!("draw: {DRAWINGS} drawings a turn at most")));
         }
-        rec.items.push((s.z, Sprite { shape, additive: s.additive }));
+        let group = c_top(&self.open);
+        rec.items.push((s.z, Sprite { shape, additive: s.additive, group }));
         Ok(())
     }
 
@@ -604,6 +663,7 @@ struct Style {
     gradient: Option<Rgba>,
     horizontal: bool,
     align: Align,
+    scale: f32,
     uv: [f32; 4],
     nine: Option<[f32; 4]>,
     additive: bool,
@@ -620,6 +680,7 @@ const PLAIN: Style = Style {
     gradient: None,
     horizontal: false,
     align: Align::Left,
+    scale: 1.0,
     uv: [0.0, 0.0, 1.0, 1.0],
     nine: None,
     additive: false,
@@ -667,6 +728,7 @@ impl Style {
         match key {
             "z" => self.z = num(&v).ok_or_else(|| bad("a number"))?.clamp(-1e6, 1e6).round() as i32,
             "rotation" => self.rotation = (num(&v).ok_or_else(|| bad("a number"))? % 360.0) as f32,
+            "scale" => self.scale = num(&v).ok_or_else(|| bad("a number"))?.clamp(0.0, 1e3) as f32,
             "rounding" => self.rounding = length(num(&v).ok_or_else(|| bad("a number"))?)?.max(0.0),
             "width" => self.width = length(num(&v).ok_or_else(|| bad("a number"))?)?.max(0.0),
             "stroke" => self.stroke = color(&v)?,
@@ -716,7 +778,7 @@ impl Style {
 }
 
 /// A style's fields, as `draw.style{...}` and assignments name them.
-const STYLE_FIELDS: &[&str] = &["z", "rotation", "rounding", "width", "stroke", "fill", "gradient", "closed", "horizontal", "align", "uv", "nineSlice", "blend"];
+const STYLE_FIELDS: &[&str] = &["z", "rotation", "scale", "rounding", "width", "stroke", "fill", "gradient", "closed", "horizontal", "align", "uv", "nineSlice", "blend"];
 
 impl UserData for Style {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
@@ -725,6 +787,7 @@ impl UserData for Style {
         }
         fields.add_field_method_get("z", |_, s| Ok(s.z));
         fields.add_field_method_get("rotation", |_, s| Ok(s.rotation));
+        fields.add_field_method_get("scale", |_, s| Ok(s.scale));
         fields.add_field_method_get("rounding", |_, s| Ok(s.rounding));
         fields.add_field_method_get("width", |_, s| Ok(s.width));
     }
@@ -799,11 +862,13 @@ export type Style = {
 \t-- their size (as on a 1080-pixel-high screen), the edges and the middle stretch: panels of any size.
 \tnineSlice: { number }?,
 \tsetUv: (self: Style, u0: number, v0: number, u1: number, v1: number) -> (),
+\t-- A group's scale (draw.push).
+\tscale: number,
 \t-- Which end of a text is at x.
 \talign: \"left\" | \"center\" | \"right\",
 }
 export type StyleOptions = {
-\tz: number?, rotation: number?, rounding: number?, stroke: Color?, width: number?, fill: Color?, closed: boolean?,
+\tz: number?, rotation: number?, scale: number?, rounding: number?, stroke: Color?, width: number?, fill: Color?, closed: boolean?,
 \tgradient: Color?, horizontal: boolean?, align: (\"left\" | \"center\" | \"right\")?, uv: { number }?, nineSlice: { number }?, blend: (\"alpha\" | \"add\")?,
 }
 
@@ -831,6 +896,12 @@ declare draw: {
 \tcircle: (x: number, y: number, radius: number, color: Color?, style: Style?) -> (),
 \t-- An arc from `from` to `to` degrees, clockwise from the top (a gauge).
 \tarc: (x: number, y: number, radius: number, from: number, to: number, width: number?, color: Color?, style: Style?) -> (),
+\t-- Opens a group at x, y: what is drawn until draw.pop() is placed from there (its 0, 0 there),
+\t-- scaled and turned by the style's scale and rotation. Groups nest; those left open close with the turn.
+\tpush: (x: number, y: number, style: Style?) -> (),
+\t-- Opens a group that shows only what falls in this rectangle (centred at x, y), until draw.pop().
+\tclip: (x: number, y: number, width: number, height: number) -> (),
+\tpop: () -> (),
 \t-- A packed colour, 0 to 255 each (alpha 255 when none).
 \trgba: (r: number, g: number, b: number, a: number?) -> Color,
 \tstyle: (options: StyleOptions?) -> Style,
@@ -900,6 +971,9 @@ mod tests {
     fn shown(lua: &Lua) -> Vec<(i32, Sprite)> {
         canvas(lua).unwrap().ready.borrow().items.clone()
     }
+
+    /// The published list is the process's: one test at a time publishes.
+    static PUBLISHING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn budget(lua: &Lua) -> (usize, usize) {
         let canvas = lua.app_data_ref::<Rc<Canvas>>().unwrap();
@@ -1051,6 +1125,39 @@ mod tests {
         }
     }
 
+    /// Groups nest; what is drawn in one is in it; those left open close
+    /// with the turn; published, their indices follow their mod's.
+    #[test]
+    fn groups() {
+        let (a, b) = (vm(), vm());
+        run(&a, "draw.rect(0, 0, 1, 1)").unwrap();
+        run(&b, "
+            draw.push(0.5, 0.5, draw.style{ scale = 2, rotation = 90 })
+            draw.clip(0, 0, 0.2, 0.1)
+            draw.circle(0, 0, 0.1)
+            draw.pop()
+            draw.line(0, 0, 1, 1)
+            draw.pop()
+            draw.rect(0, 0, 1, 1)
+            draw.push(0.1, 0.1)
+        ").unwrap();
+        let drawn = shown(&b);
+        assert_eq!(drawn.iter().map(|(_, s)| s.group).collect::<Vec<_>>(), [1, 0, NONE]);
+        let groups = canvas(&b).unwrap().ready.borrow().groups.clone();
+        assert_eq!(groups[0], Group { parent: NONE, origin: [0.5, 0.5], scale: 2.0, rotation: 90.0, clip: None });
+        assert_eq!(groups[1], Group { parent: 0, origin: [0.0, 0.0], scale: 1.0, rotation: 0.0, clip: Some([0.0, 0.0, 0.2, 0.1]) });
+        assert!(canvas(&b).unwrap().open.borrow().is_empty(), "closed with the turn");
+        assert!(run(&a, "draw.pop()").is_err());
+        run(&a, "draw.push(0, 0) draw.rect(0, 0, 1, 1) draw.pop()").unwrap();
+        let _one = PUBLISHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        publish([canvas(&a).unwrap(), canvas(&b).unwrap()]);
+        let list = sprites::latest().unwrap();
+        // a's group first, then b's (the second inside the first; the
+        // third left open, empty).
+        assert_eq!(list.groups.iter().map(|g| g.parent).collect::<Vec<_>>(), [NONE, NONE, 1, NONE]);
+        assert_eq!(list.sprites.iter().map(|s| s.group).collect::<Vec<_>>(), [0, 2, 1, NONE]);
+    }
+
     /// A turn cut short leaves the last whole one on screen; the next whole
     /// one shows what both drew. The same string is the same text.
     #[test]
@@ -1078,6 +1185,7 @@ mod tests {
         run(&a, "draw.rect(0.1, 0.2, 0.3, 0.4, nil, draw.style{ z = 2 }) draw.path({ 0, 0, 1, 1 })").unwrap();
         run(&b, "draw.path({ 0.5, 0.5, 0.6, 0.6 }, nil, nil, draw.style{ z = -1 }) draw.rect(0, 0, 1, 1, nil, draw.style{ z = 2 })").unwrap();
         let both = || [canvas(&a).unwrap(), canvas(&b).unwrap()];
+        let _one = PUBLISHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         publish(both());
         let list = sprites::latest().unwrap();
         let path = |s: &Sprite| match &s.shape {
