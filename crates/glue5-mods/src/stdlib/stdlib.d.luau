@@ -26,3 +26,9 @@ declare task: typeof(task) & {
 	-- Runs `f` every `ms` milliseconds of game time, as a task; the function returned stops it.
 	every: <A...>(ms: number, f: (A...) -> ...any, A...) -> () -> (),
 }
+
+declare mod: typeof(mod) & {
+	-- Runs `f` when the mod stops (stopped, restarted, failed or done), on its script, in one last turn
+	-- of 2 ms at most: put back what it changed, delete what it made. It cannot wait.
+	onStop: (f: () -> ()) -> (),
+}

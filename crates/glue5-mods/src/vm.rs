@@ -57,6 +57,8 @@ struct Sched {
     instance: u64,
     /// The coroutine the scheduler is running (`Thread::to_pointer`).
     resumed: Rc<Cell<*const std::ffi::c_void>>,
+    /// `mod.onStop`'s functions, for the mod's last turn.
+    stop: Rc<RefCell<Vec<Function>>>,
 }
 
 struct Task {
@@ -337,6 +339,31 @@ impl Vm {
         (outcome, spent)
     }
 
+    /// Whether the mod has a last turn to take before it ends: functions
+    /// it gave `mod.onStop`.
+    pub fn wants_last_turn(&self) -> bool {
+        !self.sched.stop.borrow().is_empty()
+    }
+
+    /// The mod's last turn, at game time `now` (ms), on its thread: its
+    /// `mod.onStop` functions run, once, in one slice; one that waits or
+    /// runs out of time ends there.
+    pub fn last_turn(&mut self, now: u64) {
+        let stop = std::mem::take(&mut *self.sched.stop.borrow_mut());
+        self.sched.now.set(now);
+        self.turn_end.set(Instant::now() + SLICE);
+        for f in stop {
+            let problem = match self.lua.create_thread(f).map(|thread| self.run(&thread, MultiValue::new()).0) {
+                Ok(Outcome::Finished) => continue,
+                Ok(Outcome::Failed(e)) => e,
+                Ok(Outcome::Wait(_)) => "mod.onStop: a stopping mod does not wait; what came after wait() did not run".into(),
+                Ok(Outcome::Preempted) => format!("mod.onStop: cut short, out of time ({} ms)", SLICE.as_millis()),
+                Err(e) => error_text(&e),
+            };
+            crate::log_line(&self.module, crate::LogLevel::Error, &problem);
+        }
+    }
+
     /// Memory the VM uses, in bytes.
     pub fn memory(&self) -> usize {
         self.lua.used_memory()
@@ -416,6 +443,14 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
     g.set("joaat", lua.create_function(|_, s: mlua::LuaString| Ok(natives::joaat(&s.to_str()?)))?)?;
     let m = lua.create_table()?;
     m.set("name", name)?;
+    let stop = sched.stop.clone();
+    m.set(
+        "onStop",
+        lua.create_function(move |_, f: Function| {
+            stop.borrow_mut().push(f);
+            Ok(())
+        })?,
+    )?;
     g.set("mod", m)?;
 
     // The natives' tables (the scheduler shares `task` with the TASK_
