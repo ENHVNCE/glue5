@@ -1350,6 +1350,15 @@ impl Gpu {
             st.errors,
         );
         self.stats.errors = 0;
+        let a = glue5_runtime::audio::take_stats();
+        log::info!(
+            "audio: frames waited for the game's audio update {:.2} ms each ({} waits, longest {:.1} ms), the device played {:.0} ms of silence ({} reads short)",
+            a.update_waited.as_secs_f64() * 1000.0 / a.update_waits.max(1) as f64,
+            a.update_waits,
+            a.update_longest.as_secs_f64() * 1000.0,
+            a.silence.as_secs_f64() * 1000.0,
+            a.underruns,
+        );
         if let Some(p) = &self.profiler {
             log::info!("{}", crate::profile::report(&p.totals, frames));
         }
