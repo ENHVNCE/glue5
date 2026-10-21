@@ -478,6 +478,17 @@ fn a_lobby_of_more_players_than_are_kept_changes_nothing_until_one_comes() {
 }
 
 #[test]
+fn a_probe_with_this_player_s_id_from_elsewhere_hides_nothing() {
+    let now = Instant::now();
+    let mut a = Player::new("Ann", 1);
+    let probe = a.s.probe_id.to_vec();
+    a.s.on_probe(nowhere(), &probe, now, &mut Out::default());
+    assert!(a.s.own.is_empty());
+    a.s.on_probe(a.addr, &probe, now, &mut Out::default());
+    assert!(a.s.own.contains(&a.addr));
+}
+
+#[test]
 fn junk_handshakes_from_everywhere_use_up_nothing() {
     let mut now = Instant::now();
     let (mut a, mut b) = (Player::new("Ann", 1), Player::new("Bob", 2));

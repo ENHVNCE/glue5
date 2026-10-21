@@ -414,6 +414,9 @@ const JUST_MADE: u64 = 10;
 /// Players met kept, at most.
 const MAX_RECENT: usize = 50;
 
+/// This player's own addresses kept, at most.
+const OWN: usize = 16;
+
 /// What the application tells the player, as Social Club's notifications
 /// did: the friend's name.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -470,7 +473,8 @@ pub(crate) struct Service {
     /// Handshakes answered recently: per address, in all.
     answered: HashMap<Ipv4Addr, (Instant, u32)>,
     answered_all: (Instant, u32),
-    /// A random id in this player's probes: its own come back.
+    /// A random id in this player's probes: its own come back (`OWN` at
+    /// most).
     probe_id: [u8; 8],
     own: HashSet<SocketAddrV4>,
     /// Players asking with this player's code (they announce themselves
@@ -1304,8 +1308,13 @@ impl Service {
         // As many tags as a probe carries, at most.
         let all = d.as_chunks::<8>().0;
         let Some((id, tags)) = all[..all.len().min(session::MAX_TAGS)].split_first() else { return };
+        // This player's own, back (a broadcast's): an address of its own,
+        // only on this machine (anyone who got a probe knows the id: from a
+        // friend's address, it would hide that address).
         if *id == self.probe_id {
-            self.own.insert(from);
+            if self.own.len() < OWN && (from.ip().is_loopback() || crate::p2p::lan_address() == Some(*from.ip())) {
+                self.own.insert(from);
+            }
             return;
         }
         // A friend (this epoch's tag or the last one's).
