@@ -887,6 +887,27 @@ playing.
   `.glue5/storage/<mod>.json`, so a mod handed on carries no player's
   data. Luau's `buffer` is there too; files and the network are not
   (HTTP, with sites a mod declares and the player approves, is planned).
+- **Drawing** (draw.rs): what ScriptHookV's createTexture/drawTexture
+  gave. The natives already draw rectangles, the game's own sprites
+  (streamed texture dictionaries) and text, inside the game's frame; what
+  they cannot is an image of the mod's own. `draw.loadImage` reads a PNG
+  of the mod's folder (the Studio's paths, checked the same way) and
+  decodes it on a thread of its own (the header first: past 2048×2048, or
+  the 32 MB of decoded pixels a run of a mod may hold, it is refused
+  before decoding); the mod's coroutine waits a frame at a time meanwhile.
+  `draw.image`, `draw.rect` and `draw.text` (the last two so that a label
+  can go over an image; the text is in egui's font, so text that should
+  look like the game's is the text natives' job) add to the mod's list for the frame, 1024 at
+  most; when the engine's frame count changes, the mods' lists become
+  one, by z, handed to the renderer (glue5-runtime's `sprites`). The
+  renderer lays the latest out with egui (a context and renderer of their
+  own, so the app's UI is untouched) and draws it into the window's image
+  after the game's frame is scaled to it, before the app's UI: at the
+  window's resolution, over upscaled and generated frames alike. An image
+  is uploaded the first time it is drawn (its pixels then leave the CPU)
+  and its texture freed when nothing holds it: not the mod (`release`,
+  or its VM going when it stops), not the list drawn. With nothing drawn
+  the renderer reads one counter a frame.
 - **Stability**:
   - an entity of the wrong kind (`CEntity` +40: 3 vehicle, 4 ped, 5
     object) is an error before the native runs;
