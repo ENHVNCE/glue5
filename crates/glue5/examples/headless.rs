@@ -75,6 +75,10 @@ struct Args {
     /// the game hosts or looks for a session).
     #[arg(long, value_name = "NAME", requires = "online", default_value = "")]
     lobby: String,
+    /// With --online: the story, GTA Online a choice of its pause menu away
+    /// (as the app's story mode), instead of straight into freemode.
+    #[arg(long, requires = "online")]
+    story: bool,
     /// The game's benchmark (a fly-through of the map; the run ends with
     /// it, results in the user directory).
     #[arg(long)]
@@ -263,7 +267,7 @@ fn main() -> Result<()> {
             low_memory: low,
             max_fps: args.fps,
             benchmark: args.benchmark,
-            online: args.online.map(|name| glue5_runtime::Online { name, lobby: args.lobby }),
+            online: args.online.map(|name| glue5_runtime::Online { name, lobby: args.lobby, freemode: !args.story }),
             language: None,
         },
         gpu,

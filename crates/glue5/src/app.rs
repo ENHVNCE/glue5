@@ -1014,9 +1014,11 @@ impl App {
                 benchmark: self.mode == Mode::Benchmark,
                 low_memory: s.low_memory,
                 max_fps: s.max_fps,
-                online: (self.mode == Mode::Online).then(|| glue5_runtime::Online {
+                // The story with the network up: GTA Online from its pause menu.
+                online: matches!(self.mode, Mode::Story | Mode::Online).then(|| glue5_runtime::Online {
                     name: s.online_name.trim().into(),
                     lobby: self.join.take().unwrap_or_default(),
+                    freemode: self.mode == Mode::Online,
                 }),
                 language: preferred_language(),
             },

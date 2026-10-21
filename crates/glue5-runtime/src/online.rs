@@ -12,9 +12,16 @@
 //!
 //! The rest are the checks on the way into freemode that Rockstar's
 //! services would pass, passed here.
+//!
+//! The network is up in the story too, as on PC, for its pause menu's
+//! ONLINE and FRIENDS tabs and a friend's invite or join to lead into GTA
+//! Online. The story stays offline all the same: its scripts and the
+//! engine see a player online (`online_here`) only in GTA Online, and in
+//! what leads there (the menus, the transition).
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use glue5_game::{Env, orig};
 
@@ -29,17 +36,15 @@ const PROFILE_MANAGER: u64 = 96;
 const METHODS: u64 = 64;
 
 /// The engine's switches for GTA Online without Rockstar's services: LAN
-/// sessions (the lobby is the LAN, vnet.rs), straight into freemode, no
-/// cloud files, catalog, shop transactions or online policies to wait for,
-/// sessions for everyone whatever their aim (the game keeps players aiming
-/// freely, with a mouse, apart from assisted ones, as touch play on a phone
-/// is: they never met), and the story's prologue taken as played (joining a
+/// sessions (the lobby is the LAN, vnet.rs), no cloud files, catalog,
+/// shop transactions or online policies to wait for, sessions for everyone
+/// whatever their aim (the game keeps players aiming freely, with a mouse,
+/// apart from assisted ones, as touch play on a phone is: they never met), and the story's prologue taken as played (joining a
 /// friend's session asks for it: "GTA Online will be available once you
 /// have completed the prologue", and the game answered the friend's
 /// session every frame).
 pub(crate) const ENGINE_ARGS: &[&str] = &[
     "-lan",
-    "-StraightIntoFreemode",
     "-netSessionIgnoreAim",
     "-netSpPrologueComplete",
     "-mpavailable",
@@ -74,13 +79,70 @@ pub(crate) fn gamer_id_in(user_dir: &std::path::Path) -> u64 {
     })
 }
 
+/// In GTA Online: from the start (the start page's GTA Online), or since
+/// the switch to it from the story, until the game is back in the story.
+static IN_GTA_ONLINE: AtomicBool = AtomicBool::new(false);
+
+/// The scripts leading from the story to GTA Online: the pause menu's ONLINE
+/// tab (its sessions, the creators), the transition (which also takes a
+/// friend's invite or join). For them the player is online in the story too.
+const LEADING_ONLINE: &[&[u8]] = &[b"PauseMenu_Multiplayer", b"MainTransition"];
+/// `GtaThread`'s script name.
+const THREAD_NAME: u64 = 428;
+
+/// Whether the local player is online for what asks now: in GTA Online,
+/// and in the story only for what leads there (the scripts above, the
+/// pause menu's lists of players and friends) and for its privileges. The story's own scripts see
+/// it offline, as they did without the network: online, they would wait
+/// for Rockstar's services (the stock market, the cloud, the newswire...).
+pub(crate) unsafe fn online_here(env: *mut Env) -> bool {
+    if IN_GTA_ONLINE.load(Ordering::Relaxed) || REFRESHING_PRIVILEGES.get() || crate::friends::game::in_player_menus() {
+        return true;
+    }
+    let thread = unsafe { orig::script_active_thread(env) };
+    if thread == 0 {
+        return false;
+    }
+    let name = unsafe { Mem::of(env) }.bytes(thread + THREAD_NAME, 32);
+    let name = &name[..name.iter().position(|&b| b == 0).unwrap_or(name.len())];
+    LEADING_ONLINE.contains(&name)
+}
+
+/// The game goes to GTA Online (from the story, or at the start): the
+/// player's friends see it there, and it is in its lobby (everyone's,
+/// unless another was asked for) unless it is on its way to a friend's.
+fn enter_gta_online() {
+    if IN_GTA_ONLINE.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    log::info!("online: into GTA Online");
+    crate::friends::set_playing(crate::friends::Playing::Online);
+    if let Some(p2p) = crate::p2p::get()
+        && p2p.lobbies().is_empty()
+    {
+        p2p.join_lobby(crate::rt().config.online.as_ref().map_or("", |o| o.lobby.as_str()));
+    }
+}
+
+/// The game is back in the story: out of the lobbies.
+fn leave_gta_online() {
+    if !IN_GTA_ONLINE.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    log::info!("online: back to the story");
+    crate::friends::set_playing(crate::friends::Playing::Story);
+    if let Some(p2p) = crate::p2p::get() {
+        p2p.leave_lobbies();
+    }
+}
+
 fn gamer_name() -> String {
     crate::rt().config.online.as_ref().map_or_else(String::new, |o| o.name.clone())
 }
 
 /// Sets the game up for GTA Online: the hooks of this module and the
-/// others', the stand-ins' methods, the lobby. Before installing the game
-/// module.
+/// others', the stand-ins' methods, the lobby (straight into freemode; from
+/// the story, once it goes there). Before installing the game module.
 pub(crate) fn start(online: &crate::Online, hooks: &mut glue5_game::Hooks) {
     self::hooks(hooks);
     crate::vnet::hooks(hooks);
@@ -103,8 +165,12 @@ pub(crate) fn start(online: &crate::Online, hooks: &mut glue5_game::Hooks) {
         ]
     }));
     match crate::p2p::start() {
-        Ok(p2p) => p2p.join_lobby(&online.lobby),
+        Ok(p2p) if online.freemode => p2p.join_lobby(&online.lobby),
+        Ok(_) => {}
         Err(e) => log::error!("p2p: {e}"),
+    }
+    if online.freemode {
+        enter_gta_online();
     }
 }
 
@@ -350,12 +416,19 @@ native_results! {
     profanity_pending = 0;
     /// `SC_PROFANITY_GET_CHECK_IS_VALID`: Social Club's text check (names); every text passes.
     profanity_valid = 1;
-    /// `NETWORK_HAS_SOCIAL_CLUB_ACCOUNT`: the player has one (the pause
-    /// menu's Creator needs it).
-    social_club_account = 1;
     /// `ARE_ONLINE_POLICIES_UP_TO_DATE`: there are no Rockstar policies to
     /// accept (`-sc_noOnlinePolicy`); an invite is dropped otherwise.
     online_policies_current = 1;
+}
+
+/// Hook for `NETWORK_HAS_SOCIAL_CLUB_ACCOUNT`: the player has one where it
+/// is online (the pause menu's Creator needs it).
+pub(crate) unsafe extern "C" fn social_club_account(env: *mut Env, info: u64) {
+    unsafe { orig::social_club_account(env, info) };
+    if unsafe { online_here(env) } {
+        let m = unsafe { Mem::of(env) };
+        m.set_u32(m.u64(info), 1);
+    }
 }
 
 /// Hook for `PLAYSTATS_CREATE_MATCH_HISTORY_ID_2(int&, int&)`: a match's id,
@@ -373,8 +446,12 @@ pub(crate) unsafe extern "C" fn match_history_id(env: *mut Env, info: u64) {
 
 /// Hook for `CNetwork::CanAccessNetworkFeatures(eNetworkAccessArea,
 /// eNetworkAccessCode*)`: the gate of every online feature (multiplayer,
-/// creators, store...), whose checks are about Rockstar's services; granted.
-pub(crate) unsafe extern "C" fn can_access_network_features(env: *mut Env, _area: u32, code: u64) -> u32 {
+/// creators, store...), whose checks are about Rockstar's services; granted
+/// where the player is online.
+pub(crate) unsafe extern "C" fn can_access_network_features(env: *mut Env, area: u32, code: u64) -> u32 {
+    if !unsafe { online_here(env) } {
+        return unsafe { orig::can_access_network_features(env, area, code) };
+    }
     if code != 0 {
         unsafe { Mem::of(env) }.set_u32(code, 0); // Access_Granted
     }
@@ -382,10 +459,54 @@ pub(crate) unsafe extern "C" fn can_access_network_features(env: *mut Env, _area
 }
 
 /// Hook for `rage::rlPresence::IsOnline(int)`: the local gamer counts as
-/// online (sessions and the privileges need it); the stand-in profile
-/// manager still says offline, so Social Club's own online paths stay off.
+/// online where it is (`online_here`: sessions and the privileges need
+/// it); the stand-in profile manager still says offline, so Social Club's
+/// own online paths stay off.
 pub(crate) unsafe extern "C" fn presence_online(env: *mut Env, index: u32) -> u32 {
-    if index == 0 { 1 } else { unsafe { orig::presence_online(env, index) } }
+    if index == 0 && unsafe { online_here(env) } { 1 } else { unsafe { orig::presence_online(env, index) } }
+}
+
+/// Hooks for `NetworkInterface::IsLocalPlayerOnline(bool)` and
+/// `HasValidRosCredentials(int)` (the index is gone from the compiled
+/// function), which `-lan` answers yes for a signed-in player (on a LAN
+/// there are no Rockstar services to be online with): only where the player
+/// is online (`online_here`), not in the story's own scripts.
+pub(crate) unsafe extern "C" fn local_player_online(env: *mut Env, lan: u32) -> u32 {
+    unsafe { online_here(env) && orig::local_player_online(env, lan) != 0 }.into()
+}
+
+pub(crate) unsafe extern "C" fn ros_credentials_held(env: *mut Env) -> u32 {
+    unsafe { online_here(env) && orig::ros_credentials_held(env) != 0 }.into()
+}
+
+/// Hook for `SWITCH_TO_MULTI_FIRSTPART` (the camera's swoop up from the
+/// story, as the transition to GTA Online starts, for whatever reason: the
+/// pause menu, a friend's invite or join): into GTA Online.
+pub(crate) unsafe extern "C" fn switch_to_multiplayer(env: *mut Env, info: u64) {
+    enter_gta_online();
+    unsafe { orig::switch_to_multiplayer(env, info) }
+}
+
+/// Hook for `CNetworkSession::OnReturnToSinglePlayer()`: back in the story.
+pub(crate) unsafe extern "C" fn return_to_story(env: *mut Env, session: u64) {
+    leave_gta_online();
+    unsafe { orig::return_to_story(env, session) }
+}
+
+thread_local! {
+    /// The engine is working out the player's privileges.
+    static REFRESHING_PRIVILEGES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Hook for `CLiveManager::RefreshPrivileges()`, as the player signs in:
+/// the privileges are the account's, the same in the story as in GTA
+/// Online. Worked out offline, they kept Rockstar's content only (the
+/// ONLINE tab's creators off; "Your profile only has permissions for
+/// Rockstar content" on the way to GTA Online).
+pub(crate) unsafe extern "C" fn refresh_privileges(env: *mut Env) {
+    let outer = REFRESHING_PRIVILEGES.replace(true);
+    unsafe { orig::refresh_privileges(env) };
+    REFRESHING_PRIVILEGES.set(outer);
 }
 
 /// Hook for `cCommerceManager::PopulateThinData(bool)` (the argument is
@@ -664,6 +785,11 @@ pub(crate) fn hooks(hooks: &mut glue5_game::Hooks) {
     hooks.match_history_id = Some(match_history_id);
     hooks.script_program_loaded = Some(script_program_loaded);
     hooks.presence_online = Some(presence_online);
+    hooks.local_player_online = Some(local_player_online);
+    hooks.ros_credentials_held = Some(ros_credentials_held);
+    hooks.switch_to_multiplayer = Some(switch_to_multiplayer);
+    hooks.return_to_story = Some(return_to_story);
+    hooks.refresh_privileges = Some(refresh_privileges);
     hooks.can_enter_multiplayer = Some(can_enter_multiplayer);
     hooks.populate_store_data = Some(populate_store_data);
     hooks.photo_to_jpeg = Some(photo_to_jpeg);

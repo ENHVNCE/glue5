@@ -454,7 +454,13 @@ thread_local! {
     static IN_PLAYER_MENUS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-fn in_player_menus<R>(f: impl FnOnce() -> R) -> R {
+/// Whether the game is putting the pause menu's tabs together, or in its
+/// lists of players and friends.
+pub(crate) fn in_player_menus() -> bool {
+    IN_PLAYER_MENUS.get()
+}
+
+fn with_player_menus<R>(f: impl FnOnce() -> R) -> R {
     // The pause menu's update runs its lists' within it.
     let outer = IN_PLAYER_MENUS.replace(true);
     let r = f();
@@ -465,30 +471,30 @@ fn in_player_menus<R>(f: impl FnOnce() -> R) -> R {
 /// Hook for `CPauseMenu::SetCurrentMenuVersion(unsigned int, bool)`: the
 /// pause menu's tabs, put together as it opens (see `social_club_connected`).
 pub(crate) unsafe extern "C" fn pause_menu_version(env: *mut Env, version: u32, a: u32) -> u32 {
-    in_player_menus(|| unsafe { orig::pause_menu_version(env, version, a) })
+    with_player_menus(|| unsafe { orig::pause_menu_version(env, version, a) })
 }
 
 /// Hook for `CPauseMenu::Update()`: it tells the menu's movie whether the
 /// player is signed in to Social Club, which shows the friends only then.
 pub(crate) unsafe extern "C" fn pause_menu_update(env: *mut Env) {
-    in_player_menus(|| unsafe { orig::pause_menu_update(env) });
+    with_player_menus(|| unsafe { orig::pause_menu_update(env) });
 }
 
 /// Hooks for `CPlayerListMenu::Update()` and `UpdateInput(int)`: the
 /// pause menu's lists of players and friends.
 pub(crate) unsafe extern "C" fn player_list_update(env: *mut Env, menu: u64) {
-    in_player_menus(|| unsafe { orig::player_list_update(env, menu) });
+    with_player_menus(|| unsafe { orig::player_list_update(env, menu) });
 }
 
 pub(crate) unsafe extern "C" fn player_list_input(env: *mut Env, menu: u64, input: u32) -> u32 {
-    in_player_menus(|| unsafe { orig::player_list_input(env, menu, input) })
+    with_player_menus(|| unsafe { orig::player_list_input(env, menu, input) })
 }
 
 /// Hook for `CPlayerListMenu::Populate(MenuScreenId)`, which the menu's
 /// movie calls back as a list opens (outside `CPauseMenu::Update`): it
 /// asks the players' crews, without which the list shows none of them.
 pub(crate) unsafe extern "C" fn player_list_populate(env: *mut Env, menu: u64, screen: u64) -> u32 {
-    in_player_menus(|| unsafe { orig::player_list_populate(env, menu, screen) })
+    with_player_menus(|| unsafe { orig::player_list_populate(env, menu, screen) })
 }
 
 /// Hook for `SocialClubMgr::IsConnectedToSocialClub() const`: connected
