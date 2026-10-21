@@ -382,6 +382,13 @@ fn natural(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
+/// The Luau definitions of what a mod uses, for the type checker: the
+/// installed game's names, the natives and the globals, the globals the
+/// modules add.
+pub(crate) fn definitions() -> String {
+    [world::definitions().as_str(), natives::DEFINITIONS].concat()
+}
+
 /// The mods and their state.
 pub fn mods() -> Vec<Mod> {
     crate::lock(&SHARED.state).mods.clone()

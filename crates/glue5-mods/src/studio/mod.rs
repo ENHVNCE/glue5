@@ -300,7 +300,7 @@ impl Server {
                 }
                 ("GET", "/natives.d.luau") => {
                     if self.authorized(&request) {
-                        let defs = format!("{}{}", crate::world::definitions(), crate::natives::DEFINITIONS);
+                        let defs = crate::definitions();
                         respond(&mut out, 200, "text/plain; charset=utf-8", defs.as_bytes(), &[])?;
                     } else {
                         respond(&mut out, 401, "text/plain", b"pair with the game first", &[])?;

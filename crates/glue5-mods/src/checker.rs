@@ -80,7 +80,7 @@ impl Checker {
     }
 
     fn new() -> Result<Checker, String> {
-        let defs = format!("{}{}", crate::world::definitions(), natives::DEFINITIONS);
+        let defs = crate::definitions();
         let mut error: *mut c_char = std::ptr::null_mut();
         let raw = unsafe { glue5_checker_new(defs.as_ptr().cast(), defs.len(), &mut error) };
         if raw.is_null() {
