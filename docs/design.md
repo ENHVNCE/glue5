@@ -854,7 +854,9 @@ playing.
   is a type error ("did you mean ...?"). The names come from the assets
   the game loaded, whatever their version; none is in the build.
 - **Data**: `json.encode`/`json.decode` (json.rs: arrays are tables with
-  keys 1..n or none, null is nil, functions and cycles are errors) and
+  keys 1..n or none, null is nil, functions and cycles are errors; the
+  text is written as the tables are walked and stops at 4 MB, so a table
+  held many times over cannot make it endless) and
   `storage` (storage.rs): a mod's values by key, JSON, 1 MB, written
   within two seconds and when it stops, in the mods folder's
   `.glue5/storage/<mod>.json`, so a mod handed on carries no player's
