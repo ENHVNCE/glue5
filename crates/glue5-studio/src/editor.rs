@@ -10,6 +10,15 @@ extern "C" {
     pub fn import_mod(url: &str) -> js_sys::Promise;
 }
 
+#[wasm_bindgen(module = "/js/viewport.js")]
+extern "C" {
+    /// Keeps `--kb` on the page's root at the on-screen keyboard's height
+    /// (iOS Safari does not resize the page for it) and brings a menu's
+    /// field being typed in above it.
+    #[wasm_bindgen(js_name = watchKeyboard)]
+    pub fn watch_keyboard();
+}
+
 #[wasm_bindgen(module = "/js/editor.js")]
 extern "C" {
     pub type StudioEditor;
