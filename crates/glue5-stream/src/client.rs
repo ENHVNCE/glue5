@@ -31,6 +31,7 @@ use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use glue5_qos::{self as qos, Qos};
 
 use crate::cache::{BLOCK, Cache};
 use crate::catalog::Catalog;
@@ -298,12 +299,15 @@ impl Client {
             boot: Mutex::new(None),
         });
         let before = pending();
+        // In classes of their own, not their creator's (the app's main
+        // thread): the engine's reads wait on the connection's, the saves
+        // and the full download are background work.
         let c = client.clone();
-        let keep = thread::Builder::new().name("stream sync".into()).spawn(move || c.keep()).expect("stream sync thread");
+        let keep = qos::spawn("stream sync", Qos::Utility, move || c.keep()).expect("stream sync thread");
         let c = client.clone();
-        let fill = thread::Builder::new().name("stream fill".into()).spawn(move || c.fill()).expect("stream fill thread");
+        let fill = qos::spawn("stream fill", Qos::Utility, move || c.fill()).expect("stream fill thread");
         let c = client.clone();
-        thread::Builder::new().name("stream".into()).spawn(move || c.run(before, [keep, fill])).expect("stream thread");
+        qos::spawn("stream", Qos::Initiated, move || c.run(before, [keep, fill])).expect("stream thread");
         client
     }
 
@@ -1220,7 +1224,7 @@ pub fn after_stopped(work: impl FnOnce() + Send + 'static) {
         earlier
     };
     let over = Over(done);
-    let spawned = thread::Builder::new().name("stream copy".into()).spawn(move || {
+    let spawned = qos::spawn("stream copy", Qos::Utility, move || {
         let _over = over;
         for done in before {
             done.wait();
