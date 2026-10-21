@@ -288,6 +288,9 @@ pub struct Library {
     /// Hashes of the programs asked for by name (a scan of the index each
     /// time otherwise: the pause map asks at every draw).
     names: Mutex<HashMap<String, Option<u64>>>,
+    /// Special-constant tables by content: ~1800 programs have one, of 17
+    /// different ones; a buffer each took 6 MiB on a Mac (3.5 KiB apiece).
+    tables: Mutex<HashMap<Vec<u64>, wgpu::Buffer>>,
 }
 
 struct Entry {
@@ -320,7 +323,13 @@ impl Library {
             );
         }
         log::info!("gpu: {} translated shaders in {}", index.len(), dir.display());
-        Ok(Library { dir: dir.to_owned(), index, programs: Mutex::default(), names: Mutex::default() })
+        Ok(Library {
+            dir: dir.to_owned(),
+            index,
+            programs: Mutex::default(),
+            names: Mutex::default(),
+            tables: Mutex::default(),
+        })
     }
 
     pub fn label(&self, hash: u64) -> String {
@@ -412,16 +421,20 @@ impl Library {
         let consts = if entry.consts {
             let json = std::fs::read_to_string(self.dir.join(format!("{name}.consts.json")))?;
             let values: Vec<u64> = serde_json::from_str(&json)?;
-            // One u32 per 16-byte slot (x of a uvec4).
-            let mut data = vec![0u32; values.len().max(1) * 4];
-            for (i, v) in values.iter().enumerate() {
-                data[i * 4] = *v as u32;
-            }
-            Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("constant table"),
-                contents: bytemuck::cast_slice(&data),
-                usage: wgpu::BufferUsages::UNIFORM,
-            }))
+            let mut tables = self.tables.lock().unwrap();
+            let table = tables.entry(values).or_insert_with_key(|values| {
+                // One u32 per 16-byte slot (x of a uvec4).
+                let mut data = vec![0u32; values.len().max(1) * 4];
+                for (i, v) in values.iter().enumerate() {
+                    data[i * 4] = *v as u32;
+                }
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("constant table"),
+                    contents: bytemuck::cast_slice(&data),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                })
+            });
+            Some(table.clone())
         } else {
             None
         };
