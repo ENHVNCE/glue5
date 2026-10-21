@@ -110,6 +110,22 @@ files with `--!strict` to have every type checked.
   full; an entity of the wrong kind (a Ped where a Vehicle is wanted) is
   an error before the native runs.
 
+## Drawing
+- `local logo = draw.loadImage("images/logo.png")` loads a PNG of the
+  mod's folder (2048×2048 at most; a mod holds 64 images, 32 MB, freed
+  when it stops or by `logo:release()`); it waits a few frames while the
+  image is decoded, so call it from the main code or a task.
+- Each frame (in a loop with `wait()`): `draw.image(logo, x, y, width,
+  [height], [options])`, `draw.rect(x, y, width, height, [options])`,
+  `draw.text(text, x, y, [options])`. Positions are the centre (a text's
+  top), sizes fractions of the screen (0 to 1), as DRAW_RECT's; no height
+  keeps the image's proportions. Options: `rotation` (degrees), `color`
+  (`{r, g, b, a}`, 0 to 255), `z` (higher in front); text: `size` (a
+  fraction of the screen's height), `align` ("left", "center", "right").
+- They are drawn over everything the game draws, at the window's
+  resolution. For the game's own sprites and text, use the natives
+  (`graphics.drawSprite`, `hud.beginTextCommandDisplayText`, ...).
+
 ## Data
 - `json.encode(value, pretty?)` and `json.decode(text)`: tables with keys
   1..n (or none) are arrays, others objects; JSON's null is nil.
