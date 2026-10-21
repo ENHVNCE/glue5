@@ -44,6 +44,28 @@ public class Glue5Activity extends SDLActivity {
         return new Glue5Surface(context);
     }
 
+    /**
+     * From keyboard.rs: 1, the window pans for the text being typed (the
+     * game's text box, which the game draws where it does); 0, it stays put
+     * (the app's pages end above the keyboard). Sent before the keyboard
+     * shows, through the queue SDL shows it with.
+     */
+    private static final int COMMAND_KEYBOARD_PANS = COMMAND_USER;
+
+    @Override
+    protected boolean onUnhandledMessage(int command, Object param) {
+        if (command == COMMAND_KEYBOARD_PANS) {
+            if (Build.VERSION.SDK_INT >= 30 /* Android 11 (R) */) {
+                boolean pans = param instanceof Integer && (Integer) param != 0;
+                getWindow().setSoftInputMode(pans
+                        ? WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
+                        : WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
+            }
+            return true;
+        }
+        return super.onUnhandledMessage(command, param);
+    }
+
     @Override
     protected String[] getLibraries() {
         return new String[] { "SDL3", "glue5" };

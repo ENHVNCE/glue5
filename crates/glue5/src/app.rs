@@ -883,6 +883,9 @@ impl App {
             if self.typing.is_some() {
                 self.text_input.stop(&self.window);
             }
+            if let Some(typing) = typing {
+                crate::keyboard::typing(matches!(typing, Typing::App(_)));
+            }
             if let Some(typing) = typing
                 && let Err(e) = self.text_input.start_with_options(&self.window, typing.options())
             {

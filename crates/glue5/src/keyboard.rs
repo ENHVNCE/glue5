@@ -32,6 +32,21 @@ pub fn init(window: &Window) {
     let _ = window;
 }
 
+/// Who keeps the text being typed in sight: `ours`, the app's pages (laid
+/// out above the keyboard), or the system, for the game's text box, which
+/// the game draws where it does. Android 11 and later pan the window for
+/// the latter only (Glue5Activity); elsewhere nothing changes (SDL shifts
+/// its view on iOS where the text area needs it). Before the text input
+/// starts.
+pub fn typing(ours: bool) {
+    // SDLActivity's COMMAND_USER: Glue5Activity's COMMAND_KEYBOARD_PANS.
+    #[cfg(target_os = "android")]
+    unsafe {
+        sdl3::sys::system::SDL_SendAndroidMessage(0x8000, i32::from(!ours));
+    }
+    let _ = ours;
+}
+
 /// iOS: UIKit tells where the keyboard goes as it starts moving (shown,
 /// hidden, resized, undocked), in the screen's coordinates; UIKit's points
 /// are SDL's window units there.
