@@ -759,31 +759,35 @@ impl Wgsl {
 
 // ---- WGSL text: the translator emits plain, regular declarations -------------
 
+// ASCII classes (`(?-u)`: the text is ASCII). Unicode `\w`, `\s`, `\d` and
+// `\b` made the caches each thread keeps for these 3.3 times larger: 1.4 MiB
+// a thread, 23 MiB in all. A negated class stays Unicode (`(?u:[^;])`), as
+// a `&str` regex needs.
 macro_rules! re {
     ($name:ident, $re:expr) => {
-        static $name: LazyLock<Regex> = LazyLock::new(|| Regex::new($re).unwrap());
+        static $name: LazyLock<Regex> = LazyLock::new(|| Regex::new(concat!("(?-u)", $re)).unwrap());
     };
 }
 
-re!(RE_DECL, r"@group\((\d+)u?\)\s*@binding\((\d+)u?\)\s*var(?:<([^>]*)>)?\s+(\w+)\s*:\s*([^;]+);");
+re!(RE_DECL, r"@group\((\d+)u?\)\s*@binding\((\d+)u?\)\s*var(?:<((?u:[^>])*)>)?\s+(\w+)\s*:\s*((?u:[^;])+);");
 re!(RE_UNIFORM, r"@group\((\d+)u?\)\s*@binding\((\d+)u?\)\s*var<uniform>\s+(\w+)\s*:\s*(\w+)\s*;");
-re!(RE_ARRAY_LEN, r"array<[^>]*>,\s*(\d+)u?>");
+re!(RE_ARRAY_LEN, r"array<(?u:[^>])*>,\s*(\d+)u?>");
 re!(RE_FIRST_ITEM, r"\n(?:@\w+|fn)\s");
-re!(RE_TEXTURE_TYPE, r"^texture_(\w+?)(?:<([^>]*)>)?$");
-re!(RE_FRAGMENT_MAIN, r"@fragment\s*fn\s+main\s*\((?:[^()]|\([^)]*\))*\)\s*->\s*([^{]+)\{");
+re!(RE_TEXTURE_TYPE, r"^texture_(\w+?)(?:<((?u:[^>])*)>)?$");
+re!(RE_FRAGMENT_MAIN, r"@fragment\s*fn\s+main\s*\((?:(?u:[^()])|\((?u:[^)])*\))*\)\s*->\s*((?u:[^{])+)\{");
 re!(RE_LOCATION, r"@location\((\d+)u?\)");
-re!(RE_INTERPOLATE, r"@location\((\d+)u?\)\s*@interpolate\(([^)]*)\)");
-re!(RE_VS_MAIN, r"@vertex\s*fn\s+main\s*\([\s\S]*?\)\s*->\s*(\w+)\s*\{");
-re!(RE_PS_MAIN, r"(@fragment\s*fn\s+main\s*\()([\s\S]*?)(\)\s*->)");
+re!(RE_INTERPOLATE, r"@location\((\d+)u?\)\s*@interpolate\(((?u:[^)])*)\)");
+re!(RE_VS_MAIN, r"@vertex\s*fn\s+main\s*\((?u:[\s\S])*?\)\s*->\s*(\w+)\s*\{");
+re!(RE_PS_MAIN, r"(@fragment\s*fn\s+main\s*\()((?u:[\s\S])*?)(\)\s*->)");
 re!(RE_VS_OUTPUT_MEMBER, r"@location\((\d+)u\)(\s*\n\s*\w+\s*:)");
-re!(RE_MAIN_INNER_CALL, r"(\n\s*main_inner\([^;]*\);)");
-re!(RE_PS_MAIN_BODY, r"(@fragment\s*fn\s+main\s*\()((?:[^()]|\([^)]*\))*)(\)[^{]*\{)");
+re!(RE_MAIN_INNER_CALL, r"(\n\s*main_inner\((?u:[^;])*\);)");
+re!(RE_PS_MAIN_BODY, r"(@fragment\s*fn\s+main\s*\()((?:(?u:[^()])|\((?u:[^)])*\))*)(\)(?u:[^{])*\{)");
 re!(RE_CLIP_ENABLE, r"enable\s+clip_distances\s*;\s*");
 re!(RE_CLIP_MEMBER, r"@builtin\(clip_distances\)\s*(\w+)\s*:\s*array<f32,\s*\d+u?>\s*,?\s*");
 re!(RE_DEPTH_MEMBER, r"@builtin\(frag_depth\)\s*(\w+)\s*:\s*f32\s*,?\s*");
 re!(
     RE_DEPTH_ONLY_MAIN,
-    r"(@fragment\s*fn\s+main\s*\((?:[^()]|\([^)]*\))*\))\s*->\s*@builtin\(frag_depth\)\s*f32\s*\{([^{}]*?)\n\s*return\s+\w+;"
+    r"(@fragment\s*fn\s+main\s*\((?:(?u:[^()])|\((?u:[^)])*\))*\))\s*->\s*@builtin\(frag_depth\)\s*f32\s*\{((?u:[^{}])*?)\n\s*return\s+\w+;"
 );
 re!(RE_SAMPLE_INPUT, r"^(@location\(\d+u?\)\s*@interpolate\(perspective,\s*sample\)\s*)(\w+)(\s*:\s*vec4<f32>)$");
 re!(RE_SAMPLE_INDEX, r"^@builtin\(sample_index\)\s*(\w+)\s*:");
@@ -949,7 +953,7 @@ pub fn reflect_bindings(text: &str) -> Vec<(u32, Binding)> {
     out
 }
 
-re!(RE_SAMPLING, r"\btexture(?:Sample|Gather)\w*\(([^;]*)");
+re!(RE_SAMPLING, r"\btexture(?:Sample|Gather)\w*\(((?u:[^;])*)");
 
 /// (texture binding, sampler binding) of every sampling call: the first two
 /// arguments, or the second and third (textureGather's component first).
