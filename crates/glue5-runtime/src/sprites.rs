@@ -62,33 +62,76 @@ pub enum Align {
     Right,
 }
 
+/// RGBA, not premultiplied.
+pub type Rgba = [u8; 4];
+
+/// A line along an outline, or one drawn by itself.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stroke {
+    pub color: Rgba,
+    /// A fraction of the screen's height.
+    pub width: f32,
+}
+
+/// What is drawn. Positions are fractions of the screen (0, 0 its top
+/// left, 1, 1 its bottom right); lengths that are not along x or y (radii,
+/// line widths, rounding, text sizes) fractions of its height. Rotations
+/// are degrees, clockwise.
 #[derive(Clone)]
 pub enum Shape {
-    /// Centred on `center`, `size` wide and high; a height of 0 keeps the
-    /// image's proportions.
-    Image(Arc<Image>),
-    /// Centred on `center`, `size` wide and high.
-    Rect,
-    /// From `center` (its top; which end is there, `align` says); its
-    /// height is `size[1]`.
-    Text(String, Align),
+    /// `size` wide and high (a height of 0 keeps the image's proportions),
+    /// its pixels multiplied by `tint`.
+    Image { image: Arc<Image>, center: [f32; 2], size: [f32; 2], rotation: f32, tint: Rgba },
+    /// Filled with `fill`, or from `fill` to `gradient.0` top to bottom (left
+    /// to right when `gradient.1`).
+    Rect {
+        center: [f32; 2],
+        size: [f32; 2],
+        rotation: f32,
+        fill: Rgba,
+        gradient: Option<(Rgba, bool)>,
+        rounding: f32,
+        stroke: Option<Stroke>,
+    },
+    /// From `at` (its top; which end of it is there, `align` says), `size`
+    /// high.
+    Text { text: Arc<str>, at: [f32; 2], size: f32, rotation: f32, align: Align, color: Rgba },
+    Line { from: [f32; 2], to: [f32; 2], stroke: Stroke },
+    /// The list's `points[points]`; a closed one may be filled (convex).
+    Path { points: std::ops::Range<u32>, closed: bool, fill: Option<Rgba>, stroke: Option<Stroke> },
+    Circle { center: [f32; 2], radius: f32, fill: Option<Rgba>, stroke: Option<Stroke> },
+    /// From `from` to `to` degrees, clockwise from the top.
+    Arc { center: [f32; 2], radius: f32, from: f32, to: f32, stroke: Stroke },
 }
 
 #[derive(Clone)]
 pub struct Sprite {
     pub shape: Shape,
-    /// Fractions of the screen: 0, 0 is its top left, 1, 1 its bottom right.
-    pub center: [f32; 2],
-    /// Fractions of the screen's width and height.
-    pub size: [f32; 2],
-    /// Degrees, clockwise, around `center`.
-    pub rotation: f32,
-    /// RGBA, not premultiplied: an image's pixels are multiplied by it.
-    pub color: [u8; 4],
 }
 
-/// The latest list, in drawing order (none: nothing to draw).
-static LATEST: Mutex<Option<Arc<Vec<Sprite>>>> = Mutex::new(None);
+/// What is drawn in a frame, in drawing order. Kept and reused: a list the
+/// renderer is done with comes back from [`spare`].
+#[derive(Default)]
+pub struct List {
+    pub sprites: Vec<Sprite>,
+    /// The paths' points.
+    pub points: Vec<[f32; 2]>,
+}
+
+impl List {
+    pub fn clear(&mut self) {
+        self.sprites.clear();
+        self.points.clear();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sprites.is_empty()
+    }
+}
+
+/// The latest list (none: nothing to draw), and the one before, for reuse.
+static LATEST: Mutex<Option<Arc<List>>> = Mutex::new(None);
+static SPARE: Mutex<Option<Arc<List>>> = Mutex::new(None);
 /// Changes with the list.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// Images dropped so far.
@@ -98,17 +141,34 @@ static SCREEN: AtomicU64 = AtomicU64::new(0);
 
 /// Replaces what is drawn, from the next frame shown (an empty list draws
 /// nothing).
-pub fn publish(sprites: Vec<Sprite>) {
+pub fn publish(list: List) {
     let mut latest = LATEST.locked();
-    if sprites.is_empty() && latest.is_none() {
+    if list.is_empty() && latest.is_none() {
         return;
     }
-    *latest = (!sprites.is_empty()).then(|| Arc::new(sprites));
+    let old = std::mem::replace(&mut *latest, (!list.is_empty()).then(|| Arc::new(list)));
     GENERATION.fetch_add(1, Ordering::Release);
+    drop(latest);
+    if old.is_some() {
+        *SPARE.locked() = old;
+    }
+}
+
+/// An empty list to fill, the one the renderer was done with if it is
+/// (its memory kept).
+pub fn spare() -> List {
+    let spare = SPARE.locked().take();
+    match spare.map(Arc::try_unwrap) {
+        Some(Ok(mut list)) => {
+            list.clear();
+            list
+        }
+        _ => List::default(),
+    }
 }
 
 /// The list to draw.
-pub fn latest() -> Option<Arc<Vec<Sprite>>> {
+pub fn latest() -> Option<Arc<List>> {
     LATEST.locked().clone()
 }
 

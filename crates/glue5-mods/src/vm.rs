@@ -238,6 +238,8 @@ impl Vm {
                 return failed;
             }
         }
+        // What it drew shows, unless its time ran out before it was done.
+        crate::draw::end_turn(&self.lua, Instant::now() < self.turn_end.get());
         // A menu may be used, a key pressed any time: every frame then.
         let player = menus::has_menus(self.sched.instance) || self.sched.keys.listening();
         let tasks = self.sched.tasks.borrow();
@@ -369,9 +371,9 @@ impl Vm {
         self.lua.used_memory()
     }
 
-    /// What the mod drew since the last call (draw.rs), with the z of each.
-    pub fn take_drawings(&self) -> Vec<(i32, glue5_runtime::sprites::Sprite)> {
-        crate::draw::take(&self.lua)
+    /// What the mod draws (draw.rs).
+    pub(crate) fn canvas(&self) -> Option<std::rc::Rc<crate::draw::Canvas>> {
+        crate::draw::canvas(&self.lua)
     }
 }
 

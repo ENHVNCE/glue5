@@ -1,26 +1,39 @@
 //! `draw` in Luau: what ScriptHookV's createTexture/drawTexture gave, and
-//! a little more. A mod loads images (PNG) from its folder, read and
-//! decoded on a thread of their own, and draws them, rectangles and text
-//! over the game a frame at a time, in fractions of the screen.
+//! more. A mod loads images (PNG) from its folder, read and decoded on a
+//! thread of their own, and draws them, shapes and text over the game, in
+//! fractions of the screen.
 //!
 //! The natives draw rectangles, the game's sprites and text in the game's
 //! own frame (DRAW_RECT, DRAW_SPRITE, the text commands); these are drawn
-//! by the renderer over the frame once it is scaled to the window (glue5-gpu's
-//! sprites.rs), so at the window's resolution, above whatever the game
-//! drew, below the app's own UI.
+//! by the renderer over the frame once it is scaled to the window
+//! (glue5-gpu's sprites.rs), so at the window's resolution, above whatever
+//! the game drew, below the app's own UI.
 //!
-//! A frame's drawings are handed to the renderer at the start of the next
-//! (the engine's frame count changing, engine.rs): what a mod draws shows
-//! for that frame. A mod's images are its run's: they go with its VM.
+//! Calls are the hot path (thousands a frame for a busy HUD): their
+//! arguments are positional numbers, a colour one packed number, and the
+//! rest a style made once (`draw.style{...}`, userdata) and passed again.
+//! Measured on an M1 Pro, release, 100,000 calls of a rectangle: an
+//! options table written in the call costs 425 ns a call, the same table
+//! made once 332 ns (its keys are looked up by string), a packed colour
+//! and a style 104 ns, a packed colour alone 65 ns.
+//!
+//! What a mod draws in a turn shows from the end of that turn until the end
+//! of its next whole one (a turn cut short by the mod's time running out
+//! goes on in the next, its drawings with it: no half a frame on screen).
+//! At each engine frame, when a mod drew anew, the mods' drawings become
+//! one list, by z, handed to the renderer (engine.rs). Records, the list
+//! and the texts are reused from frame to frame. A mod's images are its
+//! run's: they go with its VM.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use glue5_runtime::sprites::{self, Align, Image, Shape, Sprite};
+use glue5_runtime::sprites::{self, Align, Image, Rgba, Shape, Sprite, Stroke};
 use mlua::{AnyUserData, Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 /// An image's side at most, in pixels: what every GPU takes.
@@ -31,21 +44,43 @@ const FILE: u64 = 16 << 20;
 pub const IMAGES: usize = 64;
 /// What they may take, decoded (4 bytes a pixel, as on the GPU).
 pub const IMAGE_BYTES: usize = 32 << 20;
-/// Drawings a mod may make in a frame.
-pub const DRAWINGS: usize = 1024;
+/// Drawings a mod may make in a turn, and paths' points.
+pub const DRAWINGS: usize = 16384;
+pub const POINTS: usize = 65536;
 /// A text's length at most, in bytes (past it, it is cut).
 const TEXT: usize = 1024;
+/// Lines' width when none is given (a fraction of the screen's height:
+/// two pixels at 1080).
+const WIDTH: f64 = 0.002;
 
 const MB: usize = 1 << 20;
 
 /// What a mod's VM keeps for `draw` (in its app data).
 #[derive(Default)]
-struct Canvas {
+pub(crate) struct Canvas {
     /// The mod's folder (none: the console, which has none).
     module: RefCell<Option<String>>,
     budget: Rc<Budget>,
-    /// This frame's drawings, with their z.
-    drawings: RefCell<Vec<(i32, Sprite)>>,
+    /// What this turn draws, and what the last whole turn drew (shown).
+    rec: RefCell<Record>,
+    ready: RefCell<Record>,
+    /// `ready` changed since it was published.
+    committed: Cell<bool>,
+    /// Texts by the address of their Luau string.
+    texts: RefCell<HashMap<usize, Text>>,
+}
+
+#[derive(Default)]
+struct Record {
+    /// With their z.
+    items: Vec<(i32, Sprite)>,
+    points: Vec<[f32; 2]>,
+}
+
+struct Text {
+    text: Arc<str>,
+    /// Drawn since the last whole turn.
+    used: bool,
 }
 
 /// The images a run of a mod holds, and their bytes.
@@ -280,7 +315,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
     draw.set(
         "image",
         lua.create_function(
-            move |_, (image, x, y, w, h, options): (AnyUserData, f64, f64, f64, Option<f64>, Option<Table>)| {
+            move |_, (image, x, y, w, h, color, style): (AnyUserData, f64, f64, f64, Option<f64>, Option<f64>, Option<AnyUserData>)| {
                 let image = image
                     .borrow::<LuaImage>()
                     .map_err(|_| mlua::Error::runtime("draw.image: an image from draw.loadImage"))?
@@ -288,61 +323,121 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
                     .borrow()
                     .clone()
                     .ok_or_else(|| mlua::Error::runtime("draw.image: the image was released"))?;
-                let style = Style::read("draw.image", options.as_ref())?;
-                let size = [fraction(w, "width")?.max(0.0), fraction(h.unwrap_or(0.0), "height")?.max(0.0)];
-                c.add(style.z, Sprite {
-                    shape: Shape::Image(image),
-                    center: [fraction(x, "x")?, fraction(y, "y")?],
-                    size,
-                    rotation: style.rotation,
-                    color: style.color,
-                })
+                let s = Style::of(style)?;
+                let shape = Shape::Image {
+                    image,
+                    center: [fraction(x)?, fraction(y)?],
+                    size: [fraction(w)?.max(0.0), fraction(h.unwrap_or(0.0))?.max(0.0)],
+                    rotation: s.rotation,
+                    tint: rgba(color)?,
+                };
+                c.add(s.z, shape)
             },
         )?,
     )?;
     let c = canvas.clone();
     draw.set(
         "rect",
-        lua.create_function(move |_, (x, y, w, h, options): (f64, f64, f64, f64, Option<Table>)| {
-            let style = Style::read("draw.rect", options.as_ref())?;
-            c.add(style.z, Sprite {
-                shape: Shape::Rect,
-                center: [fraction(x, "x")?, fraction(y, "y")?],
-                size: [fraction(w, "width")?.max(0.0), fraction(h, "height")?.max(0.0)],
-                rotation: style.rotation,
-                color: style.color,
-            })
-        })?,
+        lua.create_function(
+            move |_, (x, y, w, h, color, style): (f64, f64, f64, f64, Option<f64>, Option<AnyUserData>)| {
+                let s = Style::of(style)?;
+                let fill = match (color, s.stroke) {
+                    // An outline alone.
+                    (None, Some(_)) => [0; 4],
+                    _ => rgba(color)?,
+                };
+                let shape = Shape::Rect {
+                    center: [fraction(x)?, fraction(y)?],
+                    size: [fraction(w)?.max(0.0), fraction(h)?.max(0.0)],
+                    rotation: s.rotation,
+                    fill,
+                    gradient: s.gradient.map(|g| (g, s.horizontal)),
+                    rounding: s.rounding,
+                    stroke: s.outline(),
+                };
+                c.add(s.z, shape)
+            },
+        )?,
     )?;
     let c = canvas.clone();
     draw.set(
         "text",
-        lua.create_function(move |_, (text, x, y, options): (mlua::LuaString, f64, f64, Option<Table>)| {
-            let style = Style::read("draw.text", options.as_ref())?;
-            let (mut size, mut align) = (0.03, Align::Left);
-            if let Some(o) = &options {
-                if let Some(s) = number(o.get("size")?, "draw.text: size")? {
-                    size = s.clamp(0.001, 1.0);
-                }
-                align = match o.get::<Value>("align")? {
-                    Value::Nil => Align::Left,
-                    Value::String(s) if s == "left" => Align::Left,
-                    Value::String(s) if s == "center" => Align::Center,
-                    Value::String(s) if s == "right" => Align::Right,
-                    _ => return Err(mlua::Error::runtime("draw.text: align is \"left\", \"center\" or \"right\"")),
+        lua.create_function(
+            move |_, (text, x, y, size, color, style): (mlua::LuaString, f64, f64, Option<f64>, Option<f64>, Option<AnyUserData>)| {
+                let s = Style::of(style)?;
+                let shape = Shape::Text {
+                    text: c.text(&text),
+                    at: [fraction(x)?, fraction(y)?],
+                    size: length(size.unwrap_or(0.03))?.clamp(0.001, 1.0),
+                    rotation: s.rotation,
+                    align: s.align,
+                    color: rgba(color)?,
                 };
+                c.add(s.z, shape)
+            },
+        )?,
+    )?;
+    let c = canvas.clone();
+    draw.set(
+        "line",
+        lua.create_function(
+            move |_, (x1, y1, x2, y2, width, color, style): (f64, f64, f64, f64, Option<f64>, Option<f64>, Option<AnyUserData>)| {
+                let s = Style::of(style)?;
+                let stroke = Stroke { color: rgba(color)?, width: length(width.unwrap_or(WIDTH))? };
+                c.add(s.z, Shape::Line { from: [fraction(x1)?, fraction(y1)?], to: [fraction(x2)?, fraction(y2)?], stroke })
+            },
+        )?,
+    )?;
+    let c = canvas.clone();
+    draw.set(
+        "path",
+        lua.create_function(move |_, (points, width, color, style): (Table, Option<f64>, Option<f64>, Option<AnyUserData>)| {
+            let s = Style::of(style)?;
+            let n = points.raw_len();
+            if n % 2 != 0 || n < 4 {
+                return Err(mlua::Error::runtime("draw.path: points are {x1, y1, x2, y2, ...}, two at least"));
             }
-            let bytes = text.as_bytes();
-            let text = String::from_utf8_lossy(&bytes[..bytes.len().min(TEXT)]).into_owned();
-            c.add(style.z, Sprite {
-                shape: Shape::Text(text, align),
-                center: [fraction(x, "x")?, fraction(y, "y")?],
-                size: [0.0, size as f32],
-                rotation: style.rotation,
-                color: style.color,
-            })
+            let stroke = match (color, s.fill) {
+                // A filled outline alone.
+                (None, Some(_)) => None,
+                _ => Some(Stroke { color: rgba(color)?, width: length(width.unwrap_or(WIDTH))? }),
+            };
+            let range = c.points(n / 2, |i| Ok([fraction(points.raw_get(2 * i + 1)?)?, fraction(points.raw_get(2 * i + 2)?)?]))?;
+            c.add(s.z, Shape::Path { points: range, closed: s.closed || s.fill.is_some(), fill: s.fill, stroke })
         })?,
     )?;
+    let c = canvas.clone();
+    draw.set(
+        "circle",
+        lua.create_function(move |_, (x, y, r, color, style): (f64, f64, f64, Option<f64>, Option<AnyUserData>)| {
+            let s = Style::of(style)?;
+            let fill = match (color, s.stroke) {
+                (None, Some(_)) => None,
+                _ => Some(rgba(color)?),
+            };
+            c.add(s.z, Shape::Circle { center: [fraction(x)?, fraction(y)?], radius: length(r)?.max(0.0), fill, stroke: s.outline() })
+        })?,
+    )?;
+    let c = canvas.clone();
+    draw.set(
+        "arc",
+        lua.create_function(
+            move |_, (x, y, r, from, to, width, color, style): (f64, f64, f64, f64, f64, Option<f64>, Option<f64>, Option<AnyUserData>)| {
+                let s = Style::of(style)?;
+                let stroke = Stroke { color: rgba(color)?, width: length(width.unwrap_or(WIDTH))? };
+                let (from, to) = (finite(from)? as f32, finite(to)? as f32);
+                c.add(s.z, Shape::Arc { center: [fraction(x)?, fraction(y)?], radius: length(r)?.max(0.0), from, to, stroke })
+            },
+        )?,
+    )?;
+    draw.set(
+        "rgba",
+        lua.create_function(|_, (r, g, b, a): (f64, f64, f64, Option<f64>)| {
+            let byte = |v: f64| finite(v).map(|v| v.clamp(0.0, 255.0).round() as u32);
+            Ok(f64::from(byte(r)? << 24 | byte(g)? << 16 | byte(b)? << 8 | byte(a.unwrap_or(255.0))?))
+        })?,
+    )?;
+    draw.set("style", lua.create_function(|_, t: Option<Table>| Style::from_table(t.as_ref()))?)?;
     draw.set(
         "screenSize",
         lua.create_function(|_, ()| {
@@ -361,85 +456,273 @@ pub fn set_folder(lua: &Lua, module: &str) {
     }
 }
 
-/// What a mod drew since the last call, with the z of each.
-pub fn take(lua: &Lua) -> Vec<(i32, Sprite)> {
-    lua.app_data_ref::<Rc<Canvas>>().map(|c| std::mem::take(&mut *c.drawings.borrow_mut())).unwrap_or_default()
+/// A mod's drawings, for [`publish`].
+pub(crate) fn canvas(lua: &Lua) -> Option<Rc<Canvas>> {
+    lua.app_data_ref::<Rc<Canvas>>().map(|c| c.clone())
 }
 
-/// The mods' drawings of a frame, for the renderer: by z, then in the
-/// order drawn.
-pub fn publish(drawings: impl IntoIterator<Item = Vec<(i32, Sprite)>>) {
-    let mut all: Vec<(i32, Sprite)> = drawings.into_iter().flatten().collect();
-    all.sort_by_key(|(z, _)| *z);
-    sprites::publish(all.into_iter().map(|(_, s)| s).collect());
+/// A mod's turn ended; `whole`: it ran to its waits (not stopped short by
+/// its time running out). Then what it drew becomes what it shows, until
+/// its next whole turn; else it goes on drawing in its next turn, and the
+/// last whole turn's drawings stay (no half a frame on screen).
+pub fn end_turn(lua: &Lua, whole: bool) {
+    let Some(c) = lua.app_data_ref::<Rc<Canvas>>() else { return };
+    if !whole {
+        return;
+    }
+    let (mut rec, mut ready) = (c.rec.borrow_mut(), c.ready.borrow_mut());
+    std::mem::swap(&mut *rec, &mut *ready);
+    rec.items.clear();
+    rec.points.clear();
+    c.committed.set(true);
+    c.texts.borrow_mut().retain(|_, t| std::mem::take(&mut t.used));
+}
+
+/// What publishing keeps between frames (on the engine's thread), so that
+/// it allocates nothing once warm.
+#[derive(Default)]
+struct Publisher {
+    /// The canvases of this frame and those published last (by address).
+    current: Vec<Rc<Canvas>>,
+    published: Vec<usize>,
+    /// (z, canvas, item), sorted; where each canvas's points start.
+    order: Vec<(i32, u32, u32)>,
+    base: Vec<u32>,
+}
+
+thread_local! {
+    static PUBLISHER: RefCell<Publisher> = RefCell::default();
+}
+
+/// The running mods' drawings for the renderer, when one of them drew
+/// anew or the mods changed: in one list, by z, then in the order drawn.
+pub fn publish(canvases: impl IntoIterator<Item = Rc<Canvas>>) {
+    PUBLISHER.with_borrow_mut(|p| {
+        p.current.clear();
+        p.current.extend(canvases);
+        let mut changed = p.current.len() != p.published.len();
+        for (c, &at) in p.current.iter().zip(&p.published) {
+            changed |= Rc::as_ptr(c) as usize != at;
+        }
+        for c in &p.current {
+            changed |= c.committed.take();
+        }
+        if !changed {
+            p.current.clear();
+            return;
+        }
+        p.published.clear();
+        p.published.extend(p.current.iter().map(|c| Rc::as_ptr(c) as usize));
+        p.order.clear();
+        p.base.clear();
+        let mut list = sprites::spare();
+        for (ci, c) in p.current.iter().enumerate() {
+            let ready = c.ready.borrow();
+            p.order.extend(ready.items.iter().enumerate().map(|(i, (z, _))| (*z, ci as u32, i as u32)));
+            // Each mod's points after the ones before.
+            p.base.push(list.points.len() as u32);
+            list.points.extend_from_slice(&ready.points);
+        }
+        // Unstable is enough: (canvas, item) make each key unique, in order.
+        p.order.sort_unstable();
+        for &(_, ci, i) in &p.order {
+            let ready = p.current[ci as usize].ready.borrow();
+            let mut shape = ready.items[i as usize].1.shape.clone();
+            if let Shape::Path { points, .. } = &mut shape {
+                let b = p.base[ci as usize];
+                *points = points.start + b..points.end + b;
+            }
+            list.sprites.push(Sprite { shape });
+        }
+        p.current.clear();
+        sprites::publish(list);
+    });
 }
 
 impl Canvas {
-    fn add(&self, z: i32, sprite: Sprite) -> mlua::Result<()> {
-        let mut drawings = self.drawings.borrow_mut();
-        if drawings.len() >= DRAWINGS {
-            return Err(mlua::Error::runtime(format!("draw: {DRAWINGS} drawings a frame at most")));
+    fn add(&self, z: i32, shape: Shape) -> mlua::Result<()> {
+        let mut rec = self.rec.borrow_mut();
+        if rec.items.len() >= DRAWINGS {
+            return Err(mlua::Error::runtime(format!("draw: {DRAWINGS} drawings a turn at most")));
         }
-        drawings.push((z, sprite));
+        rec.items.push((z, Sprite { shape }));
+        Ok(())
+    }
+
+    /// `n` points from `point(i)`, kept for a path.
+    /// (`point` reads raw table slots: no Luau runs meanwhile.)
+    fn points(&self, n: usize, mut point: impl FnMut(usize) -> mlua::Result<[f32; 2]>) -> mlua::Result<std::ops::Range<u32>> {
+        let mut rec = self.rec.borrow_mut();
+        if rec.points.len() + n > POINTS {
+            return Err(mlua::Error::runtime(format!("draw.path: {POINTS} points a turn at most")));
+        }
+        let start = rec.points.len();
+        for i in 0..n {
+            match point(i) {
+                Ok(p) => rec.points.push(p),
+                Err(e) => {
+                    rec.points.truncate(start);
+                    return Err(e);
+                }
+            }
+        }
+        Ok(start as u32..rec.points.len() as u32)
+    }
+
+    /// A text as the renderer keeps it: the same string as in an earlier
+    /// call is the same text, not a copy.
+    fn text(&self, s: &mlua::LuaString) -> Arc<str> {
+        let bytes = s.as_bytes();
+        let bytes = &bytes[..bytes.len().min(TEXT)];
+        let mut texts = self.texts.borrow_mut();
+        let key = s.to_pointer() as usize;
+        if let Some(t) = texts.get_mut(&key)
+            && t.text.as_bytes() == bytes
+        {
+            t.used = true;
+            return t.text.clone();
+        }
+        let text: Arc<str> = String::from_utf8_lossy(bytes).into();
+        texts.insert(key, Text { text: text.clone(), used: true });
+        text
+    }
+}
+
+/// What a drawing has besides where it is: made once (`draw.style{...}`)
+/// and passed with each call, its fields changed as needed.
+#[derive(Clone, Copy)]
+struct Style {
+    z: i32,
+    rotation: f32,
+    rounding: f32,
+    stroke: Option<Rgba>,
+    width: f32,
+    fill: Option<Rgba>,
+    closed: bool,
+    gradient: Option<Rgba>,
+    horizontal: bool,
+    align: Align,
+}
+
+const PLAIN: Style = Style {
+    z: 0,
+    rotation: 0.0,
+    rounding: 0.0,
+    stroke: None,
+    width: WIDTH as f32,
+    fill: None,
+    closed: false,
+    gradient: None,
+    horizontal: false,
+    align: Align::Left,
+};
+
+impl Style {
+    fn of(style: Option<AnyUserData>) -> mlua::Result<Style> {
+        match style {
+            None => Ok(PLAIN),
+            Some(u) => u.borrow::<Style>().map(|s| *s).map_err(|_| mlua::Error::runtime("draw: a style from draw.style")),
+        }
+    }
+
+    fn outline(&self) -> Option<Stroke> {
+        self.stroke.map(|color| Stroke { color, width: self.width })
+    }
+
+    fn from_table(t: Option<&Table>) -> mlua::Result<Style> {
+        let mut s = PLAIN;
+        if let Some(t) = t {
+            for pair in t.pairs::<String, Value>() {
+                let (k, v) = pair?;
+                s.set(&k, v)?;
+            }
+        }
+        Ok(s)
+    }
+
+    fn set(&mut self, key: &str, v: Value) -> mlua::Result<()> {
+        let bad = |what: &str| mlua::Error::runtime(format!("draw.style: {key} is {what}"));
+        let num = |v: &Value| match *v {
+            Value::Integer(i) => Some(i as f64),
+            Value::Number(n) if n.is_finite() => Some(n),
+            _ => None,
+        };
+        let color = |v: &Value| match v {
+            Value::Nil => Ok(None),
+            v => num(v).ok_or_else(|| bad("a colour (draw.rgba)")).and_then(|c| rgba(Some(c)).map(Some)),
+        };
+        let flag = |v: &Value| match v {
+            Value::Nil => Ok(false),
+            Value::Boolean(b) => Ok(*b),
+            _ => Err(bad("true or false")),
+        };
+        match key {
+            "z" => self.z = num(&v).ok_or_else(|| bad("a number"))?.clamp(-1e6, 1e6).round() as i32,
+            "rotation" => self.rotation = (num(&v).ok_or_else(|| bad("a number"))? % 360.0) as f32,
+            "rounding" => self.rounding = length(num(&v).ok_or_else(|| bad("a number"))?)?.max(0.0),
+            "width" => self.width = length(num(&v).ok_or_else(|| bad("a number"))?)?.max(0.0),
+            "stroke" => self.stroke = color(&v)?,
+            "fill" => self.fill = color(&v)?,
+            "gradient" => self.gradient = color(&v)?,
+            "closed" => self.closed = flag(&v)?,
+            "horizontal" => self.horizontal = flag(&v)?,
+            "align" => {
+                self.align = match &v {
+                    Value::Nil => Align::Left,
+                    Value::String(s) if s == "left" => Align::Left,
+                    Value::String(s) if s == "center" => Align::Center,
+                    Value::String(s) if s == "right" => Align::Right,
+                    _ => return Err(bad("\"left\", \"center\" or \"right\"")),
+                }
+            }
+            _ => return Err(mlua::Error::runtime(format!("draw.style: no {key}"))),
+        }
         Ok(())
     }
 }
 
-/// A drawing's rotation, colour and z.
-struct Style {
-    rotation: f32,
-    color: [u8; 4],
-    z: i32,
-}
+/// A style's fields, as `draw.style{...}` and assignments name them.
+const STYLE_FIELDS: &[&str] = &["z", "rotation", "rounding", "width", "stroke", "fill", "gradient", "closed", "horizontal", "align"];
 
-impl Style {
-    fn read(what: &str, options: Option<&Table>) -> mlua::Result<Style> {
-        let mut style = Style { rotation: 0.0, color: [255; 4], z: 0 };
-        let Some(o) = options else { return Ok(style) };
-        if let Some(r) = number(o.get("rotation")?, &format!("{what}: rotation"))? {
-            style.rotation = (r % 360.0) as f32;
+impl UserData for Style {
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        for &key in STYLE_FIELDS {
+            fields.add_field_method_set(key, move |_, s, v: Value| s.set(key, v));
         }
-        if let Some(z) = number(o.get("z")?, &format!("{what}: z"))? {
-            style.z = z.clamp(-1e6, 1e6).round() as i32;
-        }
-        match o.get::<Value>("color")? {
-            Value::Nil => {}
-            Value::Table(t) => {
-                for (i, c) in style.color.iter_mut().enumerate() {
-                    if let Some(v) = number(t.raw_get(i + 1)?, &format!("{what}: color[{}]", i + 1))? {
-                        *c = v.clamp(0.0, 255.0).round() as u8;
-                    } else if i < 3 {
-                        return Err(mlua::Error::runtime(format!("{what}: color is {{r, g, b, a?}}, 0 to 255")));
-                    }
-                }
-            }
-            _ => return Err(mlua::Error::runtime(format!("{what}: color is {{r, g, b, a?}}, 0 to 255"))),
-        }
-        Ok(style)
+        fields.add_field_method_get("z", |_, s| Ok(s.z));
+        fields.add_field_method_get("rotation", |_, s| Ok(s.rotation));
+        fields.add_field_method_get("rounding", |_, s| Ok(s.rounding));
+        fields.add_field_method_get("width", |_, s| Ok(s.width));
     }
 }
 
-/// An optional number option, finite.
-fn number(v: Value, what: &str) -> mlua::Result<Option<f64>> {
-    match v {
-        Value::Nil => Ok(None),
-        Value::Integer(i) => Ok(Some(i as f64)),
-        Value::Number(n) if n.is_finite() => Ok(Some(n)),
-        _ => Err(mlua::Error::runtime(format!("{what}: a number"))),
+/// A packed colour (0xRRGGBBAA; none: white).
+fn rgba(c: Option<f64>) -> mlua::Result<Rgba> {
+    match c {
+        None => Ok([255; 4]),
+        Some(c) if c.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(&c) => Ok((c as u32).to_be_bytes()),
+        Some(_) => Err(mlua::Error::runtime("draw: a colour is 0xRRGGBBAA (draw.rgba)")),
     }
 }
 
-/// A position or size in fractions of the screen: finite, and within a
-/// few screens.
-fn fraction(v: f64, what: &str) -> mlua::Result<f32> {
-    if !v.is_finite() {
-        return Err(mlua::Error::runtime(format!("draw: {what} is not a number")));
-    }
-    Ok(v.clamp(-16.0, 16.0) as f32)
+fn finite(v: f64) -> mlua::Result<f64> {
+    if v.is_finite() { Ok(v) } else { Err(mlua::Error::runtime("draw: not a number")) }
+}
+
+/// A position or size in fractions of the screen: within a few screens.
+fn fraction(v: f64) -> mlua::Result<f32> {
+    Ok(finite(v)?.clamp(-16.0, 16.0) as f32)
+}
+
+/// A length in fractions of the screen's height.
+fn length(v: f64) -> mlua::Result<f32> {
+    fraction(v)
 }
 
 /// The definitions of `draw`, for the type checker.
 pub const DEFINITIONS: &str = "
+-- A colour: 0xRRGGBBAA (draw.rgba makes one).
+type Color = number
 -- An image a mod loaded (draw.loadImage); its size in pixels.
 export type Image = {
 \twidth: number,
@@ -447,39 +730,59 @@ export type Image = {
 \t-- Frees it now (else when nothing holds it, or when the mod stops); it is no longer drawn.
 \trelease: (self: Image) -> (),
 }
-export type DrawOptions = {
-\t-- Degrees, clockwise, around its centre (a text's: where it is drawn from).
-\trotation: number?,
-\t-- {r, g, b, a?}, 0 to 255: an image's colours are multiplied by it (white: as they are).
-\tcolor: { number }?,
+-- What a drawing has besides where it is: made once with draw.style{...}, passed with each call,
+-- its fields changed as needed (style.rotation = angle).
+export type Style = {
 \t-- Higher in front (0 by default); equal ones in the order drawn.
-\tz: number?,
+\tz: number,
+\t-- Degrees, clockwise, around a rectangle's or image's centre, a text's start.
+\trotation: number,
+\t-- A rectangle's corners' radius (a fraction of the screen's height).
+\trounding: number,
+\t-- An outline's colour (a rectangle's, a circle's), and its width (0.002 by default).
+\tstroke: Color?,
+\twidth: number,
+\t-- A path's fill (a convex outline); it closes the path.
+\tfill: Color?,
+\tclosed: boolean,
+\t-- A rectangle from its colour at the top to this one at the bottom (at the right when horizontal).
+\tgradient: Color?,
+\thorizontal: boolean,
+\t-- Which end of a text is at x.
+\talign: \"left\" | \"center\" | \"right\",
 }
-export type TextOptions = {
-\trotation: number?,
-\tcolor: { number }?,
-\tz: number?,
-\t-- Its height, a fraction of the screen's (0.03 by default).
-\tsize: number?,
-\t-- Which of its ends is at x (\"left\" by default).
-\talign: (\"left\" | \"center\" | \"right\")?,
+export type StyleOptions = {
+\tz: number?, rotation: number?, rounding: number?, stroke: Color?, width: number?, fill: Color?, closed: boolean?,
+\tgradient: Color?, horizontal: boolean?, align: (\"left\" | \"center\" | \"right\")?,
 }
 
--- Images, rectangles and text over the game, for one frame: draw them every frame (a loop with wait())
--- to keep them on screen. Positions and sizes are fractions of the screen (0, 0 its top left, 1, 1 its
--- bottom right), centred as DRAW_RECT's and DRAW_SPRITE's; they are drawn at the window's resolution,
--- over everything the game draws, under the app's own controls.
+-- Images, shapes and text over the game. What a turn of the mod draws shows until its next turn:
+-- draw every frame (a loop with wait()) to keep things on screen. Positions and sizes are fractions of
+-- the screen (0, 0 its top left, 1, 1 its bottom right), rectangles and images centred as DRAW_RECT's;
+-- radii, widths, rounding and text sizes fractions of its height. Drawn at the window's resolution, over
+-- everything the game draws, under the app's own controls. Colours are packed (0xRRGGBBAA, white
+-- when none); the rest goes in a style, made once.
 declare draw: {
 \t-- An image from the mod's folder (\"images/logo.png\"): PNG, 2048×2048 at most. Waits, as wait() does,
 \t-- while it is read and decoded away from the game. A mod holds 64 images, 32 MB of them
 \t-- (4 bytes a pixel), at most; they go when it stops.
 \tloadImage: (path: string) -> Image,
-\t-- `image` centred at x, y, width by height (none: the image's proportions).
-\timage: (image: Image, x: number, y: number, width: number, height: number?, options: DrawOptions?) -> (),
-\t-- A rectangle centred at x, y (white unless options.color says).
-\trect: (x: number, y: number, width: number, height: number, options: DrawOptions?) -> (),
-\t-- `text` from x, y (its top).
-\ttext: (text: string, x: number, y: number, options: TextOptions?) -> (),
+\t-- `image` centred at x, y, width by height (none: the image's proportions), its colours multiplied by `color`.
+\timage: (image: Image, x: number, y: number, width: number, height: number?, color: Color?, style: Style?) -> (),
+\t-- A rectangle centred at x, y; with no colour and a style's stroke, its outline alone.
+\trect: (x: number, y: number, width: number, height: number, color: Color?, style: Style?) -> (),
+\t-- `text` from x, y (its top), `size` high (0.03 by default).
+\ttext: (text: string, x: number, y: number, size: number?, color: Color?, style: Style?) -> (),
+\tline: (x1: number, y1: number, x2: number, y2: number, width: number?, color: Color?, style: Style?) -> (),
+\t-- A line through {x1, y1, x2, y2, ...}; closed, or filled (convex), as the style says.
+\tpath: (points: { number }, width: number?, color: Color?, style: Style?) -> (),
+\t-- A disc; with no colour and a style's stroke, its outline alone.
+\tcircle: (x: number, y: number, radius: number, color: Color?, style: Style?) -> (),
+\t-- An arc from `from` to `to` degrees, clockwise from the top (a gauge).
+\tarc: (x: number, y: number, radius: number, from: number, to: number, width: number?, color: Color?, style: Style?) -> (),
+\t-- A packed colour, 0 to 255 each (alpha 255 when none).
+\trgba: (r: number, g: number, b: number, a: number?) -> Color,
+\tstyle: (options: StyleOptions?) -> Style,
 \t-- The screen's size in pixels (the window's, where these are drawn), for proportions.
 \tscreenSize: () -> (number, number),
 }
@@ -527,18 +830,24 @@ mod tests {
     }
 
     /// Runs `code` as a mod's coroutine, a frame every millisecond, until
-    /// it ends.
+    /// it ends; then its turn ends whole.
     fn run(lua: &Lua, code: &str) -> mlua::Result<MultiValue> {
         let f: Function = lua.load(code).into_function()?;
         let thread = lua.create_thread(f)?;
         for _ in 0..5000 {
-            let values = thread.resume::<MultiValue>(())?;
-            if !thread.is_resumable() {
-                return Ok(values);
+            let values = thread.resume::<MultiValue>(());
+            if values.is_err() || !thread.is_resumable() {
+                end_turn(lua, true);
+                return values;
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         panic!("{code}: still loading");
+    }
+
+    /// What the mod shows.
+    fn shown(lua: &Lua) -> Vec<(i32, Sprite)> {
+        canvas(lua).unwrap().ready.borrow().items.clone()
     }
 
     fn budget(lua: &Lua) -> (usize, usize) {
@@ -575,21 +884,20 @@ mod tests {
         let size = run(&lua, "img = draw.loadImage('images/a.png') draw.image(img, 0.5, 0.5, 0.1) return img.width, img.height").unwrap();
         assert_eq!(size.into_iter().map(|v| v.as_i64().unwrap()).collect::<Vec<_>>(), [16, 8]);
         assert_eq!(budget(&lua), (1, 16 * 8 * 4));
-        let drawn = take(&lua);
-        let Shape::Image(image) = &drawn[0].1.shape else { panic!("not an image") };
+        let drawn = shown(&lua);
+        let Shape::Image { image, size, tint, .. } = &drawn[0].1.shape else { panic!("not an image") };
+        assert_eq!((*size, *tint), ([0.1, 0.0], [255; 4]));
         let image = Arc::downgrade(image);
-        assert_eq!(drawn[0].1.size, [0.1, 0.0]);
         drop(drawn);
-        assert!(image.upgrade().is_some(), "the mod holds it");
         run(&lua, "img:release()").unwrap();
         assert_eq!(budget(&lua), (0, 0));
-        assert!(image.upgrade().is_none());
+        assert!(image.upgrade().is_none(), "the mod no longer holds it, nor shows it");
         let e = run(&lua, "draw.image(img, 0.5, 0.5, 0.1)").unwrap_err().to_string();
         assert!(e.contains("released"), "{e}");
 
         run(&lua, "img = draw.loadImage('images/a.png') draw.image(img, 0.5, 0.5, 0.1)").unwrap();
-        let drawn = take(&lua);
-        let Shape::Image(image) = &drawn[0].1.shape else { panic!("not an image") };
+        let drawn = shown(&lua);
+        let Shape::Image { image, .. } = &drawn[0].1.shape else { panic!("not an image") };
         let image = Arc::downgrade(image);
         drop(lua);
         assert!(image.upgrade().is_some(), "the list drawn holds it");
@@ -629,40 +937,91 @@ mod tests {
         assert!(e.contains("more than is left"), "{e}");
         assert_eq!(budget(&lua).0, 0);
 
-        run(&lua, &format!("for i = 1, {DRAWINGS} do draw.rect(0.5, 0.5, 0.1, 0.1) end")).unwrap();
-        let e = run(&lua, "draw.text('one more', 0, 0)").unwrap_err().to_string();
-        assert!(e.contains("drawings a frame at most"), "{e}");
-        assert_eq!(take(&lua).len(), DRAWINGS);
-        run(&lua, "draw.text('next frame', 0, 0)").unwrap();
+        let e = run(&lua, &format!("for i = 1, {} do draw.rect(0.5, 0.5, 0.1, 0.1) end", DRAWINGS + 1)).unwrap_err().to_string();
+        assert!(e.contains("drawings a turn at most"), "{e}");
+        let e = run(&lua, &format!("local p = table.create({}, 0.5) for i = 1, 5 do draw.path(p) end", POINTS / 2)).unwrap_err().to_string();
+        assert!(e.contains("points a turn at most"), "{e}");
         for bad in [
             "draw.rect(0 / 0, 0, 1, 1)",
-            "draw.rect(0, 0, 1, 1, { color = { 1, 2 } })",
-            "draw.rect(0, 0, 1, 1, { rotation = 'a' })",
-            "draw.text('x', 0, 0, { align = 'middle' })",
+            "draw.rect(0, 0, 1, 1, -1)",
+            "draw.rect(0, 0, 1, 1, 0.5)",
+            "draw.rect(0, 0, 1, 1, nil, {})",
+            "draw.path({ 0, 0, 1 })",
+            "draw.style{ align = 'middle' }",
+            "draw.style{ colour = 1 }",
+            "local s = draw.style() s.rotation = 'a'",
         ] {
             assert!(run(&lua, bad).is_err(), "{bad}");
         }
     }
 
-    /// The mods' drawings in one list, by z, then as drawn; rotation,
-    /// colour and alignment as given.
+    /// Positional colours and the style's fields reach the shapes.
+    #[test]
+    fn shapes_and_styles() {
+        let lua = vm();
+        run(&lua, "
+            local s = draw.style{ z = 2, rounding = 0.01, stroke = 0x000000ff, width = 0.004, gradient = draw.rgba(0, 0, 255) }
+            s.rotation = 450
+            draw.rect(0.1, 0.2, 0.3, 0.4, 0xff0000ff, s)
+            draw.circle(0.5, 0.5, 0.1, nil, draw.style{ stroke = 0xffffff80 })
+            draw.arc(0.5, 0.5, 0.2, -120, 120, 0.01, 0x00ff00ff)
+            draw.path({ 0, 0, 1, 0, 1, 1 }, nil, nil, draw.style{ fill = 0x11223344 })
+            draw.line(0, 0, 1, 1)
+            draw.text('hi', 0.5, 0.5, 0.05, nil, draw.style{ align = 'right' })
+        ").unwrap();
+        let drawn = shown(&lua);
+        assert!(matches!(drawn[0], (2, Sprite { shape: Shape::Rect { rotation: 90.0, fill: [255, 0, 0, 255], gradient: Some(([0, 0, 255, 255], false)), rounding: 0.01, stroke: Some(Stroke { color: [0, 0, 0, 255], width: 0.004 }), .. } })));
+        assert!(matches!(drawn[1].1.shape, Shape::Circle { fill: None, stroke: Some(Stroke { color: [255, 255, 255, 128], .. }), .. }));
+        assert!(matches!(drawn[2].1.shape, Shape::Arc { from: -120.0, to: 120.0, stroke: Stroke { color: [0, 255, 0, 255], width: 0.01 }, .. }));
+        let c = canvas(&lua).unwrap();
+        assert!(matches!(&drawn[3].1.shape, Shape::Path { points, closed: true, fill: Some([0x11, 0x22, 0x33, 0x44]), stroke: None } if c.ready.borrow().points[points.start as usize..points.end as usize] == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]));
+        assert!(matches!(drawn[4].1.shape, Shape::Line { stroke: Stroke { color: [255, 255, 255, 255], .. }, .. }));
+        assert!(matches!(&drawn[5].1.shape, Shape::Text { text, align: Align::Right, size: 0.05, .. } if &**text == "hi"));
+    }
+
+    /// A turn cut short leaves the last whole one on screen; the next whole
+    /// one shows what both drew. The same string is the same text.
+    #[test]
+    fn whole_turns() {
+        let lua = vm();
+        run(&lua, "draw.rect(0, 0, 1, 1)").unwrap();
+        lua.load("draw.text('a', 0, 0) draw.text('a', 0, 0)").exec().unwrap();
+        end_turn(&lua, false);
+        assert_eq!(shown(&lua).len(), 1);
+        lua.load("draw.circle(0, 0, 1)").exec().unwrap();
+        end_turn(&lua, true);
+        let drawn = shown(&lua);
+        assert_eq!(drawn.len(), 3);
+        let (Shape::Text { text: a, .. }, Shape::Text { text: b, .. }) = (&drawn[0].1.shape, &drawn[1].1.shape) else { panic!() };
+        assert!(Arc::ptr_eq(a, b));
+        run(&lua, "").unwrap();
+        assert!(shown(&lua).is_empty(), "a whole turn without drawing clears");
+    }
+
+    /// The mods' drawings in one list, by z, then as drawn, published only
+    /// when something changed; paths' points follow their mod's.
     #[test]
     fn published_by_z() {
-        let a = vm();
-        let b = vm();
-        run(&a, "draw.rect(0.1, 0.2, 0.3, 0.4, { z = 2, rotation = 450, color = { 1, 2, 3 } }) draw.rect(0, 0, 1, 1)").unwrap();
-        run(&b, "draw.text('hi', 0.5, 0.5, { z = -1, size = 0.05, align = 'right' }) draw.rect(0, 0, 1, 1, { z = 2 })").unwrap();
-        publish([take(&a), take(&b)]);
+        let (a, b) = (vm(), vm());
+        run(&a, "draw.rect(0.1, 0.2, 0.3, 0.4, nil, draw.style{ z = 2 }) draw.path({ 0, 0, 1, 1 })").unwrap();
+        run(&b, "draw.path({ 0.5, 0.5, 0.6, 0.6 }, nil, nil, draw.style{ z = -1 }) draw.rect(0, 0, 1, 1, nil, draw.style{ z = 2 })").unwrap();
+        let both = || [canvas(&a).unwrap(), canvas(&b).unwrap()];
+        publish(both());
         let list = sprites::latest().unwrap();
-        let kinds: Vec<_> = list.iter().map(|s| (matches!(s.shape, Shape::Rect), s.center)).collect();
-        assert_eq!(kinds, [(false, [0.5, 0.5]), (true, [0.0, 0.0]), (true, [0.1, 0.2]), (true, [0.0, 0.0])]);
-        assert!(matches!(&list[0].shape, Shape::Text(t, Align::Right) if t == "hi"));
-        assert_eq!(list[0].size, [0.0, 0.05]);
-        assert_eq!((list[2].rotation, list[2].color), (90.0, [1, 2, 3, 255]));
+        let path = |s: &Sprite| match &s.shape {
+            Shape::Path { points, .. } => Some(list.points[points.start as usize]),
+            _ => None,
+        };
+        assert_eq!(list.sprites.iter().map(path).collect::<Vec<_>>(), [Some([0.5, 0.5]), Some([0.0, 0.0]), None, None]);
+        assert!(matches!(list.sprites[2].shape, Shape::Rect { center: [0.1, 0.2], .. }));
+        drop(list);
         let generation = sprites::generation();
-        publish([take(&a), take(&b)]);
+        publish(both());
+        assert_eq!(sprites::generation(), generation, "nothing new");
+        publish([canvas(&a).unwrap()]);
+        assert_eq!(sprites::generation(), generation + 1, "a mod went");
+        run(&a, "").unwrap();
+        publish([canvas(&a).unwrap()]);
         assert!(sprites::latest().is_none());
-        publish([take(&a), take(&b)]);
-        assert_eq!(sprites::generation(), generation + 1, "nothing drawn again: nothing new");
     }
 }
