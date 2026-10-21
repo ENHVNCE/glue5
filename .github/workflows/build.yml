@@ -48,11 +48,27 @@ jobs:
           .github/scripts/draft.sh fetch "$game"
           echo "GLUE5_GAME_DIR=$game" >>"$GITHUB_ENV"
 
-      # Windows: the tasks run in Git's bash (see the README's Windows
-      # section); Visual Studio and LLVM's clang-cl come with the machine.
-      - name: Git's bash for mise
+      # Windows: the tasks run in Git's bash, and the game's C is compiled
+      # with clang-cl (docs/building.md). The machine has Visual Studio and
+      # LLVM, but the build did not find clang-cl on the PATH: LLVM's own,
+      # else the one that comes with Visual Studio, on it.
+      - name: Git's bash and clang-cl
         if: runner.os == 'Windows'
-        run: echo "MISE_BASH_PATH=$(cygpath -w /)bin\\bash.exe" >>"$GITHUB_ENV"
+        run: |
+          echo "MISE_BASH_PATH=$(cygpath -w /)bin\\bash.exe" >>"$GITHUB_ENV"
+          clang='C:\Program Files\LLVM\bin\clang-cl.exe'
+          if [ ! -f "$(cygpath -u "$clang")" ]; then
+              clang=
+              vswhere=$(cygpath -u 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe')
+              [ ! -f "$vswhere" ] ||
+                  clang=$("$vswhere" -latest -products '*' -find 'VC\Tools\Llvm\x64\bin\clang-cl.exe' | tr -d '\r' | head -n 1)
+          fi
+          if [ -z "$clang" ]; then
+              echo "::error::clang-cl is not on this machine (neither LLVM nor Visual Studio's): GitHub's Windows image has changed."
+              exit 1
+          fi
+          echo "clang-cl: $clang"
+          echo "${clang%\\*}" >>"$GITHUB_PATH"
 
       - name: Room on the disk
         if: runner.os == 'Linux'
