@@ -410,6 +410,7 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
     input::install(&lua, &sched.keys)?;
     crate::draw::install(&lua)?;
     json::install(&lua)?;
+    crate::net::install(&lua)?;
     crate::world::install(&lua)?;
     g.set("joaat", lua.create_function(|_, s: mlua::LuaString| Ok(natives::joaat(&s.to_str()?)))?)?;
     let m = lua.create_table()?;

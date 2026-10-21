@@ -18,6 +18,8 @@ httparse = "1"
 getrandom = "0.4"
 flate2 = "1"
 png = "0.18"
+# Mods' network requests (net.rs): rustls with ring, webpki's roots, gzip.
+ureq = "3.5"
 # Mods' databases (db.rs): SQLite, built in.
 rusqlite = { version = "0.40", default-features = false, features = ["bundled", "cache", "hooks", "limits"] }
 
