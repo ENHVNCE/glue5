@@ -45,6 +45,7 @@ fn App() -> impl IntoView {
         mods: RwSignal::new(Vec::new()),
         listed: RwSignal::new(false),
         menus: RwSignal::new(Vec::new()),
+        menu_stacks: RwSignal::new(HashMap::new()),
         rows: RwSignal::new(Vec::new()),
         tabs: RwSignal::new(Vec::new()),
         active: RwSignal::new(None),

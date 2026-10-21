@@ -8,11 +8,11 @@ use leptos::prelude::*;
 use serde_json::{Value, json};
 
 use super::model::{Item, Kind, decimals, parse_hex, shown, split_color};
-use super::{find_item, send};
+use super::{Level, find_item, send};
 use crate::state::*;
 
 #[component]
-pub(super) fn Row(s: S, module: String, menu: u32, id: u32) -> impl IntoView {
+pub(super) fn Row(s: S, module: String, menu: u32, id: u32, push: Callback<Level>) -> impl IntoView {
     // Kept when it goes (the row goes with it).
     let item = Memo::new(move |prev: Option<&Option<Item>>| find_item(s, menu, id).or_else(|| prev.cloned().flatten()));
     let Some(first) = item.get_untracked() else { return ().into_any() };
@@ -228,7 +228,14 @@ pub(super) fn Row(s: S, module: String, menu: u32, id: u32) -> impl IntoView {
             }
             .into_any()
         }
-        Some(Kind::Multi { .. } | Kind::Submenu { .. } | Kind::Other) | None => ().into_any(),
+        Some(Kind::Submenu { menu: opens }) => view! {
+            <button class=row_class(" mpush") prop:disabled=off on:click=move |_| push.run(Level::Menu(opens))>
+                {text}
+                <span class="mchev" aria-hidden="true">"›"</span>
+            </button>
+        }
+        .into_any(),
+        Some(Kind::Multi { .. } | Kind::Other) | None => ().into_any(),
     }
 }
 

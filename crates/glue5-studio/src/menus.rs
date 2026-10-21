@@ -1,5 +1,7 @@
 //! The mods' menus (`ui.menu` in Luau), usable from the browser as in the
 //! game: what is done here goes to the mod, which hears it at its next turn.
+//! One card per top-level menu; a submenu opens inside its card, with a way
+//! back.
 
 mod model;
 mod rows;
@@ -12,6 +14,12 @@ use model::{Item, Kind};
 
 use crate::net::request;
 use crate::state::*;
+
+/// What a card shows over its menu: a submenu.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Level {
+    Menu(u32),
+}
 
 /// Sends a player's input to item `item` of `module`; when the game refuses
 /// it the page says why and `resync` puts the control back as the game has it.
@@ -36,41 +44,105 @@ pub(super) fn find_item(s: S, menu: u32, item: u32) -> Option<Item> {
 
 #[component]
 pub(crate) fn Menus(s: S) -> impl IntoView {
-    let all = move || s.menus.with(|m| m.iter().map(|m| (m.id, m.module.clone())).collect::<Vec<_>>());
+    let top = move || s.menus.with(|m| m.iter().filter(|m| m.parent.is_none()).map(|m| (m.id, m.module.clone())).collect::<Vec<_>>());
     view! {
         <div class="menus">
-            <Show when=move || s.menus.with(Vec::is_empty)>
+            <Show when=move || s.menus.with(|m| !m.iter().any(|m| m.parent.is_none()))>
                 <p class="empty">"No menus. A mod makes one with ui.menu(\"Title\"): it shows here and in the game (F7)."</p>
             </Show>
-            <For each=all key=|m| m.0 let((id, module))>
-                <MenuCard s=s id=id module=module/>
+            <For each=top key=|m| m.0 let((id, module))>
+                <MenuCard s=s root=id module=module/>
             </For>
         </div>
     }
 }
 
-/// A menu's card.
+/// A top-level menu's card, with what is open in it (its stack).
 #[component]
-fn MenuCard(s: S, id: u32, module: String) -> impl IntoView {
-    let title = move || find_menu(s, id).map(|m| m.title).unwrap_or_default();
+fn MenuCard(s: S, root: u32, module: String) -> impl IntoView {
+    let stack = Memo::new(move |_| s.menu_stacks.with(|m| m.get(&root).cloned().unwrap_or_default()));
+    let set_stack = move |levels: Vec<Level>| {
+        s.menu_stacks.update(|m| {
+            m.insert(root, levels);
+        });
+    };
+    let push = Callback::new(move |level: Level| {
+        let mut levels = stack.get_untracked();
+        levels.push(level);
+        set_stack(levels);
+    });
+    let pop = Callback::new(move |()| {
+        let mut levels = stack.get_untracked();
+        levels.pop();
+        set_stack(levels);
+    });
+
+    // What the mod removed or hid goes from the stack (and what was over it).
+    Effect::new(move |_| {
+        let levels = stack.get();
+        let kept = s.menus.with(|menus| {
+            let mut under = root;
+            let mut kept = 0;
+            for level in &levels {
+                let parent = menus.iter().find(|m| m.id == under);
+                let Level::Menu(id) = *level;
+                let row = parent.and_then(|p| p.items.iter().find(|i| i.kind == Kind::Submenu { menu: id }));
+                if !(row.is_some_and(|i| i.visible) && menus.iter().any(|m| m.id == id)) {
+                    break;
+                }
+                under = id;
+                kept += 1;
+            }
+            kept
+        });
+        if kept < levels.len() {
+            set_stack(levels[..kept].to_vec());
+        }
+    });
+
+    // The level shown: the card's menu or a submenu.
+    let shown_menu = Memo::new(move |_| stack.get().last().map_or(root, |&Level::Menu(id)| id));
+    let title = move |id: u32| find_menu(s, id).map(|m| m.title).unwrap_or_default();
     let header = {
         let module = module.clone();
         move || {
-            let t = title();
-            // Its mod, unless the title says it already.
-            let by = (!t.eq_ignore_ascii_case(&module)).then(|| view! { <span>{module.clone()}</span> });
-            view! { <b>{t}</b>{by}<Note s=s menu=id/> }
+            let levels = stack.get();
+            if levels.is_empty() {
+                let t = title(root);
+                // Its mod, unless the title says it already.
+                let by = (!t.eq_ignore_ascii_case(&module)).then(|| view! { <span>{module.clone()}</span> });
+                return view! { <b>{t}</b>{by}<Note s=s menu=root/> }.into_any();
+            }
+            // ‹ Trainer › Vehicles: each crumb but the last goes back to it.
+            let mut names = vec![title(root)];
+            names.extend(levels.iter().map(|&Level::Menu(id)| title(id)));
+            let last = names.len() - 1;
+            view! {
+                <button class="mback" title="Back" aria-label="Back" on:click=move |_| pop.run(())>"‹"</button>
+                <nav class="mcrumbs" aria-label="Where">
+                    {names.into_iter().enumerate().map(|(n, name)| {
+                        let sep = (n > 0).then(|| view! { <i aria-hidden="true">"›"</i> });
+                        if n == last {
+                            view! { {sep}<b aria-current="page">{name}</b> }.into_any()
+                        } else {
+                            let back_to = levels[..n].to_vec();
+                            view! { {sep}<button on:click=move |_| set_stack(back_to.clone())>{name}</button> }.into_any()
+                        }
+                    }).collect_view()}
+                </nav>
+            }
+            .into_any()
         }
     };
     view! {
         <section class="mcard">
-            <header>{header}</header>
-            <MenuBody s=s module=module menu=id/>
+            <header class=move || if stack.with(Vec::is_empty) { "" } else { "nav" }>{header}</header>
+            {move || view! { <MenuBody s=s module=module.clone() menu=shown_menu.get() push=push/> }}
         </section>
     }
 }
 
-/// A menu's note, under its title.
+/// A top-level menu's note, under its title.
 #[component]
 fn Note(s: S, menu: u32) -> impl IntoView {
     move || find_menu(s, menu).and_then(|m| m.note).map(|n| view! { <small class="mnote">{n}</small> })
@@ -78,7 +150,7 @@ fn Note(s: S, menu: u32) -> impl IntoView {
 
 /// A menu's rows.
 #[component]
-fn MenuBody(s: S, module: String, menu: u32) -> impl IntoView {
+fn MenuBody(s: S, module: String, menu: u32, push: Callback<Level>) -> impl IntoView {
     // A row is made once per item (and kind): its values follow the game in
     // place, so a field being typed in keeps its text and focus.
     let rows = Memo::new(move |_| {
@@ -94,7 +166,7 @@ fn MenuBody(s: S, module: String, menu: u32) -> impl IntoView {
             <p class="mempty">"Nothing in it yet"</p>
         </Show>
         <For each=move || rows.get() key=|r| *r let((id, _))>
-            <rows::Row s=s module=module.clone() menu=menu id=id/>
+            <rows::Row s=s module=module.clone() menu=menu id=id push=push/>
         </For>
     }
 }
