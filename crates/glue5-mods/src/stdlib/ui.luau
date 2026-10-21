@@ -7,20 +7,36 @@ local spawn = task.spawn
 local h, g, m = hud, graphics, misc
 
 local addText = h.addTextComponentSubstringPlayerName
+local invoke, alloc, writeString = native.invoke, memory.alloc, memory.writeString
 
--- Starts a text command with `text`: one component holds 99 bytes, so a
--- longer text goes in pieces (cut where characters start) under a label
--- of ten components, 990 bytes at most.
-local function begin(command: (string) -> (), text: string)
+-- A text command keeps its label's pointer until it ends, past the call
+-- that starts it: the labels live in the mod's own memory (a native's
+-- string arguments only while it runs). The text's pieces are copied.
+local labels: { [string]: number } = {}
+local function label(name: string): number
+	local at = labels[name]
+	if not at then
+		at = alloc(#name + 1)
+		writeString(at, name)
+		labels[name] = at
+	end
+	return at
+end
+
+-- Starts text command `command` (a BEGIN_TEXT_COMMAND_ native) with
+-- `text`: one component holds 99 bytes, so a longer text goes in pieces
+-- (cut where characters start) under a label of ten components, 990 bytes
+-- at most.
+local function begin(command: string, text: string)
 	if type(text) ~= "string" then
 		error(`the text is a string, not {type(text)}`, 3)
 	end
 	if #text <= 99 then
-		command("STRING")
+		invoke(command, label("STRING"))
 		addText(text)
 		return
 	end
-	command("CELL_EMAIL_BCON")
+	invoke(command, label("CELL_EMAIL_BCON"))
 	local i, n = 1, #text
 	for _ = 1, 10 do
 		if i > n then
@@ -50,7 +66,7 @@ ui.notify = function(text: string, options: { icon: string?, title: string?, sub
 	end
 	local icon = options.icon or ((options.title or options.subtitle) and "CHAR_DEFAULT")
 	local function post()
-		begin(h.beginTextCommandThefeedPost, text)
+		begin("BEGIN_TEXT_COMMAND_THEFEED_POST", text)
 		if icon then
 			h.endTextCommandThefeedPostMessagetext(icon, icon, false, 0, options.title or "", options.subtitle or "")
 		end
@@ -69,7 +85,7 @@ end
 
 -- A subtitle at the bottom, for `ms` milliseconds (2.5 s).
 ui.subtitle = function(text: string, ms: number?)
-	begin(h.beginTextCommandPrint, text)
+	begin("BEGIN_TEXT_COMMAND_PRINT", text)
 	h.endTextCommandPrint(ms or 2500, true)
 end
 
@@ -80,14 +96,14 @@ ui.help = function(text: string?, beep: boolean?)
 		h.clearAllHelpMessages()
 		return
 	end
-	begin(h.beginTextCommandDisplayHelp, text)
+	begin("BEGIN_TEXT_COMMAND_DISPLAY_HELP", text)
 	h.endTextCommandDisplayHelp(0, false, beep == true, -1)
 end
 
 -- The spinner at the bottom right, with `text`; nil (or false) stops it.
 ui.loading = function(text: (string | false)?)
 	if text then
-		begin(h.beginTextCommandBusyspinnerOn, text)
+		begin("BEGIN_TEXT_COMMAND_BUSYSPINNER_ON", text)
 		h.endTextCommandBusyspinnerOn(4)
 	else
 		h.busyspinnerOff()
