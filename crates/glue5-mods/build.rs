@@ -823,6 +823,28 @@ declare storage: {
 	clear: () -> (),
 }
 
+-- The game scripts' globals, by ScriptHookV's index (getGlobalPtr's): an int, float or bool is one
+-- value, a string spans several. Indices change with the game's scripts: check them against this game.
+declare globals: {
+	int: (index: number) -> number,
+	float: (index: number) -> number,
+	bool: (index: number) -> boolean,
+	-- The text that starts at `index` (a TEXT_LABEL).
+	string: (index: number) -> string,
+	setInt: (index: number, value: number) -> (),
+	setFloat: (index: number, value: number) -> (),
+	setBool: (index: number, value: boolean) -> (),
+	-- Writes `text` and its end at `index`; `size` is the label's room in bytes (16 for a TEXT_LABEL_15).
+	setString: (index: number, text: string, size: number?) -> (),
+	-- Whether `index` is in a block of globals the game has loaded.
+	valid: (index: number) -> boolean,
+}
+
+declare game: {
+	-- The game build these natives and globals are for (getGameVersion).
+	version: () -> string,
+}
+
 declare ui: {
 	-- A menu the app shows (the Mods page's MENUS: F7, or the button beside the settings
 	-- button on touch screens); a mod with one stays running. 16 menus of 64 items at most.

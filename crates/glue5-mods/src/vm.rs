@@ -465,6 +465,8 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
         }
         g.set(*space, table)?;
     }
+    // The game scripts' globals, the game's version.
+    crate::globals::install(&lua)?;
 
     let deadline = Rc::new(Cell::new(Instant::now() + SLICE));
     let interrupt_deadline = deadline.clone();
