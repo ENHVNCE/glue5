@@ -358,6 +358,13 @@ impl Gpu {
         } else if ripe {
             self.flush("idle");
         }
+        // Asked for while no frame comes too (the game stopped in the
+        // background, where the system picks apps to end by their memory):
+        // at once, what it frees going with a batch of its own.
+        if crate::take_trim() {
+            self.trim();
+            self.flush("trim");
+        }
         if self.last_save.elapsed() >= Duration::from_secs(20) {
             self.save_caches();
         }

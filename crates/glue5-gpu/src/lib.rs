@@ -98,8 +98,8 @@ pub unsafe fn enable_metal_hud() {
     };
 }
 
-/// Has the renderer free, at its next frame, what it keeps only to be faster
-/// and can make again: the system is short of memory (iOS's memory warning,
+/// Has the renderer free, at its next frame or pause, what it keeps only to
+/// be faster and can make again: the system is short of memory (iOS's memory warning,
 /// Android's `onTrimMemory`). Callable from any thread.
 pub fn trim() {
     TRIM.store(true, Ordering::Relaxed);
