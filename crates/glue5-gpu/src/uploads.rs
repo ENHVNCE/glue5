@@ -52,6 +52,11 @@ impl Uploads {
         self.free.clone()
     }
 
+    /// Takes out the free chunks (memory is short).
+    pub fn take_free(&self) -> Vec<wgpu::Buffer> {
+        std::mem::take(&mut *self.free.lock().unwrap())
+    }
+
     fn encoder(&mut self) -> &mut wgpu::CommandEncoder {
         self.encoder.get_or_insert_with(|| {
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("uploads") })

@@ -40,7 +40,7 @@ mod uploads;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -96,6 +96,20 @@ pub unsafe fn enable_metal_hud() {
     unsafe {
         std::env::set_var("MTL_HUD_ENABLED", "1")
     };
+}
+
+/// Has the renderer free, at its next frame, what it keeps only to be faster
+/// and can make again: the system is short of memory (iOS's memory warning,
+/// Android's `onTrimMemory`). Callable from any thread.
+pub fn trim() {
+    TRIM.store(true, Ordering::Relaxed);
+}
+
+static TRIM: AtomicBool = AtomicBool::new(false);
+
+/// [`trim`] was asked for since the last call.
+pub(crate) fn take_trim() -> bool {
+    TRIM.swap(false, Ordering::Relaxed)
 }
 
 /// The wgpu instance for this platform (create surfaces with it).

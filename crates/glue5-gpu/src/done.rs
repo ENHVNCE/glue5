@@ -123,6 +123,11 @@ impl StagingPool {
         })
     }
 
+    /// Takes out the free buffers (memory is short).
+    pub fn take_free(&self) -> Vec<wgpu::Buffer> {
+        std::mem::take(&mut *self.free.lock().unwrap())
+    }
+
     fn put(&self, buffer: wgpu::Buffer) {
         let mut free = self.free.lock().unwrap();
         if free.len() < 16 {

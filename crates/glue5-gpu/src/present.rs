@@ -1130,6 +1130,9 @@ impl Gpu {
             let stale = self.binds.age();
             self.pool.background(move || drop(stale));
         }
+        if crate::take_trim() {
+            self.trim();
+        }
         if self.last_save.elapsed() >= Duration::from_secs(60) {
             self.save_caches();
         }

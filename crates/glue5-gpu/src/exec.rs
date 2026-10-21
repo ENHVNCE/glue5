@@ -1363,22 +1363,46 @@ impl Gpu {
             log::info!("{}", crate::profile::report(&p.totals, frames));
         }
         // Shader modules are needed only to make pipelines: idle ones go,
-        // a few hundred at a time, looked for (through thousands of
-        // programs) and dropped on a compile thread.
-        let (library, computes) = (self.library.clone(), self.computes.clone());
-        self.pool.background(move || {
-            let mut idle = Vec::new();
-            library.take_idle_modules(30, 400, &mut idle);
-            computes.take_idle_modules(30, 400, &mut idle);
-            if !idle.is_empty() {
-                log::debug!("gpu: {} idle shader modules released", idle.len());
-            }
-        });
+        // a few hundred at a time.
+        self.release_idle_modules(400);
         let (used, available) = glue5_runtime::memory::footprint();
         if let Some(used) = used {
             let more = available.map_or(String::new(), |a| format!(", {} MiB more allowed", a >> 20));
             log::info!("memory: process footprint {} MiB{more}{}", used >> 20, self.gpu_memory());
         }
+    }
+
+    /// Releases up to `max` shader modules unused for 30 s, looked for
+    /// (through thousands of programs) and dropped on a compile thread.
+    pub(crate) fn release_idle_modules(&self, max: usize) {
+        let (library, computes) = (self.library.clone(), self.computes.clone());
+        self.pool.background(move || {
+            let mut idle = Vec::new();
+            library.take_idle_modules(30, max, &mut idle);
+            computes.take_idle_modules(30, max, &mut idle);
+            if !idle.is_empty() {
+                log::debug!("gpu: {} idle shader modules released", idle.len());
+            }
+        });
+    }
+
+    /// Frees what is kept only to be faster ([`crate::trim`]), all made
+    /// again when needed: objects kept for reuse, free staging memory,
+    /// bind groups unused since the last statistics, idle shader modules.
+    pub(crate) fn trim(&mut self) {
+        let kept = self.recycler.release(&mut self.graveyard);
+        let mut staging = self.uploads.take_free();
+        staging.extend(self.staging.take_free());
+        let staging_bytes: u64 = staging.iter().map(wgpu::Buffer::size).sum();
+        let groups = self.binds.age();
+        log::warn!(
+            "gpu: memory is short: released {} MiB of objects kept for reuse, {} MiB of staging memory, {} bind groups",
+            kept >> 20,
+            staging_bytes >> 20,
+            groups.len()
+        );
+        self.pool.background(move || drop((staging, groups)));
+        self.release_idle_modules(usize::MAX);
     }
 
     /// The textures' and buffers' bytes.
