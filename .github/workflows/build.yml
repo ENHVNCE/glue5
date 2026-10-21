@@ -36,6 +36,19 @@ jobs:
       # The tools each platform needs are installed below, not all of them.
       MISE_TASK_RUN_AUTO_INSTALL: "false"
     steps:
+      # A fork behind this project builds without its latest fixes: said,
+      # but the build goes on.
+      - name: Up to date
+        continue-on-error: true
+        run: |
+          parent=$(gh api "repos/$GITHUB_REPOSITORY" --jq '.parent | select(.) | .full_name + " " + .default_branch')
+          [ -n "$parent" ] || exit 0
+          read -r name branch <<<"$parent"
+          behind=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...${name%%/*}:$branch" --jq .ahead_by)
+          if [ "${behind:-0}" -gt 0 ]; then
+              echo "::warning::This copy is $behind commits behind $name, without its latest fixes. On its main page press \"Sync fork\", then \"Update branch\", and build again."
+          fi
+
       - uses: actions/checkout@v5
 
       # First, so that a missing or wrong game.wasm fails in seconds. No
