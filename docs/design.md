@@ -845,6 +845,25 @@ playing.
 
   The mod's script thread waits as long as the earliest of them, or one
   frame while it has menus. The `task` table is the TASK_ natives' one too.
+- **Input** (input.rs): `input.isDown`, `pressed`, `released`, `onKey`,
+  `mousePosition`, for what ScriptHookV's keyboard handler gave mods.
+  - The app reports keys and mouse buttons where it hands them to the
+    game (the game's input block takes the same keys, plus generic
+    modifier codes and aliases the mods do not see): events in a bounded
+    queue, under a lock held for a push. Pad 0's buttons come from the
+    runtime's pads (`take_gamepad_changes`: pressed and released since the
+    last read, so a tap between two frames counts). A mod takes what came
+    since its last turn as the turn starts, on the script update; its
+    handlers run there as tasks, in order, never on the app's thread.
+  - Keys are physical, named as on a US keyboard (as the game's controls
+    take them); mouse buttons and the wheel, and the pad's buttons by
+    position (SDL's names), share the one `Key` type.
+  - What mods see is what the game gets: nothing behind a page of the app
+    (everything is released when one opens or the window loses the
+    focus), no presses while the game's text box takes text. Nothing is
+    taken from the game: a key reaches the game before any mod runs, so a
+    mod takes over a control the game's way, `DISABLE_CONTROL_ACTION`
+    each frame. On touch screens the touch controls are pad 0.
 - **World**: `world.vehicles()`, `peds()`, `objects()` walk the engine's
   pools and give script handles (`fwScriptGuid::CreateGuid`), while the
   handles' pool keeps room.
