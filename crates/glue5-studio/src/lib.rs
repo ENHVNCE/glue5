@@ -46,6 +46,7 @@ fn App() -> impl IntoView {
         listed: RwSignal::new(false),
         menus: RwSignal::new(Vec::new()),
         menu_stacks: RwSignal::new(HashMap::new()),
+        phone: RwSignal::new(false),
         rows: RwSignal::new(Vec::new()),
         tabs: RwSignal::new(Vec::new()),
         active: RwSignal::new(None),
@@ -79,6 +80,7 @@ fn App() -> impl IntoView {
         }
     }
     connect(s);
+    watch_layout(s);
     // A notice shows 5 s from when it came (an older one's timer does not
     // take a newer one).
     let shown_at = StoredValue::new(0u32);
@@ -105,6 +107,15 @@ fn App() -> impl IntoView {
             Pairing::Paired => view! { <Shell s=s/> }.into_any(),
         }}
     }
+}
+
+/// Follows whether the page has the phone's layout (style.css's breakpoint).
+fn watch_layout(s: S) {
+    let Some(list) = web_sys::window().and_then(|w| w.match_media("(max-width: 700px)").ok().flatten()) else { return };
+    s.phone.set(list.matches());
+    let on_change = Closure::<dyn FnMut(web_sys::MediaQueryListEvent)>::new(move |e: web_sys::MediaQueryListEvent| s.phone.set(e.matches()));
+    list.set_onchange(Some(on_change.as_ref().unchecked_ref()));
+    on_change.forget();
 }
 
 #[component]

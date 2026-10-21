@@ -6,6 +6,8 @@
 mod model;
 mod rows;
 
+use std::sync::{Arc, Mutex};
+
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
@@ -110,6 +112,43 @@ fn MenuCard(s: S, root: u32, module: String) -> impl IntoView {
         }
     });
 
+    // The menus this card shows are looked at (their onOpen / onClose run in
+    // the mod): its own, and each submenu open in it, while the page shows
+    // the menus and is connected.
+    let opened = Arc::new(Mutex::new(Vec::<u32>::new()));
+    {
+        let (opened, module) = (opened.clone(), module.clone());
+        Effect::new(move |_| {
+            let looking = s.connected.get() && (!s.phone.get() || s.screen.get() == Screen::Menus);
+            let want: Vec<u32> = if looking {
+                std::iter::once(root)
+                    .chain(stack.get().into_iter().filter_map(|l| match l {
+                        Level::Menu(id) => Some(id),
+                        Level::Pick(_) => None,
+                    }))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let mut had = opened.lock().unwrap();
+            for id in had.iter().filter(|id| !want.contains(id)) {
+                view(&module, *id, false);
+            }
+            for id in want.iter().filter(|id| !had.contains(id)) {
+                view(&module, *id, true);
+            }
+            *had = want;
+        });
+    }
+    {
+        let module = module.clone();
+        on_cleanup(move || {
+            for id in opened.lock().unwrap().drain(..) {
+                view(&module, id, false);
+            }
+        });
+    }
+
     // The level shown: the card's menu, a submenu or a picker.
     let top = Memo::new(move |_| stack.get().last().copied());
     let shown_menu = Memo::new(move |_| {
@@ -198,4 +237,10 @@ fn MenuBody(s: S, module: String, menu: u32, push: Callback<Level>) -> impl Into
             <rows::Row s=s module=module.clone() menu=menu id=id push=push/>
         </For>
     }
+}
+
+/// Tells the game this page starts or stops looking at a menu.
+fn view(module: &str, menu: u32, open: bool) {
+    // Nothing to say when it fails: the game closes a page's menus as it goes.
+    request("menus.view", json!({ "mod": module, "menu": menu, "open": open }), |_| {});
 }
