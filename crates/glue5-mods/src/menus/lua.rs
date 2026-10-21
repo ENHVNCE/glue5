@@ -32,6 +32,11 @@ pub(super) struct LocalItem {
 }
 
 pub(super) struct LocalMenu {
+    /// The menu whose row opens this one, and that row.
+    parent: Option<u32>,
+    row: Option<u32>,
+    /// 1 for a top-level menu.
+    depth: usize,
     title: String,
     note: Option<String>,
     /// A top-level menu's (a submenu's are its row's).
@@ -512,8 +517,14 @@ impl MenuRef {
             "id" => Value::Integer(self.id.into()),
             "title" => Value::String(lua.create_string(&m.title)?),
             "note" => m.note.as_deref().map_or(Ok(Value::Nil), |n| lua.create_string(n).map(Value::String))?,
-            "enabled" => Value::Boolean(m.enabled),
-            "visible" => Value::Boolean(m.visible),
+            "enabled" | "visible" => {
+                // A submenu's are its row's.
+                let (enabled, visible) = match m.row.and_then(|r| local.items.get(&r)) {
+                    Some(row) => (row.item.enabled, row.item.visible),
+                    None => (m.enabled, m.visible),
+                };
+                Value::Boolean(if key == "enabled" { enabled } else { visible })
+            }
             _ => return Err(error(format!("Menu has no field '{key}'"))),
         })
     }
@@ -521,21 +532,45 @@ impl MenuRef {
     fn assign(&self, key: &str, v: Value) -> Result<()> {
         let what = format!("Menu.{key}");
         let mut local = self.ctx.local.borrow_mut();
+        let local = &mut *local;
         let Some(m) = local.menus.get_mut(&self.id) else { return Err(self.removed(&what)) };
+        // A submenu's row says its title and note too, and is what its
+        // enabled and visible change.
+        let row = m.row.and_then(|r| local.items.get_mut(&r));
         match key {
             "id" => return Err(error(format!("{what} is read-only"))),
             "title" => {
                 let title = cut(&string(&what, &v)?, validate::TITLE);
                 m.title = title.clone();
+                if let Some(row) = row {
+                    row.item.label = title.clone();
+                    let title = title.clone();
+                    super::edit_item(row.item.id, |i| i.label = title);
+                }
                 super::edit_menu(self.id, |m| m.title = title);
             }
             "note" => {
                 let note = optional_string(&what, &v, validate::NOTE)?;
                 m.note = note.clone();
+                if let Some(row) = row {
+                    row.item.note = note.clone();
+                    let note = note.clone();
+                    super::edit_item(row.item.id, |i| i.note = note);
+                }
                 super::edit_menu(self.id, |m| m.note = note);
             }
-            "enabled" => m.enabled = boolean(&what, &v)?,
-            "visible" => m.visible = boolean(&what, &v)?,
+            "enabled" | "visible" => {
+                let on = boolean(&what, &v)?;
+                let enabled = key == "enabled";
+                match row {
+                    Some(row) => {
+                        if enabled { row.item.enabled = on } else { row.item.visible = on }
+                        super::edit_item(row.item.id, |i| if enabled { i.enabled = on } else { i.visible = on });
+                    }
+                    None if enabled => m.enabled = on,
+                    None => m.visible = on,
+                }
+            }
             _ => return Err(error(format!("Menu has no field '{key}'"))),
         }
         Ok(())
@@ -566,26 +601,116 @@ impl MenuRef {
         lua.create_userdata(ItemRef { id, type_name, ctx: self.ctx.clone() })
     }
 
-    /// The items of this menu go, here and for players.
+    /// `menu:submenu(label, opts)`: a menu, and its row here.
+    fn submenu(&self, lua: &Lua, label: Value, opts: Value) -> Result<AnyUserData> {
+        let what = "menu:submenu";
+        let title = cut(&string(&format!("{what}: the label"), &label)?, validate::TITLE);
+        let (opts, _) = match opts {
+            Value::Function(_) => return Err(error(format!("{what}: options are a table or a note, not function"))),
+            o => Opts::parse(what, o, &[])?,
+        };
+        let mut local = self.ctx.local.borrow_mut();
+        let Some(parent) = local.menus.get(&self.id) else { return Err(self.removed(what)) };
+        if parent.depth >= validate::DEPTH {
+            return Err(error(format!("{what}: menus nest {} deep at most", validate::DEPTH)));
+        }
+        if parent.items.len() >= validate::ITEMS {
+            return Err(error(format!("{what}: a menu holds {} items at most", validate::ITEMS)));
+        }
+        if local.menus.len() >= validate::MENUS {
+            return Err(error(format!("{what}: a mod has {} menus at most, submenus included", validate::MENUS)));
+        }
+        let depth = parent.depth + 1;
+        let (id, row) = (super::next_id(), super::next_id());
+        // The menu before the row that opens it, for readers in between.
+        super::add_menu(Menu {
+            module: self.ctx.module.clone(),
+            instance: self.ctx.instance,
+            id,
+            parent: Some(self.id),
+            title: title.clone(),
+            note: opts.note.clone(),
+            items: Vec::new(),
+            rev: 0,
+        });
+        let item = MenuItem {
+            id: row,
+            label: title.clone(),
+            note: opts.note.clone(),
+            enabled: opts.enabled.unwrap_or(true),
+            visible: opts.visible.unwrap_or(true),
+            kind: MenuKind::Submenu(id),
+        };
+        if !super::add_item(self.id, item.clone()) {
+            return Err(self.removed(what));
+        }
+        local.menus.get_mut(&self.id).expect("checked above").items.push(row);
+        local.items.insert(row, LocalItem { menu: self.id, item, callback: None });
+        local.menus.insert(
+            id,
+            LocalMenu { parent: Some(self.id), row: Some(row), depth, title, note: opts.note, enabled: true, visible: true, items: Vec::new() },
+        );
+        lua.create_userdata(MenuRef { id, ctx: self.ctx.clone() })
+    }
+
+    /// The items of this menu go, with the submenus they open, here and
+    /// for players.
     fn clear(&self) -> Result<()> {
         let mut local = self.ctx.local.borrow_mut();
         let Some(m) = local.menus.get_mut(&self.id) else { return Err(self.removed("menu:clear")) };
-        let items = std::mem::take(&mut m.items);
-        for i in &items {
-            local.items.remove(i);
+        let rows = std::mem::take(&mut m.items);
+        let (mut items, mut menus) = (Vec::new(), Vec::new());
+        for row in rows {
+            under(&local, row, &mut items, &mut menus);
         }
-        super::remove(&items, &[]);
+        forget(&mut local, &items, &menus);
+        super::remove(&items, &menus);
         Ok(())
     }
 
+    /// The menu goes, with its submenus and its row in its parent.
     fn remove(&self) -> Result<()> {
         let mut local = self.ctx.local.borrow_mut();
-        let Some(m) = local.menus.remove(&self.id) else { return Err(self.removed("menu:remove")) };
-        for i in &m.items {
-            local.items.remove(i);
+        let Some(m) = local.menus.get(&self.id) else { return Err(self.removed("menu:remove")) };
+        let (parent, row) = (m.parent, m.row);
+        let (mut items, mut menus) = (Vec::new(), Vec::new());
+        match row {
+            Some(row) => under(&local, row, &mut items, &mut menus),
+            None => subtree(&local, self.id, &mut items, &mut menus),
         }
-        super::remove(&m.items, &[self.id]);
+        if let (Some(parent), Some(row)) = (parent, row)
+            && let Some(p) = local.menus.get_mut(&parent)
+        {
+            p.items.retain(|i| *i != row);
+        }
+        forget(&mut local, &items, &menus);
+        super::remove(&items, &menus);
         Ok(())
+    }
+}
+
+/// Item `item` and, for a submenu's row, what is under it.
+fn under(local: &Local, item: u32, items: &mut Vec<u32>, menus: &mut Vec<u32>) {
+    items.push(item);
+    if let Some(MenuKind::Submenu(m)) = local.items.get(&item).map(|i| &i.item.kind) {
+        subtree(local, *m, items, menus);
+    }
+}
+
+/// Menu `menu`, its items and the submenus they open.
+fn subtree(local: &Local, menu: u32, items: &mut Vec<u32>, menus: &mut Vec<u32>) {
+    menus.push(menu);
+    for &i in local.menus.get(&menu).map(|m| m.items.as_slice()).unwrap_or_default() {
+        under(local, i, items, menus);
+    }
+}
+
+fn forget(local: &mut Local, items: &[u32], menus: &[u32]) {
+    for i in items {
+        local.items.remove(i);
+    }
+    for m in menus {
+        local.menus.remove(m);
     }
 }
 
@@ -754,6 +879,7 @@ impl UserData for MenuRef {
             let (opts, _) = Opts::parse(a.what, a.next(), &[])?;
             m.add(lua, a.what, label, opts, MenuKind::Progress(p), None)
         });
+        methods.add_method("submenu", |lua, this, (label, opts): (Value, Value)| this.submenu(lua, label, opts));
         methods.add_method("clear", |_, this, ()| this.clear());
         methods.add_method("remove", |_, this, ()| this.remove());
         methods.add_meta_method(MetaMethod::Index, |lua, this, key: String| this.get(lua, &key));
@@ -807,6 +933,9 @@ pub fn install(lua: &Lua, module: &str, instance: u64, handlers: Handlers) -> Re
             local.menus.insert(
                 id,
                 LocalMenu {
+                    parent: None,
+                    row: None,
+                    depth: 1,
                     title,
                     note: opts.note,
                     enabled: opts.enabled.unwrap_or(true),
@@ -821,7 +950,7 @@ pub fn install(lua: &Lua, module: &str, instance: u64, handlers: Handlers) -> Re
 }
 
 fn top_level(local: &Local) -> usize {
-    local.menus.len()
+    local.menus.values().filter(|m| m.parent.is_none()).count()
 }
 
 /// Applies a player's input to the mod's copy of the item; what its

@@ -389,3 +389,51 @@ fn clear_frees_handlers() {
     assert!(m.handlers.borrow().items.is_empty() && m.handlers.borrow().menus.is_empty());
     assert!(!super::has_menus(m.instance));
 }
+
+/// Submenus: rows that open them, four deep at most, 64 menus a mod.
+#[test]
+fn submenus() {
+    let m = Mod::new("menus-test-sub");
+    m.run("top = ui.menu('Top') a = top:submenu('A', 'into A') b = a:submenu('B') c = b:submenu('C') t = c:toggle('deep')");
+    let err = m.fails("c:submenu('D')");
+    assert!(err.contains("menu:submenu: menus nest 4 deep at most"), "{err}");
+    let menus = crate::menus();
+    let mine: Vec<_> = menus.iter().filter(|x| x.instance == m.instance).collect();
+    assert_eq!(mine.len(), 4);
+    let a: u32 = m.eval("a.id");
+    assert_eq!(mine[1].parent, Some(mine[0].id));
+    assert_eq!(mine[0].items[0].kind, MenuKind::Submenu(a));
+    assert_eq!((mine[0].items[0].label.as_str(), mine[0].items[0].note.as_deref()), ("A", Some("into A")));
+    // A submenu's title, enabled and visible are its row's.
+    m.run("a.title = 'Renamed' a.enabled = false");
+    assert_eq!(m.item("Renamed").kind, MenuKind::Submenu(a));
+    assert!(!m.item("Renamed").enabled && !m.eval::<bool>("a.enabled"));
+    // Inputs need every row on the way shown.
+    m.run("a.enabled = true b.visible = false");
+    assert_eq!(m.input("deep", MenuInput::Toggle(true)).unwrap_err(), "menu \"C\" is hidden");
+    m.run("b.visible = true");
+    m.input("deep", MenuInput::Toggle(true)).unwrap();
+    // remove() takes the subtree and the row.
+    m.run("b:remove()");
+    assert!(m.fails("t.value = true").contains("the item was removed"));
+    assert!(m.fails("c.title = 'x'").contains("the menu was removed"));
+    assert_eq!(crate::menus().iter().filter(|x| x.instance == m.instance).count(), 2);
+    assert_eq!(m.handlers.borrow().items.len(), 1);
+    // clear() too.
+    m.run("a:submenu('again'):toggle('x') top:clear()");
+    assert_eq!(crate::menus().iter().filter(|x| x.instance == m.instance).count(), 1);
+    assert!(m.handlers.borrow().items.is_empty());
+    let err = m.fails(&format!("for i = 1, {MENUS} do top:submenu('s' .. i) end"));
+    assert!(err.contains("a mod has 64 menus at most, submenus included") || err.contains("64 items at most"), "{err}");
+}
+
+/// 64 menus a mod, submenus included.
+#[test]
+fn menus_with_submenus() {
+    let m = Mod::new("menus-test-sub-limit");
+    m.run("for i = 1, 4 do top = ui.menu('t' .. i) for j = 1, 15 do top:submenu('s' .. j) end end");
+    let err = m.fails("ui.menu('one more')");
+    assert!(err.contains("ui.menu: a mod has 64 menus at most, submenus included"), "{err}");
+    let err = m.fails("top:submenu('one more')");
+    assert!(err.contains("menu:submenu: a mod has 64 menus at most, submenus included"), "{err}");
+}
