@@ -141,7 +141,8 @@ impl Catalog {
 /// (`data/manifest.json`, `files` of [path, size, date]). The engine's map
 /// caches (`common/data/gta5_cache_*.dat`) hold these dates: told others
 /// (a copy's), it builds the cache again at every start (seconds) and
-/// cannot save it. Empty without a manifest.
+/// cannot save it. Empty without a manifest; a date past [`LAST_DATE`] is
+/// no date.
 pub fn game_dates(data: &Path) -> HashMap<String, (u64, u64)> {
     let Ok(bytes) = fs::read(data.join("manifest.json")) else { return HashMap::new() };
     let Ok(manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
@@ -149,8 +150,17 @@ pub fn game_dates(data: &Path) -> HashMap<String, (u64, u64)> {
         return HashMap::new();
     };
     let files = manifest["files"].as_array().map_or(&[][..], Vec::as_slice);
-    files.iter().filter_map(|f| Some((f[0].as_str()?.to_ascii_lowercase(), (f[1].as_u64()?, f[2].as_u64()?)))).collect()
+    files
+        .iter()
+        .filter_map(|f| Some((f[0].as_str()?.to_ascii_lowercase(), (f[1].as_u64()?, f[2].as_u64()?))))
+        .filter(|(_, (_, date))| *date <= LAST_DATE)
+        .collect()
 }
+
+/// The last date a file can have: 9999-12-31 (seconds since the epoch).
+/// A later one is a damaged value, which the system's times (and the
+/// engine's) may not hold.
+pub const LAST_DATE: u64 = 253_402_300_799;
 
 /// The date of the file at `rel` (under `data/`) of `size` bytes, if the
 /// manifest lists it so: a file changed since is not the one it lists.
@@ -193,10 +203,12 @@ pub fn hex(bytes: &[u8]) -> String {
 fn manifest_dates() {
     let dir = std::env::temp_dir().join(format!("glue5-catalog-dates-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join("manifest.json"), br#"{"mount":"/game/","files":[["x64/A.rpf",10,1790644442],["b.xml",3,9]]}"#)
-        .unwrap();
+    let manifest = br#"{"mount":"/game/","files":[["x64/A.rpf",10,1790644442],["b.xml",3,9],["c.rpf",1,18446744073709551615]]}"#;
+    fs::write(dir.join("manifest.json"), manifest).unwrap();
     let dates = game_dates(&dir);
     assert_eq!(date(&dates, "x64/a.rpf", 10), Some(1790644442));
+    // Past any date a file can have.
+    assert_eq!(date(&dates, "c.rpf", 1), None);
     // Changed since (another size), or not listed.
     assert_eq!(date(&dates, "b.xml", 4), None);
     assert_eq!(date(&dates, "c.xml", 3), None);
