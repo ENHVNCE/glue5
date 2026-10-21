@@ -32,3 +32,20 @@ declare mod: typeof(mod) & {
 	-- of 2 ms at most: put back what it changed, delete what it made. It cannot wait.
 	onStop: (f: () -> ()) -> (),
 }
+
+export type AssetKind = "model" | "anim" | "animSet" | "clipSet" | "ptfx" | "texture"
+
+declare streaming: typeof(streaming) & {
+	-- Loads an asset (a model by default: its name or hash), waiting until it is (10 s at most):
+	-- false if it is not in the game or did not load in time.
+	load: (asset: string | number, kind: AssetKind?, timeoutMs: number?) -> boolean,
+}
+
+-- Entities made where the player is (5 m ahead, facing as they do) or at `pos`; their model is
+-- loaded (waiting) and released. nil if the model did not load.
+declare spawn: {
+	vehicle: (model: VehicleModel | Hash, pos: vector?, heading: number?, options: { warpIn: boolean? }?) -> Vehicle?,
+	ped: (model: PedModel | Hash, pos: vector?, heading: number?) -> Ped?,
+	-- `dynamic`: physics moves it; `ground`: placed on the ground.
+	prop: (model: string | Hash, pos: vector?, options: { dynamic: boolean?, ground: boolean? }?) -> Object?,
+}

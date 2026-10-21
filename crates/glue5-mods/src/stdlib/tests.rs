@@ -75,6 +75,12 @@ fn every() {
 }
 
 #[test]
+fn streaming() {
+    let lua = stubbed("");
+    fails(&lua, "streaming.load('adder', 'sound')", "no kind of asset \"sound\"");
+}
+
+#[test]
 fn rotations() {
     let lua = stubbed("");
     let close = |code: &str| {
