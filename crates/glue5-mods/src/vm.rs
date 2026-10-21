@@ -93,6 +93,7 @@ impl Vm {
         lua.globals().set("require", require(&lua, name, dir)?)?;
         let storage = Storage::open(name);
         storage.install(&lua)?;
+        crate::draw::set_folder(&lua, name);
         // The mod's code starts once the player is in the game (not on
         // the loading screens, where the player's ped is a stand-in).
         let ready: Function = lua
@@ -335,6 +336,11 @@ impl Vm {
     pub fn memory(&self) -> usize {
         self.lua.used_memory()
     }
+
+    /// What the mod drew since the last call (draw.rs), with the z of each.
+    pub fn take_drawings(&self) -> Vec<(i32, glue5_runtime::sprites::Sprite)> {
+        crate::draw::take(&self.lua)
+    }
 }
 
 fn runaway() -> String {
@@ -398,6 +404,7 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
     )?;
     menus::install(&lua, name, sched.instance, sched.handlers.clone())?;
     input::install(&lua, &sched.keys)?;
+    crate::draw::install(&lua)?;
     json::install(&lua)?;
     // `world.vehicles()`..., the catalog's lists.
     let world = lua.create_table()?;

@@ -8,6 +8,7 @@
 //! (engine.rs). [`studio`] serves GLUE 5 Studio and the MCP endpoint.
 
 mod checker;
+mod draw;
 mod engine;
 pub mod files;
 pub mod input;
@@ -387,7 +388,7 @@ fn natural(a: &str, b: &str) -> std::cmp::Ordering {
 /// installed game's names, the natives and the globals, the globals the
 /// modules add.
 pub(crate) fn definitions() -> String {
-    [world::definitions().as_str(), natives::DEFINITIONS, &input::definitions()].concat()
+    [world::definitions().as_str(), natives::DEFINITIONS, &input::definitions(), draw::DEFINITIONS].concat()
 }
 
 /// The mods and their state.

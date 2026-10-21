@@ -17,6 +17,7 @@ tungstenite = { version = "0.30", default-features = false, features = ["handsha
 httparse = "1"
 getrandom = "0.4"
 flate2 = "1"
+png = "0.18"
 
 [build-dependencies]
 anyhow.workspace = true

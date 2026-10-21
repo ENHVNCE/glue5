@@ -188,6 +188,8 @@ impl Engine {
             self.frame = frame;
             self.spent = Duration::ZERO;
             self.skipped = std::mem::take(&mut self.skipping);
+            // What the mods drew in the frame that ended, for the renderer.
+            crate::draw::publish(self.running.iter().filter(|r| !r.ending).map(|r| r.vm.take_drawings()));
             for r in self.running.iter_mut().filter(|r| !r.ending) {
                 r.vm.flush_storage_due();
                 if unsafe { orig::script_get_thread(env, r.thread_id) } != r.thread {
