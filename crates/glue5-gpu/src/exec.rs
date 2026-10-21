@@ -1045,14 +1045,9 @@ impl Gpu {
                 None
             } else if used_now {
                 let t0 = Instant::now();
-                let job = d.job.lock().unwrap().take();
-                self.stats.decoded_here += job.is_some() as u64;
-                let texels = match job {
-                    Some(job) => Ok(job()),
-                    None => d.data.recv(),
-                };
+                let texels = self.decoded(&d);
                 held += t0.elapsed();
-                let Ok(texels) = texels else { continue };
+                let Some(texels) = texels else { continue };
                 Some(texels)
             } else {
                 match d.data.try_recv() {
@@ -1066,17 +1061,34 @@ impl Gpu {
                 later.push(d);
                 continue;
             };
-            let target = wgpu::TexelCopyTextureInfo {
-                texture: &d.texture,
-                mip_level: d.level,
-                origin: d.origin,
-                aspect: wgpu::TextureAspect::All,
-            };
-            self.uploads.texture(target, &texels, d.bpr, d.src_rows, d.rows, d.extent, d.row_bytes);
+            self.copy_decoded(&d, &texels);
         }
         self.decodes = later;
         self.stats.decode_wait += held;
         self.stats.decode_wait_max = self.stats.decode_wait_max.max(held);
+    }
+
+    /// The texels of `d`, now: decoded here unless a decode thread has
+    /// started it, else waited for (none: that thread is gone).
+    fn decoded(&mut self, d: &Decode) -> Option<Vec<u8>> {
+        let job = d.job.lock().unwrap().take();
+        self.stats.decoded_here += job.is_some() as u64;
+        match job {
+            Some(job) => Some(job()),
+            None => d.data.recv().ok(),
+        }
+    }
+
+    /// Copies decoded texels into their texture (with the batch's uploads,
+    /// before its commands).
+    fn copy_decoded(&mut self, d: &Decode, texels: &[u8]) {
+        let target = wgpu::TexelCopyTextureInfo {
+            texture: &d.texture,
+            mip_level: d.level,
+            origin: d.origin,
+            aspect: wgpu::TextureAspect::All,
+        };
+        self.uploads.texture(target, texels, d.bpr, d.src_rows, d.rows, d.extent, d.row_bytes);
     }
 
     fn create_shader(&mut self, c: &Command) {
@@ -1157,9 +1169,20 @@ impl Gpu {
             self.pdirty = true;
         }
         self.clears.retain(|c| c.tex != id);
-        // Its decodes are not needed (nor copied into a texture made later
-        // from its memory).
-        self.decodes.retain(|d| d.id != id);
+        // Its decodes are copied in now if the commands recorded since the
+        // last flush draw with it (the texture stays until they ran: not
+        // reused before the GPU finished this batch); otherwise they are not
+        // needed (nor copied into a texture made later from its memory).
+        let mine: Vec<Decode> = self.decodes.extract_if(.., |d| d.id == id).collect();
+        if !mine.is_empty() && self.objs.tex(id).is_some_and(|t| t.used.get() == self.epoch) {
+            let t0 = Instant::now();
+            for d in mine {
+                if let Some(texels) = self.decoded(&d) {
+                    self.copy_decoded(&d, &texels);
+                }
+            }
+            self.stats.decode_wait += t0.elapsed();
+        }
         // Memory goes right after the next submit: batches handed over
         // earlier may still be waiting for theirs. Cached bind groups must
         // not keep it.
