@@ -384,6 +384,24 @@ impl State {
         self.lobbies.iter().find(|l| l.id == *id)
     }
 
+    /// Whether an engine datagram from `from` comes from the player at
+    /// `src` on the virtual LAN: sent from one of its addresses (`Some(true)`),
+    /// or relayed by another player while it is not reached directly
+    /// (`Some(false)`). Never from this player's address (`own`) or a
+    /// broadcast's.
+    fn sender(&self, from: SocketAddrV4, src: u32, own: u32, now: Instant) -> Option<bool> {
+        if src == own || !is_player_vip(src) {
+            return None;
+        }
+        let at = |p: &Peer| p.addr == Some(from) || p.seen.contains(&from);
+        let mut players = self.peers.values().filter(|p| p.vip == src);
+        if players.clone().any(at) {
+            return Some(true);
+        }
+        let relay = self.peers.values().any(|p| at(p) && p.vip != src);
+        (relay && players.any(|p| !p.direct(now))).then_some(false)
+    }
+
     /// A player's address from the DHT: a far one when its NAT changed the
     /// port (one keeping the lobby port keeps it for all) and it is not
     /// heard from.
@@ -516,6 +534,11 @@ fn free_vip(taken: &[u32]) -> u32 {
 
 fn is_broadcast(ip: u32) -> bool {
     ip == u32::MAX || (ip & 0xffff_0000 == NET && ip & 0xff == 0xff)
+}
+
+/// Whether a player may have `vip` (see `free_vip`).
+fn is_player_vip(vip: u32) -> bool {
+    vip & 0xffff_0000 == NET && !matches!(vip & 0xff, 0 | 0xff)
 }
 
 /// This device's address on its local network (the one its Internet
@@ -1062,17 +1085,16 @@ impl P2p {
                 let dst_port = u16::from_be_bytes(d[10..12].try_into().unwrap());
                 let vip = self.vip.load(Ordering::Relaxed);
                 let state = self.state.locked();
-                // Only from players of the lobbies: from where one is heard,
-                // or where the sender greeted from (another of its addresses).
-                // (A relay may forward from another of its own addresses.)
-                if !state.peers.values().any(|p| p.addr == Some(from) || p.seen.contains(&from)) {
-                    return;
-                }
+                // Only from players of the lobbies, each in its own name: from
+                // where it is heard or greeted from (another of its
+                // addresses), or through a relay while it is not reached.
+                let Some(direct) = state.sender(from, src, vip, Instant::now()) else { return };
                 if dst == vip || is_broadcast(dst) {
                     drop(state);
                     crate::vnet::deliver(src, src_port, dst_port, &d[12..]);
-                } else if let Some(to) = state.peers.values().find(|p| p.vip == dst).and_then(|p| p.addr) {
-                    // A relay for two players who cannot reach each other.
+                } else if direct && let Some(to) = state.peers.values().find(|p| p.vip == dst).and_then(|p| p.addr) {
+                    // A relay for two players who cannot reach each other
+                    // (their own datagrams only: not relayed again).
                     let mut relayed = Vec::with_capacity(MAGIC.len() + 1 + d.len());
                     relayed.extend_from_slice(&MAGIC);
                     relayed.push(DATA);
@@ -1088,7 +1110,7 @@ impl P2p {
         let Hello { lobby, id, vip, flags, cookie, gives, card } = hello;
         let now = Instant::now();
         let mut state = self.state.locked();
-        if state.lobby(&lobby).is_none() || id == self.id && state.own.contains(&from) {
+        if state.lobby(&lobby).is_none() || id == self.id && state.own.contains(&from) || id != self.id && !is_player_vip(vip) {
             return;
         }
         if !self.cookies.check(from, &cookie, now) {
@@ -1183,7 +1205,7 @@ impl P2p {
         }
         let mut punch = Vec::new();
         for &(id, vip, addr) in about {
-            if id == self.id {
+            if id == self.id || !is_player_vip(vip) {
                 continue;
             }
             if !state.peers.contains_key(&id) && state.peers.values().filter(|p| p.lobby == lobby).count() >= PLAYERS {
@@ -1332,6 +1354,34 @@ mod tests {
         let back = received(&x);
         let hello = back.iter().find(|d| d[MAGIC.len()] == HELLO).unwrap();
         assert_eq!(hello[MAGIC.len() + 22..MAGIC.len() + 30], [7; 8]);
+    }
+
+    #[test]
+    fn engine_datagrams_come_in_their_sender_s_name() {
+        let now = Instant::now();
+        let mut s = state();
+        let own = NET | 0x0101;
+        let at = |port| SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 7), port);
+        let (host, relay, far) = (NET | 0x0202, NET | 0x0303, NET | 0x0404);
+        for (id, vip, addr) in [(1, host, Some(at(1))), (2, relay, Some(at(2))), (3, far, None)] {
+            let mut p = Peer::new(vip, [0; 8], now);
+            p.addr = addr;
+            p.seen.extend(addr);
+            p.heard = now;
+            s.peers.insert(id, p);
+        }
+        assert_eq!(s.sender(at(1), host, own, now), Some(true));
+        // Another player in the host's name, or in this player's own, or a
+        // broadcast's: no.
+        assert_eq!(s.sender(at(2), host, own, now), None);
+        assert_eq!(s.sender(at(1), own, own, now), None);
+        assert_eq!(s.sender(at(1), u32::MAX, own, now), None);
+        assert_eq!(s.sender(at(1), NET | 0x02ff, own, now), None);
+        // A player not reached directly, through another.
+        assert_eq!(s.sender(at(2), far, own, now), Some(false));
+        // Not from a player of the lobbies.
+        assert_eq!(s.sender(at(9), far, own, now), None);
+        assert_eq!(s.sender(at(9), NET | 0x0909, own, now), None);
     }
 
     #[test]
