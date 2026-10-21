@@ -12,6 +12,7 @@ mod db;
 mod draw;
 mod engine;
 pub mod files;
+mod folder;
 mod globals;
 mod memory;
 pub mod input;

@@ -875,7 +875,19 @@ type Hash = number
 declare function wait(ms: number?): ()
 -- The hash the game uses for a name (GET_HASH_KEY).
 declare function joaat(name: string): Hash
-declare mod: { name: string }
+-- The mod: its name, its folder's files, the settings a player edits in its settings.json.
+declare mod: {
+\tname: string,
+\t-- `defaults` with the values of the mod's settings.json over them. The file is written with the
+\t-- defaults when it is not there or lacks some (a newer version's), for the player to edit.
+\tsettings: <T>(defaults: T) -> T,
+\t-- A file of the mod's folder (\"data/cars.json\"), or nil when there is none; 16 MB at most.
+\tread: (path: string) -> string?,
+\t-- Writes a file of the mod's folder, and its folders: 16 MB a file, 256 MB the folder.
+\twrite: (path: string, data: string | buffer) -> (),
+\t-- The names in a folder of the mod's (none: the mod's own), folders ending in /.
+\tlist: (path: string?) -> { string },
+}
 
 export type Toggle = { id: number, value: boolean, set: (self: Toggle, value: boolean | string) -> () }
 export type Slider = { id: number, value: number, set: (self: Slider, value: number | string) -> () }

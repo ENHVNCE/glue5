@@ -93,6 +93,7 @@ impl Vm {
         let storage = Storage::open(name);
         storage.install(&lua)?;
         crate::db::Db::new(name).install(&lua)?;
+        crate::folder::install(&lua, name, dir)?;
         crate::draw::set_folder(&lua, name);
         // The mod's code starts once the player is in the game (not on
         // the loading screens, where the player's ped is a stand-in).
