@@ -1101,7 +1101,7 @@ impl Client {
                 }
             });
             if visited == n && incomplete == 0 && outstanding == 0 {
-                match r.cache.finish() {
+                match r.cache.finish(&r.catalog) {
                     Ok(()) => {
                         self.complete.store(true, Ordering::Release);
                         log::info!("stream: the whole game is on this device ({:.1} GB)", r.cache.total() as f64 / 1e9);

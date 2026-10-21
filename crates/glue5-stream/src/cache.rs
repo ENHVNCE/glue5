@@ -210,7 +210,7 @@ impl Cache {
             _lock: lock,
         };
         if cache.all_here() {
-            cache.finish()?;
+            cache.finish(catalog)?;
         } else {
             fs::write(root.join(MARKER), b"A partial copy of a game folder, streamed by Glue 5.\n")?;
         }
@@ -224,8 +224,11 @@ impl Cache {
     }
 
     /// The copy is complete: a game folder like any other (for the local
-    /// mode too), saved for good.
-    pub fn finish(&self) -> io::Result<()> {
+    /// mode too), saved for good. With the engine's manifest of `catalog`
+    /// (the copy's) as the web build's server keeps it: played or shared
+    /// as a folder, the copy gives the engine the dates streaming did (its
+    /// files' own are when they came, see [`crate::catalog::game_dates`]).
+    pub fn finish(&self, catalog: &Catalog) -> io::Result<()> {
         // Empty files have no blocks to bring them.
         for (id, s) in self.slots.iter().enumerate() {
             if s.file.get().is_none() && !fs::metadata(self.root.join(&s.path)).is_ok_and(|m| m.len() == s.size) {
@@ -233,6 +236,15 @@ impl Cache {
             }
         }
         self.save()?;
+        let manifest = catalog.engine_manifest();
+        let path = self.root.join("data/manifest.json");
+        if fs::read(&path).ok().as_deref() != Some(&manifest[..]) {
+            // (A name the catalog's listing skips, should it stay.)
+            let tmp = self.root.join("data/.manifest.json.tmp");
+            fs::create_dir_all(self.root.join("data"))?;
+            fs::write(&tmp, &manifest)?;
+            fs::rename(&tmp, &path)?;
+        }
         match fs::remove_file(self.root.join(MARKER)) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
