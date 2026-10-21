@@ -21,3 +21,8 @@ declare geo: {
 	quaternion: (rot: vector) -> (number, number, number, number),
 	fromQuaternion: (x: number, y: number, z: number, w: number) -> vector,
 }
+
+declare task: typeof(task) & {
+	-- Runs `f` every `ms` milliseconds of game time, as a task; the function returned stops it.
+	every: <A...>(ms: number, f: (A...) -> ...any, A...) -> () -> (),
+}

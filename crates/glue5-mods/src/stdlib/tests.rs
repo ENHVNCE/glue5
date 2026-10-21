@@ -39,6 +39,12 @@ fn eval<T: mlua::FromLuaMulti>(lua: &Lua, code: &str) -> T {
     lua.load(code).eval().unwrap_or_else(|e| panic!("{code}: {e}"))
 }
 
+/// `code` fails with an error that says `error`.
+fn fails(lua: &Lua, code: &str, error: &str) {
+    let e = lua.load(code).exec().unwrap_err().to_string();
+    assert!(e.contains(error), "{code}: {e}");
+}
+
 /// The game's own values, from game.wasm and the natives database.
 #[test]
 fn constants() {
@@ -59,6 +65,13 @@ fn constants() {
     ] {
         assert_eq!(eval::<i64>(&lua, code), value, "{code}");
     }
+}
+
+#[test]
+fn every() {
+    let lua = stubbed("");
+    fails(&lua, "task.every('soon', print)", "task.every: the interval");
+    fails(&lua, "task.every(100)", "task.every: the second argument");
 }
 
 #[test]
