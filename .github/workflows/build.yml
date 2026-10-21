@@ -22,7 +22,9 @@ concurrency:
 jobs:
   build:
     name: ${{ inputs.platform }}
-    runs-on: ${{ fromJSON('{"ios":"macos-26","macos":"macos-26","android":"ubuntu-24.04","linux-x86_64":"ubuntu-24.04","linux-aarch64":"ubuntu-24.04-arm","windows":"windows-2025"}')[inputs.platform] }}
+    # Apple: macos-15, whose machines are many more than macos-26's (a job
+    # there could be cancelled after waiting for one), with Xcode 26 (below).
+    runs-on: ${{ fromJSON('{"ios":"macos-15","macos":"macos-15","android":"ubuntu-24.04","linux-x86_64":"ubuntu-24.04","linux-aarch64":"ubuntu-24.04-arm","windows":"windows-2025"}')[inputs.platform] }}
     timeout-minutes: 360
     defaults:
       run:
@@ -69,6 +71,19 @@ jobs:
           fi
           echo "clang-cl: $clang"
           echo "${clang%\\*}" >>"$GITHUB_PATH"
+
+      # The app needs Xcode 26 (the Icon Composer icon); macos-15's default
+      # is 16, beside the Xcode 26 releases that run on macOS 15: the newest.
+      - name: Xcode 26
+        if: runner.os == 'macOS'
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26*.app | grep -E '/Xcode_26(\.[0-9]+)*\.app$' | sort -V | tail -n 1 || true)
+          if [ -z "$xcode" ]; then
+              echo "::error::No Xcode 26 on this machine: GitHub's macOS image has changed."
+              exit 1
+          fi
+          echo "DEVELOPER_DIR=$xcode/Contents/Developer" >>"$GITHUB_ENV"
+          DEVELOPER_DIR=$xcode/Contents/Developer xcodebuild -version
 
       - name: Room on the disk
         if: runner.os == 'Linux'
