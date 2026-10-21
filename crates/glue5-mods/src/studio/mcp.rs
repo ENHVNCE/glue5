@@ -38,7 +38,7 @@ pub fn handle(request: &Request) -> (u16, String, Vec<(&'static str, String)>) {
                 "instructions": "Mods for GTA V running in GLUE 5. Read the resource glue5://guide first. \
                     Write files with write_file (it answers with type errors), run with start_mod or restart_mod \
                     (they answer with the first log lines), try natives live with eval, look them up with \
-                    search_natives, and use a mod's menus with menus and menu_input.",
+                    search_natives, and use a mod's menus with menus, menu_open and menu_input.",
             }))
         }
         "ping" => Ok(json!({})),
@@ -98,6 +98,9 @@ fn tools() -> Value {
             each item's id, kind (button, toggle, slider, number, choice, multi, text, color, label, separator, progress, submenu), \
             label, note, enabled, visible and value (indices from 1, colours #rrggbb[aa]); a submenu row's menu is the menu it opens.",
             json!({ "mod": string("only this mod's menus") }), &[]),
+        tool("menu_open", "Looks at a menu as a player opening it would (its onOpen runs, which may fill it), and answers after \
+            half a second with {menu, submenus, log}; then stops looking (its onClose runs).",
+            json!({ "mod": string("the mod"), "menu": { "type": "integer", "description": "the menu's id (from menus)" } }), &["mod", "menu"]),
         tool("menu_input", "Does what a player would to a mod's menu item, and answers with the mod's log after half a second. \
             value: a toggle true or false (none flips it); a slider or number a number (clamped, on the step); a choice the option's \
             number from 1 or its text; a multi a list of those (the whole selection); a text a string; a color \"#rrggbb\", \
@@ -174,6 +177,22 @@ fn call(name: &str, a: &Value) -> Value {
                 Some(only) => Value::Array(api::menus().as_array().into_iter().flatten().filter(|m| m["mod"] == only).cloned().collect()),
                 None => api::menus(),
             },
+            "menu_open" => {
+                let module = s("mod")?;
+                let menu = a["menu"].as_u64().ok_or("missing argument menu")? as u32;
+                // There (an error otherwise) before it is looked at.
+                api::menu_open(module, menu)?;
+                let (_, cursor) = crate::logs(u64::MAX);
+                crate::menu_viewer(module, menu, true);
+                std::thread::sleep(Duration::from_millis(500));
+                let now = api::menu_open(module, menu);
+                crate::menu_viewer(module, menu, false);
+                let mut out = now?;
+                let (lines, next) = api::logs(cursor, Some(module));
+                out["log"] = json!(lines.iter().map(line).collect::<Vec<_>>());
+                out["next"] = json!(next);
+                out
+            }
             "menu_input" => {
                 let module = s("mod")?;
                 let item = a["item"].as_u64().ok_or("missing argument item")? as u32;
