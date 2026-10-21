@@ -827,16 +827,32 @@ playing.
 
 ### Menus, tasks, the world, data
 
-- **Menus**: `ui.menu(title)` with toggles, sliders, choices, buttons and
-  labels. The application draws them with its own widgets (touch and
-  controllers too): the Mods page's MENUS (see above for how it opens).
-  - What the player does reaches the mod at its next turn: the item's
-    `value` changes and its callback runs as a task.
+- **Menus**: `ui.menu(title)`, with buttons, toggles, sliders, numbers,
+  choices, multiple choices, text, colours, labels, separators, progress
+  bars and submenus (four deep). The application draws them with its own
+  widgets (touch and controllers too): the Mods page's MENUS (see above
+  for how it opens), a menu at a time with a back stack, never flattened.
+  - The menus live in the shared state (glue5-mods `menus/`, under a
+    lock), outside the mod's memory; the Lua handles are views of them.
+    The app, the Studio and MCP read one snapshot (`menus()`, an `Arc`
+    rebuilt only after a change) and never touch a mod's Lua.
+  - A player's change (`menu_input`) is checked against the item (kind,
+    range, enabled and visible) and written to the shared value at once,
+    so every view agrees; it is queued for the mod, one pending value per
+    item (a dragged slider coalesces) and up to 64 presses. At its next
+    turn the mod takes the queue: each handle's cached `value` changes and
+    the callback runs as a task, so `value` and the callbacks agree. A
+    mod's own assignment drops a pending value for that item and calls
+    nothing: the last write wins.
+  - Viewers: the app, each Studio session and MCP's `menu_open` count as
+    looking at a menu; the first opens it (`onOpen` runs), the last one
+    leaving closes it (`onClose`). `menu:show()` asks the app to open the
+    page at a menu, at most every 2 seconds.
   - `ui.notify` shows a notification over the game.
   - A mod with a menu stays running after its main code returns.
-  - The app keeps them, outside the mod's memory: a run of a mod has 16
-    menus of 64 items at most, and titles, labels, notes and options are
-    cut short; a log line is cut at 8 KB.
+  - A run of a mod has 16 menus (64 with submenus) of 64 items at most,
+    and titles, labels, notes and options are cut short; a log line is cut
+    at 8 KB.
 - **Tasks**: a mod's coroutines are scheduled by game time
   (`GET_GAME_TIMER`, so they stop while the game is paused):
   - the main chunk;
