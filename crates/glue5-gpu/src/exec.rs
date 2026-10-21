@@ -1394,7 +1394,7 @@ impl Gpu {
         let mut staging = self.uploads.take_free();
         staging.extend(self.staging.take_free());
         let staging_bytes: u64 = staging.iter().map(wgpu::Buffer::size).sum();
-        let groups = self.binds.age();
+        let groups = self.binds.take_old();
         log::warn!(
             "gpu: memory is short: released {} MiB of objects kept for reuse, {} MiB of staging memory, {} bind groups",
             kept >> 20,
