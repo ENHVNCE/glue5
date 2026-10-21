@@ -386,6 +386,9 @@ struct Display {
     surface: wgpu::Surface<'static>,
     /// Size and vsync it is configured with.
     configured: Option<(u32, u32, bool)>,
+    /// The last configuration a suboptimal image had configured anew.
+    #[cfg_attr(target_vendor = "apple", allow(dead_code))]
+    suboptimal: Option<(u32, u32, bool)>,
     /// The surface's format, and the one its images are viewed with (no sRGB).
     surface_format: Option<TextureFormat>,
     format: Option<TextureFormat>,
@@ -458,8 +461,16 @@ impl Display {
         let format = self.format?;
         let surface = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
+            // Configured anew once per configuration: the cause may be the
+            // configuration itself (as with Android's loader, which calls
+            // every image of a swapchain not pre-rotated suboptimal; wgpu
+            // hides it there), the driver saying so at every image after,
+            // and configuring waits for the GPU.
             wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
-                self.configured = None;
+                if self.suboptimal != self.configured {
+                    self.suboptimal = self.configured;
+                    self.configured = None;
+                }
                 t
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
@@ -735,6 +746,7 @@ impl Output {
         let display = Display {
             surface: window.surface,
             configured: None,
+            suboptimal: None,
             surface_format: None,
             format: None,
             #[cfg(target_vendor = "apple")]
@@ -816,6 +828,7 @@ impl Output {
         if let Some(surface) = self.presentation.0.surface.lock().unwrap().take() {
             display.surface = surface;
             display.configured = None;
+            display.suboptimal = None;
             log::debug!("gpu: presenting into the window's new surface");
         }
         display.acquire(
