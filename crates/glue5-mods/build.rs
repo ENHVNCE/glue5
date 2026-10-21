@@ -867,6 +867,19 @@ const TASK_FIELDS: &str = "\
 \twait: (ms: number?) -> (),
 ";
 
+/// Natives with a structure or an array, as structs.luau gives them: a
+/// table or a list (their types in structs.d.luau), beside the natives of
+/// their namespace. Mods reach them raw through `native.invoke` too.
+const STRUCT_FIELDS: &[(&str, &str)] = &[
+    ("extrametadata", "\tgetDlcVehicleData: (dlcVehicleIndex: number) -> DlcVehicleData?,\n"),
+    ("extrametadata", "\tgetDlcWeaponData: (dlcWeaponIndex: number) -> DlcWeaponData?,\n"),
+    ("extrametadata", "\tgetDlcWeaponDataSp: (dlcWeaponIndex: number) -> DlcWeaponData?,\n"),
+    ("extrametadata", "\tgetDlcWeaponComponentData: (dlcWeaponIndex: number, dlcWeapCompIndex: number) -> DlcWeaponComponentData?,\n"),
+    ("extrametadata", "\tgetDlcWeaponComponentDataSp: (dlcWeaponIndex: number, dlcWeapCompIndex: number) -> DlcWeaponComponentData?,\n"),
+    ("ped", "\t--- The vehicles near `ped`, at most `max` (16 by default, 64 at most).\n\tgetPedNearbyVehicles: (ped: Ped, max: number?) -> { Vehicle },\n"),
+    ("ped", "\t--- The peds near `ped`, but those of `ignore`'s ped type (none: -1), at most `max` (16 by default, 64 at most).\n\tgetPedNearbyPeds: (ped: Ped, ignore: number?, max: number?) -> { Ped },\n"),
+];
+
 /// What the mods' VM adds besides the natives (vm.rs).
 const GLOBALS: &str = "\
 type Hash = number
@@ -1050,6 +1063,9 @@ fn definitions(natives: &[Native]) -> String {
         if ns == "task" {
             // The mods' scheduler shares the table with the TASK_ natives.
             s.push_str(TASK_FIELDS);
+        }
+        for (_, fields) in STRUCT_FIELDS.iter().filter(|(space, _)| space == ns) {
+            s.push_str(fields);
         }
         while i < natives.len() && &natives[i].namespace == ns {
             let n = &natives[i];

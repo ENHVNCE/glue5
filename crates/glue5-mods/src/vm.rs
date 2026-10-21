@@ -424,6 +424,8 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
     natives::install(&lua, &task)?;
     crate::globals::install(&lua)?;
     crate::memory::install(&lua, sched.instance)?;
+    // Natives that fill structures, as tables (events, DLC data, nearby peds).
+    crate::structs::install(&lua)?;
 
     let deadline = Rc::new(Cell::new(Instant::now() + SLICE));
     let interrupt_deadline = deadline.clone();
