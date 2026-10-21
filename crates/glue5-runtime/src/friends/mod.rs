@@ -1234,6 +1234,13 @@ impl Service {
             session::PROBE => self.on_probe(from, d, now, out),
             session::HS1 if d.len() > 5 => {
                 let Some(pattern) = Pattern::from_byte(d[0]) else { return };
+                // Its MAC first: made only by who knows whom it asks.
+                let key = match (pattern, &self.code) {
+                    (Pattern::Friend, _) => crypto::friend_mac_key(self.identity.as_ref().unwrap().public()),
+                    (Pattern::Code, Some(code)) => crypto::code_mac_key(code),
+                    (Pattern::Code, None) => return,
+                };
+                let Some(d) = session::checked(d, &key).filter(|d| d.len() > 5) else { return };
                 let index = u32::from_be_bytes(d[1..5].try_into().unwrap());
                 if self.allowed(from, now) {
                     self.on_first(from, pattern, index, &d[5..], now, out);
