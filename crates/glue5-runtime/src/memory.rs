@@ -339,6 +339,67 @@ fn asking<R>(f: impl FnOnce() -> R) -> R {
     r
 }
 
+// ---- what the engine's heaps hold, on the 10 s stats -------------------------
+
+/// The engine's heaps (addresses in this build, from `InitGameHeap`): the
+/// game heap and the replay's (`sysMemSimpleAllocator`); the resource heap
+/// and the one for "physical" memory, little used here
+/// (`sysMemGrowBuddyAllocator`s).
+const GAME_HEAP: u64 = 8017912;
+const REPLAY_HEAP: u64 = 8060376;
+const RESOURCE_HEAP: u64 = 8043728;
+const PHYSICAL_HEAP: u64 = 8026992;
+
+/// When the heaps were last reported (`Clock` ms).
+static REPORTED: AtomicU64 = AtomicU64::new(0);
+
+/// Logs what the engine's heaps hold, every 10 s (from the render thread):
+/// how the wasm memory, which never shrinks, is made up.
+pub(crate) fn report_heaps(mem: Mem) {
+    let now = crate::rt().clock.now_ms() as u64;
+    if now < REPORTED.load(Ordering::Relaxed) + 10_000 {
+        return;
+    }
+    REPORTED.store(now, Ordering::Relaxed);
+    let mb = |b: u64| b >> 20;
+    let (game, replay) = (simple_heap(mem, GAME_HEAP), simple_heap(mem, REPLAY_HEAP));
+    let (resources, physical) = (buddy_heap(mem, RESOURCE_HEAP), buddy_heap(mem, PHYSICAL_HEAP));
+    log::info!(
+        "memory: wasm memory {} MiB; game heap {}/{} MiB ({} at most), resource heap {}/{} MiB, physical heap {}/{} MiB, replay heap {}/{} MiB",
+        mb(crate::rt().memory.size()),
+        mb(game.0),
+        mb(game.1),
+        mb(game.2),
+        mb(resources.0),
+        mb(resources.1),
+        mb(physical.0),
+        mb(physical.1),
+        mb(replay.0),
+        mb(replay.1),
+    );
+}
+
+/// A `sysMemSimpleAllocator`'s bytes in use, size and most in use so far
+/// (its size less the least it had free).
+fn simple_heap(mem: Mem, at: u64) -> (u64, u64, u64) {
+    let size = mem.u64(at + 280);
+    (mem.u64(at + 296), size, size.saturating_sub(mem.u64(at + 568)))
+}
+
+/// A `sysMemGrowBuddyAllocator`'s bytes in use and size: the sums of its
+/// segments' (`sysMemBuddyAllocator`s: leaves in use times the leaf size).
+fn buddy_heap(mem: Mem, at: u64) -> (u64, u64) {
+    let (mut used, mut size) = (0, 0);
+    for i in 0..mem.i32(at + 508).max(0) as u64 {
+        if mem.u64(at + 16384 + i * 8) != 0 {
+            let segment = at + 512 + i * 488;
+            used += mem.u64(segment + 32) * mem.u64(segment + 56);
+            size += mem.u64(segment + 24);
+        }
+    }
+    (used, size)
+}
+
 /// Hook for libc++'s `operator_new_impl` (its nothrow `operator new`, which
 /// std::stable_sort takes its buffers from: a cutscene's load events, the
 /// HUD's markers, past 128 of them): rage's `operator delete` frees them,
