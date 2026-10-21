@@ -4,13 +4,17 @@
 //! `{method: "log"}` with new log lines, and `{method: "hello"}` first.
 
 use std::collections::HashSet;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
 use super::{Socket, api, receive, send};
 use crate::files;
+
+/// The mods' menus are sent at most this often (a dragged slider, a mod
+/// changing a value each frame).
+const MENUS_EVERY: Duration = Duration::from_millis(100);
 
 /// The menus a page looks at (`menus.view`), as (mod, menu): each is one
 /// viewer of it (its `onOpen` / `onClose`), until the page closes it or goes.
@@ -51,6 +55,8 @@ fn serve(mut ws: Socket, stop: &std::sync::atomic::AtomicBool, viewing: &mut Vie
     let (_, mut changes) = crate::changes(u64::MAX);
     let mut figures = Instant::now();
     let mut menus = Value::Null;
+    let mut menus_seen: Option<Arc<Vec<crate::Menu>>> = None;
+    let mut menus_at = Instant::now() - MENUS_EVERY;
     // Evaluations run on their own threads; their answers come back here.
     let (done_tx, done_rx) = mpsc::channel::<Value>();
     // Evaluations running for this page (a few at a time).
@@ -112,12 +118,21 @@ fn serve(mut ws: Socket, stop: &std::sync::atomic::AtomicBool, viewing: &mut Vie
             if send(&mut ws, &json!({ "method": "mods", "params": api::mods() })).is_err() {
                 return Ok(());
             }
-            let now = api::menus();
-            if now != menus {
-                if send(&mut ws, &json!({ "method": "menus", "params": now })).is_err() {
-                    return Ok(());
+        }
+        // The menus: when their snapshot is a new one (it is made again
+        // only after a change), and what it says changed.
+        if menus_at.elapsed() >= MENUS_EVERY {
+            let snapshot = crate::menus();
+            if menus_seen.as_ref().is_none_or(|seen| !Arc::ptr_eq(seen, &snapshot)) {
+                menus_at = Instant::now();
+                menus_seen = Some(snapshot);
+                let now = api::menus();
+                if now != menus {
+                    if send(&mut ws, &json!({ "method": "menus", "params": now })).is_err() {
+                        return Ok(());
+                    }
+                    menus = now;
                 }
-                menus = now;
             }
         }
         let (paths, next) = crate::changes(changes);
