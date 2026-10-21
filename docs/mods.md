@@ -136,7 +136,7 @@ menu item: copy a folder into the mods folder to try it.
 | `memory` | The game's memory: `memory.entity(handle)` (an entity's address), `readFloat(address)`, `writeInt(address, v)`... (U8, U16, U32, Int, U64, Ptr, Float, Vector3, String), `read(address, bytes)` into a Luau `buffer` and `write(address, buffer)`, scratch memory for natives: `alloc(bytes)`, `free(address)`. |
 | `game.version()` | The game build the natives, globals and offsets are for (`"8b0b5899ed"`). |
 | `wait(ms)` | Back to the game for `ms` milliseconds (none: until the next frame). |
-| `ui.menu(title)` | A menu: `toggle`, `slider`, `choice`, `button`, `label`. `ui.notify(text)` shows a notification. |
+| `ui.menu(title)` | A menu on the Mods page, with buttons, toggles, sliders, numbers, choices, text, colours and submenus: see [Menus](#menus). `ui.notify(text)` shows a notification. |
 | `task.spawn`, `task.delay` | Coroutines on the game's clock (they stop while the game is paused). |
 | `input` | The keyboard, the mouse and the player's pad as the game gets them: `input.isDown("F5")`, `input.pressed("PadSouth")` (since the mod's last turn), `input.onKey(function(key, down, mods) ... end)`, `input.mousePosition()`. Keys are named as on a US keyboard by position: `"A"`, `"F5"`, `"LeftShift"`, `"MouseLeft"`. |
 | `world` | The vehicles, peds, objects and pickups around and the projectiles in flight, as handles: `world.vehicles()`, or only some, the closest first: `world.peds({ near = pos, radius = 50, model = "a_c_cat_01", max = 5 })`. And the installed game's model names. |
@@ -163,6 +163,92 @@ before a native runs; a mod gets at most 2 ms a frame, and one that runs 2
 seconds without waiting is stopped. `native.invoke`, `globals` and
 `memory` are the exception: they do what ScriptHookV does, and can (see
 below).
+
+## Menus
+
+`ui.menu(title)` makes a menu, and its methods add the items to it, in
+order. Each returns the item: read and set its properties, and the app,
+the Studio and a coding agent show the change.
+
+```lua
+local trainer = ui.menu("Trainer", "Health, money, the clock")
+local god = trainer:toggle("God mode", false, function(on)
+	player.setPlayerInvincible(player.playerId(), on)
+end)
+trainer:number("Cash", 1000, { min = 0, step = 500, unit = "$" }, function(amount)
+	-- ...
+end)
+god.value = true          -- the switch moves; no callback for the mod's own change
+god.note = "No damage"    -- the line under the label
+```
+
+| Item | Its `value` | The player sees | For example |
+|---|---|---|---|
+| `button` | | a row with a pill, "Run" or its `action` | `m:button("Deliver", { action = "Go" }, function() ... end)` |
+| `toggle` | `true` or `false` | a switch | `m:toggle("God mode", false, function(on) ... end)` |
+| `slider` | a number from `min` to `max` | a rail and the value, with its `unit` (`"%"` shows 0–1 as 0–100 %) | `m:slider("Hour", 19, 0, 23, 1, function(hour) ... end)` |
+| `number` | a number, `min` and `max` if given | `‹ 1000 ›`, or typed | `m:number("Cash", 1000, { min = 0, step = 100, unit = "$" }, f)` |
+| `choice` | the option's index, from 1 (`.option` is its text) | `‹ adder ›`, and the whole list, with a search when it is long | `m:choice("Car", { "adder", "t20" }, "t20", function(i, name) ... end)` |
+| `multi` | the chosen indices | the chosen ones, and the list with checks, All and None | `m:multi("Weather", weathers, { 1, 3 }, function(indices, names) ... end)` |
+| `text` | a string, up to `max` (64) characters | a field; the system keyboard on touch screens | `m:text("Plate", "", { placeholder = "GLUE 5", max = 8 }, f)` |
+| `color` | `{ r, g, b, a }`, 0 to 255 (or `"#rrggbb"` to set it) | a swatch, and a page with a palette, hue, saturation, brightness (opacity with `alpha`) and the hex code | `m:color("Paint", "#d01818", { alpha = true }, f)` |
+| `label` | | muted text | `m:label("Three cars delivered")` |
+| `separator` | | a heading over the items after it, or a gap | `m:separator("Vehicles")` |
+| `progress` | 0 to 1 | a bar with its percentage | `m:progress("Collected", 0.4)` |
+| `submenu` | | a row with ›, which opens a menu of its own | `local sky = m:submenu("Weather & time")` |
+
+- **After the value come the options**: a string is the note (the line
+  under the label); a table can hold the note, `enabled = false` (shown
+  dimmed, not usable), `visible = false` (not shown) and the item's own
+  options (`step`, `unit`, `min`, `max`, `placeholder`, `alpha`,
+  `action`). Then the callback.
+- **Properties.** Every item has `label`, `note`, `enabled`, `visible` and
+  `:remove()`, and the ones of its kind: `value`, `options`, `min`,
+  `max`... `item:set(v)` is `item.value = v`. A mistyped name is an error
+  (`Toggle has no field 'valeu'`).
+- **Callbacks** run when a player changes the item, not when the mod does,
+  as tasks: they can call natives and `wait`. `value` changes with them:
+  a dragged slider gives one callback a frame, with its latest value.
+  A text's callback runs when the player is done typing (Enter, Done).
+- **Menus** have `title`, `note` (under the title in the list of menus),
+  `enabled` and `visible` (a submenu's row), and:
+  - `:clear()` removes the items, and the submenus they open, to build the
+    menu again;
+  - `:onOpen(f)` and `:onClose(f)` run `f` when a player starts and stops
+    looking at the menu (on the Mods page, in the Studio, by a coding
+    agent): to fill a list when it is needed;
+  - `:show()` opens the Mods page at this menu, for a key of the mod's
+    (not over another page, nor while text is typed);
+  - `:remove()`.
+
+The Mods page's MENUS lists the menus, each with its mod's name. Tap one
+(or A, or Enter) to open it; a submenu, a choice's list or a colour opens
+over it, and back (‹, B, Esc) goes up one. The page's X closes it where
+it is: F7 opens it there again. A controller's focus skips what is
+disabled. The Studio shows the same menus, each in a card with the same
+way in and back.
+
+Limits, for every run of a mod:
+
+| What | At most |
+|---|---|
+| Menus | 16, 64 with their submenus (more: an error) |
+| Depth | 4: a menu, its submenu and two more (more: an error) |
+| Items in a menu | 64, separators too (more: an error) |
+| A choice's or a multi's options | 1024 (more: an error) |
+| A menu's title, an item's label | 40, 60 characters (longer: cut) |
+| A note | 200 characters (cut) |
+| An option | 40 characters (cut) |
+| A text's value | `max`, 256 at most (cut) |
+| A button's action, a unit | 16, 8 characters (cut) |
+| Numbers | finite (NaN or infinity: an error) |
+| `menu:show()` | once in 2 seconds (more: ignored) |
+| What the player does before the mod's next turn | the last value of each item, and 64 presses (the oldest go) |
+
+Menus do not go over the game (the Mods page hides the touch controls),
+and have no icons, images or drawing of their own (that is `draw`'s), nor
+text over more than one line. Items keep their order: to change it, clear
+the menu and build it again.
 
 ## Porting ScriptHookV mods
 
