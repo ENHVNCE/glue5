@@ -134,9 +134,17 @@ files with `--!strict` to have every type checked.
   sessions, JSON values, 1 MB at most. Values are copies: change a table
   and `set` it again. Written within a couple of seconds and when the mod
   stops; kept for this player, not in the mod's folder.
+- `db`: the mod's SQLite database, one file for this player (256 MB).
+  `db.exec(sql, ...)` runs statements (returns changes, last rowid),
+  `db.query(sql, ...)` returns rows as tables by column name,
+  `db.transaction(f, ...)` keeps f's work if it returns, undoes it if it
+  fails. Values as `?` one by one, or a table for `:name`. Queries run on
+  the mod's turn: put many writes in one transaction.
+- `net.request(url or {url, method, headers, body, query})`: HTTP and
+  HTTPS as Lune's @lune/net; returns {ok, statusCode, statusMessage,
+  headers, body} and waits like wait() meanwhile. No answer is an error.
 - Luau's own libraries are there (math, string, table, coroutine, bit32,
-  utf8, buffer, vector, os.clock/time/date); files and the network are
-  not.
+  utf8, buffer, vector, os.clock/time/date); other files are not.
 "#;
 
 /// The mods with their state and files.
