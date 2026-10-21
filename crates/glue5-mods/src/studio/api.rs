@@ -143,6 +143,10 @@ files with `--!strict` to have every type checked.
 - `net.request(url or {url, method, headers, body, query})`: HTTP and
   HTTPS as Lune's @lune/net; returns {ok, statusCode, statusMessage,
   headers, body} and waits like wait() meanwhile. No answer is an error.
+- `mod.settings(defaults)`: the defaults with the mod folder's
+  settings.json over them (written with the defaults when missing, for
+  the player to edit). `mod.read(path)` (nil when missing),
+  `mod.write(path, data)`, `mod.list(dir?)`: files of the mod's own folder.
 - Luau's own libraries are there (math, string, table, coroutine, bit32,
   utf8, buffer, vector, os.clock/time/date); other files are not.
 "#;

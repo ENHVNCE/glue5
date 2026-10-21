@@ -144,9 +144,11 @@ menu item: copy a folder into the mods folder to try it.
 | `json`, `storage` | JSON text, and values kept between sessions (1 MB a mod, for this player). |
 | `db` | The mod's SQLite database: `db.exec("CREATE TABLE spots (name TEXT, x REAL)")`, `db.exec("INSERT INTO spots VALUES (?, ?)", name, x)`, `db.query("SELECT * FROM spots WHERE x > :x", { x = 10 })` (its rows as tables), `db.transaction(function() ... end)` (undone if it fails). One file for this player, as the storage, 256 MB at most. Queries run on the mod's turn: large work goes in a transaction (300 inserts in one take under a millisecond). |
 | `net.request(url)` | HTTP and HTTPS, as [Lune](https://lune-org.github.io/docs)'s `@lune/net`: `net.request("https://...")` or `net.request({ url = ..., method = "POST", headers = {...}, body = ..., query = {...} })` gives `{ ok, statusCode, statusMessage, headers, body }`. It waits, as `wait()` does, while the request goes on away from the game. No answer (no network, a bad address, 30 s) is an error. 4 requests at once a mod, answers of 16 MB. |
+| `mod.settings`, `mod.read` | The mod's own folder. `local s = mod.settings({ key = "F5", speed = 2 })`: the defaults with the values of the folder's `settings.json` over them, the file written with the defaults the first time for the player to edit (ScriptHookV mods' INI file). `mod.read("data/cars.json")` (nil when there is none), `mod.write(path, text)` (a string or a `buffer`), `mod.list("data")`. 16 MB a file, 256 MB the folder; read and written on the mod's turn. |
 
-Mods reach the network through `net` and keep data in `storage` and `db`;
-other files are out of their reach.
+Mods reach the network through `net`, keep data in `storage` and `db`, and
+read and write the files of their own folder; other files are out of their
+reach.
 
 Keys reach a mod when they reach the game: not while a page of the app is
 open (the settings, the Mods page and its menus), not while the game's
