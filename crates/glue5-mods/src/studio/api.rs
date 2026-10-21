@@ -206,6 +206,8 @@ files with `--!strict` to have every type checked.
 - `net.request(url or {url, method, headers, body, query})`: HTTP and
   HTTPS as Lune's @lune/net; returns {ok, statusCode, statusMessage,
   headers, body} and waits like wait() meanwhile. No answer is an error.
+  `net.socket(url)`: a WebSocket (ws/wss) as Lune's: `s:send(msg, binary?)`,
+  `s:next()` (waits; nil once closed), `s:close(code?)`, `s.closeCode`.
 - `mod.settings(defaults)`: the defaults with the mod folder's
   settings.json over them (written with the defaults when missing, for
   the player to edit). `mod.read(path)` (nil when missing),
