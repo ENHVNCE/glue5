@@ -107,6 +107,8 @@ pub enum Shape {
 #[derive(Clone)]
 pub struct Sprite {
     pub shape: Shape,
+    /// Added to what is under it (light, glows) rather than blended over.
+    pub additive: bool,
 }
 
 /// What is drawn in a frame, in drawing order. Kept and reused: a list the

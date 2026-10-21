@@ -165,13 +165,21 @@ impl Sprites {
     }
 }
 
-/// A colour as the renderer blends it (premultiplied).
-fn color(c: Rgba) -> Color32 {
-    Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
+/// A colour as the renderer blends it: premultiplied, and with no alpha
+/// when `add`ed. The blend is "one, one minus the source's alpha", so a
+/// colour without alpha adds to what is under it: additive drawings go in
+/// the same batches as the others, no pipeline of their own to switch to.
+fn color(c: Rgba, add: bool) -> Color32 {
+    let c = Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+    if add { additive(c) } else { c }
 }
 
-fn stroke(s: &Stroke, h: f32) -> PathStroke {
-    PathStroke::new((s.width * h).max(0.0), color(s.color))
+fn additive(c: Color32) -> Color32 {
+    Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), 0)
+}
+
+fn stroke(s: &Stroke, h: f32, add: bool) -> PathStroke {
+    PathStroke::new((s.width * h).max(0.0), color(s.color, add))
 }
 
 impl Layout {
@@ -246,6 +254,7 @@ impl Layout {
         );
         let feathering = 1.0;
         for sprite in &list.sprites {
+            let add = sprite.additive;
             match &sprite.shape {
                 Shape::Image { image, center, size, rotation, tint } => {
                     let (iw, ih) = image.size();
@@ -258,7 +267,7 @@ impl Layout {
                     }
                     let Some(id) = texture(image) else { continue };
                     let rot = Rot2::from_angle(rotation.to_radians());
-                    quad(self.batch(id, screen), c, half, rot, [0.0, 0.0, 1.0, 1.0], color(*tint));
+                    quad(self.batch(id, screen), c, half, rot, [0.0, 0.0, 1.0, 1.0], color(*tint, add));
                 }
                 Shape::Rect { center, size, rotation, fill, gradient, rounding, stroke: line } => {
                     let c = at(*center);
@@ -279,25 +288,26 @@ impl Layout {
                     path.add_line_loop(&points);
                     let first = mesh.vertices.len();
                     match gradient {
-                        None => path.fill(feathering, color(*fill), mesh),
+                        None => path.fill(feathering, color(*fill, add), mesh),
                         Some((to, horizontal)) => {
                             path.fill(feathering, Color32::WHITE, mesh);
                             // Each vertex's colour by where it is along the
                             // gradient, its coverage (the feathered edge) kept.
-                            let (from, to) = (egui::Rgba::from(color(*fill)), egui::Rgba::from(color(*to)));
+                            let (from, to) = (egui::Rgba::from(color(*fill, false)), egui::Rgba::from(color(*to, false)));
                             let axis = if *horizontal { rot * vec2(1.0, 0.0) } else { rot * vec2(0.0, 1.0) };
                             let extent = if *horizontal { half.x } else { half.y };
                             for v in &mut mesh.vertices[first..] {
                                 let t = ((v.pos - c).dot(axis) / (2.0 * extent.max(1e-3)) + 0.5).clamp(0.0, 1.0);
                                 let coverage = v.color.a() as f32 / 255.0;
-                                v.color = Color32::from(from * (1.0 - t) + to * t).gamma_multiply(coverage);
+                                let c = Color32::from(from * (1.0 - t) + to * t).gamma_multiply(coverage);
+                                v.color = if add { additive(c) } else { c };
                             }
                         }
                     }
                     if let Some(s) = line {
                         path.clear();
                         path.add_line_loop(&points);
-                        path.stroke_closed(feathering, &stroke(s, h), mesh);
+                        path.stroke_closed(feathering, &stroke(s, h, add), mesh);
                     }
                     points.clear();
                     (self.points, self.path) = (points, path);
@@ -316,8 +326,8 @@ impl Layout {
                     if !visible(screen, p, galley.rect.size().length() + galley.rect.min.to_vec2().length()) {
                         continue;
                     }
-                    let shape = TextShape::new(p - anchor.pos_in_rect(&galley.rect).to_vec2(), galley, color(*c))
-                        .with_override_text_color(color(*c))
+                    let shape = TextShape::new(p - anchor.pos_in_rect(&galley.rect).to_vec2(), galley, color(*c, add))
+                        .with_override_text_color(color(*c, add))
                         .with_angle_and_anchor(rotation.to_radians(), anchor);
                     let mesh = self.batch(FONT_TEXTURE, screen);
                     tess.tessellate_text(&shape, mesh);
@@ -330,7 +340,7 @@ impl Layout {
                     let mut path = std::mem::take(&mut self.path);
                     path.clear();
                     path.add_line_segment([a, b]);
-                    path.stroke_open(feathering, &stroke(s, h), self.batch(FONT_TEXTURE, screen));
+                    path.stroke_open(feathering, &stroke(s, h, add), self.batch(FONT_TEXTURE, screen));
                     self.path = path;
                 }
                 Shape::Path { points, closed, fill, stroke: line } => {
@@ -345,13 +355,13 @@ impl Layout {
                     let bounds = Rect::from_points(&pts);
                     let margin = line.map_or(0.0, |s| s.width * h);
                     if bounds.expand(margin).intersects(screen) {
-                        let line = line.map(|s| stroke(&s, h)).unwrap_or(PathStroke::NONE);
+                        let line = line.map(|s| stroke(&s, h, add)).unwrap_or(PathStroke::NONE);
                         let mesh = self.batch(FONT_TEXTURE, screen);
                         path.clear();
                         match (closed, fill) {
                             (true, Some(f)) => {
                                 path.add_line_loop(&pts);
-                                path.fill_and_stroke(feathering, color(*f), &line, mesh);
+                                path.fill_and_stroke(feathering, color(*f, add), &line, mesh);
                             }
                             (true, None) => {
                                 path.add_line_loop(&pts);
@@ -370,11 +380,11 @@ impl Layout {
                     if r <= 0.0 || !visible(screen, c, r + line.map_or(0.0, |s| s.width * h)) {
                         continue;
                     }
-                    let line = line.map(|s| stroke(&s, h)).unwrap_or(PathStroke::NONE);
+                    let line = line.map(|s| stroke(&s, h, add)).unwrap_or(PathStroke::NONE);
                     let mut path = std::mem::take(&mut self.path);
                     path.clear();
                     path.add_circle(c, r);
-                    let fill = fill.map_or(Color32::TRANSPARENT, color);
+                    let fill = fill.map_or(Color32::TRANSPARENT, |f| color(f, add));
                     path.fill_and_stroke(feathering, fill, &line, self.batch(FONT_TEXTURE, screen));
                     self.path = path;
                 }
@@ -394,7 +404,7 @@ impl Layout {
                     }));
                     path.clear();
                     path.add_open_points(&pts);
-                    path.stroke_open(feathering, &stroke(s, h), self.batch(FONT_TEXTURE, screen));
+                    path.stroke_open(feathering, &stroke(s, h, add), self.batch(FONT_TEXTURE, screen));
                     (self.points, self.path) = (pts, path);
                 }
             }

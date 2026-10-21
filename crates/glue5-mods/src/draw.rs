@@ -331,7 +331,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
                     rotation: s.rotation,
                     tint: rgba(color)?,
                 };
-                c.add(s.z, shape)
+                c.add(&s, shape)
             },
         )?,
     )?;
@@ -355,7 +355,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
                     rounding: s.rounding,
                     stroke: s.outline(),
                 };
-                c.add(s.z, shape)
+                c.add(&s, shape)
             },
         )?,
     )?;
@@ -373,7 +373,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
                     align: s.align,
                     color: rgba(color)?,
                 };
-                c.add(s.z, shape)
+                c.add(&s, shape)
             },
         )?,
     )?;
@@ -384,7 +384,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
             move |_, (x1, y1, x2, y2, width, color, style): (f64, f64, f64, f64, Option<f64>, Option<f64>, Option<AnyUserData>)| {
                 let s = Style::of(style)?;
                 let stroke = Stroke { color: rgba(color)?, width: length(width.unwrap_or(WIDTH))? };
-                c.add(s.z, Shape::Line { from: [fraction(x1)?, fraction(y1)?], to: [fraction(x2)?, fraction(y2)?], stroke })
+                c.add(&s, Shape::Line { from: [fraction(x1)?, fraction(y1)?], to: [fraction(x2)?, fraction(y2)?], stroke })
             },
         )?,
     )?;
@@ -403,7 +403,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
                 _ => Some(Stroke { color: rgba(color)?, width: length(width.unwrap_or(WIDTH))? }),
             };
             let range = c.points(n / 2, |i| Ok([fraction(points.raw_get(2 * i + 1)?)?, fraction(points.raw_get(2 * i + 2)?)?]))?;
-            c.add(s.z, Shape::Path { points: range, closed: s.closed || s.fill.is_some(), fill: s.fill, stroke })
+            c.add(&s, Shape::Path { points: range, closed: s.closed || s.fill.is_some(), fill: s.fill, stroke })
         })?,
     )?;
     let c = canvas.clone();
@@ -415,7 +415,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
                 (None, Some(_)) => None,
                 _ => Some(rgba(color)?),
             };
-            c.add(s.z, Shape::Circle { center: [fraction(x)?, fraction(y)?], radius: length(r)?.max(0.0), fill, stroke: s.outline() })
+            c.add(&s, Shape::Circle { center: [fraction(x)?, fraction(y)?], radius: length(r)?.max(0.0), fill, stroke: s.outline() })
         })?,
     )?;
     let c = canvas.clone();
@@ -426,7 +426,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
                 let s = Style::of(style)?;
                 let stroke = Stroke { color: rgba(color)?, width: length(width.unwrap_or(WIDTH))? };
                 let (from, to) = (finite(from)? as f32, finite(to)? as f32);
-                c.add(s.z, Shape::Arc { center: [fraction(x)?, fraction(y)?], radius: length(r)?.max(0.0), from, to, stroke })
+                c.add(&s, Shape::Arc { center: [fraction(x)?, fraction(y)?], radius: length(r)?.max(0.0), from, to, stroke })
             },
         )?,
     )?;
@@ -532,7 +532,7 @@ pub fn publish(canvases: impl IntoIterator<Item = Rc<Canvas>>) {
                 let b = p.base[ci as usize];
                 *points = points.start + b..points.end + b;
             }
-            list.sprites.push(Sprite { shape });
+            list.sprites.push(Sprite { shape, additive: ready.items[i as usize].1.additive });
         }
         p.current.clear();
         sprites::publish(list);
@@ -540,12 +540,12 @@ pub fn publish(canvases: impl IntoIterator<Item = Rc<Canvas>>) {
 }
 
 impl Canvas {
-    fn add(&self, z: i32, shape: Shape) -> mlua::Result<()> {
+    fn add(&self, s: &Style, shape: Shape) -> mlua::Result<()> {
         let mut rec = self.rec.borrow_mut();
         if rec.items.len() >= DRAWINGS {
             return Err(mlua::Error::runtime(format!("draw: {DRAWINGS} drawings a turn at most")));
         }
-        rec.items.push((z, Sprite { shape }));
+        rec.items.push((s.z, Sprite { shape, additive: s.additive }));
         Ok(())
     }
 
@@ -602,6 +602,7 @@ struct Style {
     gradient: Option<Rgba>,
     horizontal: bool,
     align: Align,
+    additive: bool,
 }
 
 const PLAIN: Style = Style {
@@ -615,6 +616,7 @@ const PLAIN: Style = Style {
     gradient: None,
     horizontal: false,
     align: Align::Left,
+    additive: false,
 };
 
 impl Style {
@@ -665,6 +667,14 @@ impl Style {
             "fill" => self.fill = color(&v)?,
             "gradient" => self.gradient = color(&v)?,
             "closed" => self.closed = flag(&v)?,
+            "blend" => {
+                self.additive = match &v {
+                    Value::Nil => false,
+                    Value::String(s) if s == "alpha" => false,
+                    Value::String(s) if s == "add" => true,
+                    _ => return Err(bad("\"alpha\" or \"add\"")),
+                }
+            }
             "horizontal" => self.horizontal = flag(&v)?,
             "align" => {
                 self.align = match &v {
@@ -682,7 +692,7 @@ impl Style {
 }
 
 /// A style's fields, as `draw.style{...}` and assignments name them.
-const STYLE_FIELDS: &[&str] = &["z", "rotation", "rounding", "width", "stroke", "fill", "gradient", "closed", "horizontal", "align"];
+const STYLE_FIELDS: &[&str] = &["z", "rotation", "rounding", "width", "stroke", "fill", "gradient", "closed", "horizontal", "align", "blend"];
 
 impl UserData for Style {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
@@ -748,12 +758,14 @@ export type Style = {
 \t-- A rectangle from its colour at the top to this one at the bottom (at the right when horizontal).
 \tgradient: Color?,
 \thorizontal: boolean,
+\t-- \"add\": added to what is under it (light, glows); \"alpha\" by default.
+\tblend: \"alpha\" | \"add\",
 \t-- Which end of a text is at x.
 \talign: \"left\" | \"center\" | \"right\",
 }
 export type StyleOptions = {
 \tz: number?, rotation: number?, rounding: number?, stroke: Color?, width: number?, fill: Color?, closed: boolean?,
-\tgradient: Color?, horizontal: boolean?, align: (\"left\" | \"center\" | \"right\")?,
+\tgradient: Color?, horizontal: boolean?, align: (\"left\" | \"center\" | \"right\")?, blend: (\"alpha\" | \"add\")?,
 }
 
 -- Images, shapes and text over the game. What a turn of the mod draws shows until its next turn:
@@ -949,6 +961,7 @@ mod tests {
             "draw.path({ 0, 0, 1 })",
             "draw.style{ align = 'middle' }",
             "draw.style{ colour = 1 }",
+            "draw.style{ blend = 'multiply' }",
             "local s = draw.style() s.rotation = 'a'",
         ] {
             assert!(run(&lua, bad).is_err(), "{bad}");
@@ -963,15 +976,16 @@ mod tests {
             local s = draw.style{ z = 2, rounding = 0.01, stroke = 0x000000ff, width = 0.004, gradient = draw.rgba(0, 0, 255) }
             s.rotation = 450
             draw.rect(0.1, 0.2, 0.3, 0.4, 0xff0000ff, s)
-            draw.circle(0.5, 0.5, 0.1, nil, draw.style{ stroke = 0xffffff80 })
+            draw.circle(0.5, 0.5, 0.1, nil, draw.style{ stroke = 0xffffff80, blend = 'add' })
             draw.arc(0.5, 0.5, 0.2, -120, 120, 0.01, 0x00ff00ff)
             draw.path({ 0, 0, 1, 0, 1, 1 }, nil, nil, draw.style{ fill = 0x11223344 })
             draw.line(0, 0, 1, 1)
             draw.text('hi', 0.5, 0.5, 0.05, nil, draw.style{ align = 'right' })
         ").unwrap();
         let drawn = shown(&lua);
-        assert!(matches!(drawn[0], (2, Sprite { shape: Shape::Rect { rotation: 90.0, fill: [255, 0, 0, 255], gradient: Some(([0, 0, 255, 255], false)), rounding: 0.01, stroke: Some(Stroke { color: [0, 0, 0, 255], width: 0.004 }), .. } })));
+        assert!(matches!(drawn[0], (2, Sprite { shape: Shape::Rect { rotation: 90.0, fill: [255, 0, 0, 255], gradient: Some(([0, 0, 255, 255], false)), rounding: 0.01, stroke: Some(Stroke { color: [0, 0, 0, 255], width: 0.004 }), .. }, additive: false, .. })));
         assert!(matches!(drawn[1].1.shape, Shape::Circle { fill: None, stroke: Some(Stroke { color: [255, 255, 255, 128], .. }), .. }));
+        assert!(drawn[1].1.additive);
         assert!(matches!(drawn[2].1.shape, Shape::Arc { from: -120.0, to: 120.0, stroke: Stroke { color: [0, 255, 0, 255], width: 0.01 }, .. }));
         let c = canvas(&lua).unwrap();
         assert!(matches!(&drawn[3].1.shape, Shape::Path { points, closed: true, fill: Some([0x11, 0x22, 0x33, 0x44]), stroke: None } if c.ready.borrow().points[points.start as usize..points.end as usize] == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]));
