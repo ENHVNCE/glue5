@@ -8,7 +8,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::checker::{self, Checker};
-use crate::{files, natives};
+use crate::menus::validate::kind_name;
+use crate::{Menu, MenuInput, MenuItem, MenuKind, Rgba, files, natives};
 
 /// How the mods' API works, for people and agents (MCP's guide resource,
 /// the exported CLAUDE.md).
@@ -148,64 +149,143 @@ pub fn mods() -> Value {
     )
 }
 
-/// The mods' menus: `{mod, id, title, items}`, an item `{id, label, note,
-/// kind, ...}` with `value` (toggle, slider, choice: 1-based), `min`,
-/// `max`, `step` (slider), `options` (choice).
-pub fn menus() -> Value {
-    use crate::MenuKind;
-    let item = |i: &crate::MenuItem| {
-        let mut v = json!({ "id": i.id, "label": i.label, "note": i.note });
-        let extra = match &i.kind {
-            MenuKind::Toggle(on) => json!({ "kind": "toggle", "value": on }),
-            MenuKind::Slider { value, min, max, step } => {
-                json!({ "kind": "slider", "value": value, "min": min, "max": max, "step": step })
-            }
-            MenuKind::Choice { options, index } => json!({ "kind": "choice", "value": index + 1, "options": options }),
-            MenuKind::Button => json!({ "kind": "button" }),
-            MenuKind::Label => json!({ "kind": "label" }),
-        };
-        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        v
+/// An item as the Studio and MCP read it: `{id, kind, label, note,
+/// enabled, visible}` and its kind's fields; indices from 1, colours as
+/// `#rrggbb[aa]`.
+fn item_json(i: &MenuItem) -> Value {
+    let mut v = json!({
+        "id": i.id,
+        "kind": kind_name(&i.kind),
+        "label": i.label,
+        "note": i.note,
+        "enabled": i.enabled,
+        "visible": i.visible,
+    });
+    let extra = match &i.kind {
+        MenuKind::Button { action } => json!({ "action": action.as_deref().unwrap_or("Run") }),
+        MenuKind::Toggle(on) => json!({ "value": on }),
+        MenuKind::Slider { value, min, max, step, unit } => {
+            json!({ "value": value, "min": min, "max": max, "step": step, "unit": unit })
+        }
+        MenuKind::Number { value, min, max, step, unit } => {
+            json!({ "value": value, "min": min, "max": max, "step": step, "unit": unit })
+        }
+        MenuKind::Choice { options, index } => json!({ "value": index + 1, "options": options.as_ref() }),
+        MenuKind::Multi { options, selected } => {
+            json!({ "value": selected.iter().map(|i| i + 1).collect::<Vec<_>>(), "options": options.as_ref() })
+        }
+        MenuKind::Text { value, placeholder, max } => json!({ "value": value, "placeholder": placeholder, "max": max }),
+        MenuKind::Color { value, alpha } => json!({ "value": value.hex(*alpha), "alpha": alpha }),
+        MenuKind::Label | MenuKind::Separator => json!({}),
+        MenuKind::Progress(p) => json!({ "value": p }),
+        MenuKind::Submenu(menu) => json!({ "menu": menu }),
     };
-    Value::Array(
-        crate::menus()
-            .iter()
-            .map(|m| json!({ "mod": m.module, "id": m.id, "title": m.title, "items": m.items.iter().map(item).collect::<Vec<_>>() }))
-            .collect(),
-    )
+    v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+    v
 }
 
-/// Does to a menu's item what a player would: `value` sets a toggle
-/// (true/false), a slider (a number) or a choice (1-based, or the option's
-/// text); none presses a button.
+fn menu_json(m: &Menu) -> Value {
+    json!({
+        "mod": m.module,
+        "id": m.id,
+        "parent": m.parent,
+        "title": m.title,
+        "note": m.note,
+        "rev": m.rev,
+        "items": m.items.iter().map(item_json).collect::<Vec<_>>(),
+    })
+}
+
+/// The mods' menus, all of them flat (top-level and submenus, in creation
+/// order): `{mod, id, parent, title, note, rev, items}`; the tree is
+/// `parent` and the submenu rows' `menu`.
+pub fn menus() -> Value {
+    Value::Array(crate::menus().iter().map(menu_json).collect())
+}
+
+/// Menu `menu` of mod `module` as [`menus`] gives it, with every menu
+/// under it: `{menu, submenus: [...]}` (the submenus flat, in creation
+/// order).
+pub fn menu_open(module: &str, menu: u32) -> Result<Value, String> {
+    let menus = crate::menus();
+    let Some(top) = menus.iter().find(|m| m.id == menu && m.module == module) else {
+        return Err(format!("{module} has no menu {menu}"));
+    };
+    let mut ids = vec![menu];
+    // Creation order puts a submenu after its parent.
+    let submenus: Vec<Value> = menus
+        .iter()
+        .filter(|m| {
+            let under = m.parent.is_some_and(|p| ids.contains(&p));
+            if under {
+                ids.push(m.id);
+            }
+            under
+        })
+        .map(menu_json)
+        .collect();
+    Ok(json!({ "menu": menu_json(top), "submenus": submenus }))
+}
+
+/// An option of `options` by its 1-based index or its text.
+fn option(options: &[String], v: &Value) -> Result<usize, String> {
+    match v {
+        Value::Number(n) => match n.as_u64() {
+            Some(n) if (1..=options.len() as u64).contains(&n) => Ok(n as usize - 1),
+            _ => Err(format!("no option {n}: there are {}", options.len())),
+        },
+        Value::String(o) => options.iter().position(|x| x == o).ok_or_else(|| format!("no option {o:?}")),
+        other => Err(format!("an option is its number from 1 or its text, not {other}")),
+    }
+}
+
+/// Does to a menu's item what a player would. `value`: a toggle true or
+/// false (none flips it), a slider or number a number, a choice an
+/// option's number from 1 or its text, a multi a list of those, a text a
+/// string, a colour `"#rrggbb[aa]"` or `{r, g, b, a}`, a button none.
 pub fn menu_input(module: &str, item: u32, value: &Value) -> Result<(), String> {
-    use crate::{MenuInput, MenuKind};
     let menus = crate::menus();
     let found = menus.iter().filter(|m| m.module == module).flat_map(|m| m.items.iter()).find(|i| i.id == item);
     let Some(found) = found else { return Err(format!("{module} has no menu item {item}")) };
     let input = match (&found.kind, value) {
+        (MenuKind::Button { .. }, Value::Null) => MenuInput::Press,
         (MenuKind::Toggle(on), Value::Null) => MenuInput::Toggle(!on),
         (MenuKind::Toggle(_), Value::Bool(b)) => MenuInput::Toggle(*b),
-        (MenuKind::Slider { .. }, Value::Number(n)) => MenuInput::Value(n.as_f64().unwrap_or(0.0)),
-        (MenuKind::Choice { options, .. }, Value::Number(n)) => match n.as_u64() {
-            Some(n) if (1..=options.len() as u64).contains(&n) => MenuInput::Choose(n as usize - 1),
-            _ => return Err(format!("a choice from 1 to {}", options.len())),
-        },
-        (MenuKind::Choice { options, .. }, Value::String(o)) => match options.iter().position(|x| x == o) {
-            Some(i) => MenuInput::Choose(i),
-            None => return Err(format!("no option {o:?}; there are {options:?}")),
-        },
-        (MenuKind::Button, Value::Null) => MenuInput::Press,
-        (MenuKind::Label, _) => return Err("a label does nothing".into()),
-        (kind, v) => return Err(format!("{v} does not fit a {}", match kind {
-            MenuKind::Toggle(_) => "toggle (true or false)",
-            MenuKind::Slider { .. } => "slider (a number)",
-            MenuKind::Choice { .. } => "choice (1-based or the option's text)",
-            _ => "button (no value)",
-        })),
+        (MenuKind::Slider { .. } | MenuKind::Number { .. }, Value::Number(n)) => MenuInput::Number(n.as_f64().unwrap_or(f64::NAN)),
+        (MenuKind::Choice { options, .. }, v @ (Value::Number(_) | Value::String(_))) => MenuInput::Choose(option(options, v)?),
+        (MenuKind::Multi { options, .. }, Value::Array(list)) => {
+            let picked = list.iter().map(|v| option(options, v).map(|i| i as u16)).collect::<Result<Vec<_>, _>>()?;
+            MenuInput::Select(picked)
+        }
+        (MenuKind::Text { .. }, Value::String(t)) => MenuInput::Text(t.clone()),
+        (MenuKind::Color { .. }, Value::String(hex)) => {
+            MenuInput::Color(Rgba::from_hex(hex).ok_or_else(|| format!("{hex:?} is not a colour (#rrggbb or #rrggbbaa)"))?)
+        }
+        (MenuKind::Color { .. }, Value::Object(c)) => {
+            let part = |k: &str, default: Option<u8>| match c.get(k) {
+                None if default.is_some() => Ok(default.unwrap_or(255)),
+                Some(Value::Number(n)) if n.as_u64().is_some_and(|n| n <= 255) => Ok(n.as_u64().unwrap_or(0) as u8),
+                _ => Err(format!("a colour's {k} is a whole number from 0 to 255")),
+            };
+            MenuInput::Color(Rgba { r: part("r", None)?, g: part("g", None)?, b: part("b", None)?, a: part("a", Some(255))? })
+        }
+        (kind @ (MenuKind::Label | MenuKind::Separator | MenuKind::Progress(_) | MenuKind::Submenu(_)), _) => {
+            return Err(format!("a {} takes no input", kind_name(kind)));
+        }
+        (kind, v) => {
+            let takes = match kind {
+                MenuKind::Button { .. } => "no value",
+                MenuKind::Toggle(_) => "true or false (or none: it flips)",
+                MenuKind::Slider { .. } | MenuKind::Number { .. } => "a number",
+                MenuKind::Choice { .. } => "an option's number from 1 or its text",
+                MenuKind::Multi { .. } => "a list of options' numbers from 1 or texts",
+                MenuKind::Text { .. } => "a string",
+                _ => "a colour: \"#rrggbb\", \"#rrggbbaa\" or {r, g, b, a}",
+            };
+            return Err(format!("a {} takes {takes}, not {v}", kind_name(kind)));
+        }
     };
-    crate::menu_input(module, item, input);
-    Ok(())
+    crate::menu_input(module, item, input)
 }
 
 /// What mod.json may hold, and of which JSON type.

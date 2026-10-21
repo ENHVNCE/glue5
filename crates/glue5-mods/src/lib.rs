@@ -25,7 +25,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -110,12 +110,8 @@ struct State {
     /// Files written, deleted or renamed, with a sequence number.
     changes: VecDeque<(u64, String)>,
     next_change: u64,
-    /// The mods' menus, what was done with them (for the mods), what they
-    /// notify (for the application).
-    menus: Vec<Menu>,
-    inputs: Vec<(String, u32, MenuInput)>,
+    /// What the mods notify (for the application).
     notices: VecDeque<(String, String)>,
-    next_menu_id: u32,
 }
 
 struct Shared {
@@ -136,10 +132,7 @@ static SHARED: Shared = Shared {
         next_seq: 1,
         changes: VecDeque::new(),
         next_change: 1,
-        menus: Vec::new(),
-        inputs: Vec::new(),
         notices: VecDeque::new(),
-        next_menu_id: 1,
     }),
     pending: AtomicBool::new(false),
     generation: AtomicU64::new(0),
@@ -388,7 +381,7 @@ fn natural(a: &str, b: &str) -> std::cmp::Ordering {
 /// installed game's names, the natives and the globals, the globals the
 /// modules add.
 pub(crate) fn definitions() -> String {
-    [world::definitions().as_str(), natives::DEFINITIONS, &input::definitions(), draw::DEFINITIONS].concat()
+    [world::definitions().as_str(), natives::DEFINITIONS, &input::definitions(), draw::DEFINITIONS, db::DEFINITIONS, http::DEFINITIONS].concat()
 }
 
 /// The mods and their state.
@@ -473,7 +466,8 @@ pub(crate) fn changed(path: &str) {
     s.changes.push_back((n, path.to_string()));
 }
 
-/// A mod's menu: what the application shows for it (`ui.menu` in Luau).
+/// A mod's menu (`ui.menu` in Luau, or `menu:submenu` inside another):
+/// what the application, the Studio and MCP show for it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Menu {
     pub module: String,
@@ -481,26 +475,75 @@ pub struct Menu {
     /// new run's; the old run's go with it).
     pub instance: u64,
     pub id: u32,
+    /// The menu whose submenu row opens this one; None: top-level.
+    pub parent: Option<u32>,
     pub title: String,
+    /// A top-level menu's line under its title in the list of menus.
+    pub note: Option<String>,
     pub items: Vec<MenuItem>,
+    /// Bumped by every change to the menu or its items (structure or value).
+    pub rev: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MenuItem {
     pub id: u32,
+    /// A label item's text, a separator's title.
     pub label: String,
     /// A line under the label.
     pub note: Option<String>,
+    /// False: shown dimmed, not usable.
+    pub enabled: bool,
+    /// False: not shown at all.
+    pub visible: bool,
     pub kind: MenuKind,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum MenuKind {
+    /// `action` is the pill's text (None: "Run").
+    Button { action: Option<String> },
     Toggle(bool),
-    Slider { value: f64, min: f64, max: f64, step: f64 },
-    Choice { options: Vec<String>, index: usize },
-    Button,
+    /// `value` is on the grid `min + k*step`, or `max`; a `unit` of "%"
+    /// shows the value times 100.
+    Slider { value: f64, min: f64, max: f64, step: f64, unit: Option<String> },
+    /// A side without a bound is ±1e15.
+    Number { value: f64, min: Option<f64>, max: Option<f64>, step: f64, unit: Option<String> },
+    /// `index` is 0-based.
+    Choice { options: Arc<[String]>, index: usize },
+    /// 0-based, ascending.
+    Multi { options: Arc<[String]>, selected: Vec<u16> },
+    /// Set when committed (Enter, Done, focus lost), not per keystroke.
+    Text { value: String, placeholder: Option<String>, max: u16 },
+    /// With `alpha` false, `value.a` is 255.
+    Color { value: Rgba, alpha: bool },
     Label,
+    Separator,
+    /// 0 to 1.
+    Progress(f32),
+    /// A row that opens the menu of this id.
+    Submenu(u32),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Rgba {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
+}
+
+impl Rgba {
+    /// `#rrggbb`, or `#rrggbbaa` with `alpha`.
+    pub fn hex(self, alpha: bool) -> String {
+        let Rgba { r, g, b, a } = self;
+        if alpha { format!("#{r:02x}{g:02x}{b:02x}{a:02x}") } else { format!("#{r:02x}{g:02x}{b:02x}") }
+    }
+
+    /// `#rrggbb` or `#rrggbbaa` (the `#` may be left out).
+    pub fn from_hex(text: &str) -> Option<Rgba> {
+        menus::validate::parse_hex(text)
+    }
 }
 
 /// What a player did with a menu's item.

@@ -210,15 +210,19 @@ impl Vm {
             }
             Err(e) => crate::log_line(&self.module, crate::LogLevel::Error, &error_text(&e)),
         }
-        for (item, input) in menus::take_inputs(&self.module) {
-            match menus::apply(&self.lua, &self.sched.handlers, item, input) {
-                Ok(Some((f, args))) => match self.lua.create_thread(f) {
-                    Ok(thread) => self.sched.tasks.borrow_mut().push(Task { thread, wake: now, args: Some(args), busy: Duration::ZERO }),
-                    Err(e) => crate::log_line(&self.module, crate::LogLevel::Error, &error_text(&e)),
-                },
-                Ok(None) => {}
-                Err(e) => crate::log_line(&self.module, crate::LogLevel::Error, &error_text(&e)),
+        // The players' inputs (the items' values change first) and menus
+        // opened or closed: their callbacks become tasks.
+        match menus::take_calls(&self.lua, &self.sched.handlers, self.sched.instance) {
+            Ok(calls) => {
+                let mut tasks = self.sched.tasks.borrow_mut();
+                for (f, args) in calls {
+                    match self.lua.create_thread(f) {
+                        Ok(thread) => tasks.push(Task { thread, wake: now, args: Some(args), busy: Duration::ZERO }),
+                        Err(e) => crate::log_line(&self.module, crate::LogLevel::Error, &error_text(&e)),
+                    }
+                }
             }
+            Err(e) => crate::log_line(&self.module, crate::LogLevel::Error, &error_text(&e)),
         }
         if self.main_first.get() {
             if let Some(failed) = self.run_main(now) {

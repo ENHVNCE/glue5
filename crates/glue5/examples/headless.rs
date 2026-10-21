@@ -364,11 +364,12 @@ fn command(line: &str, t: f64, game: &Game, presses: &mut Vec<(f64, u16)>, keys:
             let input = match (what, rest) {
                 ("press", []) => MenuInput::Press,
                 ("toggle", [v]) => MenuInput::Toggle(*v == "on"),
-                ("value", [v]) => MenuInput::Value(v.parse()?),
+                ("value", [v]) => MenuInput::Number(v.parse()?),
                 ("choose", [v]) => MenuInput::Choose(v.parse()?),
-                _ => bail!("mods input <mod> <item> press|toggle on/off|value <n>|choose <i>"),
+                ("text", [v]) => MenuInput::Text(v.to_string()),
+                _ => bail!("mods input <mod> <item> press|toggle on/off|value <n>|choose <i>|text <t>"),
             };
-            glue5_mods::menu_input(module, item.parse()?, input);
+            glue5_mods::menu_input(module, item.parse()?, input).map_err(anyhow::Error::msg)?;
         }
         _ => bail!(
             "expected `press <button>`, `key <key>`, `hold <key> <s>`, `text <text>`, `size <w>x<h>` or \

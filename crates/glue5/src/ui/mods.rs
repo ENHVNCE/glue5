@@ -180,7 +180,7 @@ fn menus_tab(ui: &mut egui::Ui) {
         muted(ui, "No menus. A mod makes one with ui.menu(\"Title\"); F7 opens them during the game.");
         return;
     }
-    for menu in &menus {
+    for menu in menus.iter() {
         ui.add_space(4.0 * scale);
         ui.horizontal(|ui| {
             ui.label(theme::heading(&menu.title.to_uppercase(), 17.0 * scale).color(Color32::WHITE));
@@ -202,16 +202,16 @@ fn menu_item(ui: &mut egui::Ui, module: &str, item: &glue5_mods::MenuItem) {
             let mut v = *on;
             setting(ui, &item.label, Control::Toggle, note, |ui| {
                 if toggle(ui, &mut v).changed() {
-                    glue5_mods::menu_input(module, item.id, MenuInput::Toggle(v));
+                    let _ = glue5_mods::menu_input(module, item.id, MenuInput::Toggle(v));
                 }
             });
         }
-        MenuKind::Slider { value, min, max, step } => {
+        MenuKind::Slider { value, min, max, step, .. } => {
             let mut v = *value as f32;
             let decimals = if step.fract() == 0.0 { 0 } else { 2 };
             setting(ui, &item.label, Control::Slider, note, |ui| {
                 if slider(ui, &mut v, *min as f32..=*max as f32, *step, "", decimals).changed() {
-                    glue5_mods::menu_input(module, item.id, MenuInput::Value(f64::from(v)));
+                    let _ = glue5_mods::menu_input(module, item.id, MenuInput::Number(f64::from(v)));
                 }
             });
         }
@@ -220,18 +220,20 @@ fn menu_item(ui: &mut egui::Ui, module: &str, item: &glue5_mods::MenuItem) {
             let labelled: Vec<(usize, &str)> = options.iter().enumerate().map(|(n, o)| (n, o.as_str())).collect();
             setting(ui, &item.label, Control::Choice, note, |ui| {
                 if choice(ui, &mut i, &labelled).changed() {
-                    glue5_mods::menu_input(module, item.id, MenuInput::Choose(i));
+                    let _ = glue5_mods::menu_input(module, item.id, MenuInput::Choose(i));
                 }
             });
         }
-        MenuKind::Button => {
+        MenuKind::Button { action } => {
             setting(ui, &item.label, Control::Action, note, |ui| {
-                if action_button(ui, "Run").clicked() {
-                    glue5_mods::menu_input(module, item.id, MenuInput::Press);
+                if action_button(ui, action.as_deref().unwrap_or("Run")).clicked() {
+                    let _ = glue5_mods::menu_input(module, item.id, MenuInput::Press);
                 }
             });
         }
         MenuKind::Label => muted(ui, &item.label),
+        // The others come with the menus' own page.
+        _ => {}
     }
 }
 
