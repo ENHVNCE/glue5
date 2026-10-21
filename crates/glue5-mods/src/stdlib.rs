@@ -21,6 +21,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("geo", include_str!("stdlib/geo.luau")),
     ("task", include_str!("stdlib/task.luau")),
     ("streaming", include_str!("stdlib/streaming.luau")),
+    ("world", include_str!("stdlib/world.luau")),
 ];
 
 /// The library's types, for the checker: after every other definition (it

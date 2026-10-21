@@ -49,3 +49,36 @@ declare spawn: {
 	-- `dynamic`: physics moves it; `ground`: placed on the ground.
 	prop: (model: string | Hash, pos: vector?, options: { dynamic: boolean?, ground: boolean? }?) -> Object?,
 }
+
+-- What a ray hit.
+export type RaycastHit = { pos: vector, normal: vector, entity: Entity?, material: Hash }
+export type RaycastOptions = {
+	-- What the ray stops at (shape test flags: 1 the world, 2 vehicles, 4 peds, 16 objects...); all by default.
+	flags: number?,
+	-- An entity the ray goes through (a ped, a vehicle...).
+	ignore: any,
+}
+
+declare world: typeof(world) & {
+	-- The entities of a kind within `radius` of a place or an entity (left out), nearest first.
+	nearby: ((kind: "vehicles", around: vector | Entity, radius: number) -> { Vehicle })
+		& ((kind: "peds", around: vector | Entity, radius: number) -> { Ped })
+		& ((kind: "objects" | "pickups", around: vector | Entity, radius: number) -> { Object }),
+	-- The nearest one, within `radius` if given.
+	closest: ((kind: "vehicles", around: vector | Entity, radius: number?) -> Vehicle?)
+		& ((kind: "peds", around: vector | Entity, radius: number?) -> Ped?)
+		& ((kind: "objects" | "pickups", around: vector | Entity, radius: number?) -> Object?),
+	-- What a ray from `from` to `to` hits first, nil if nothing: waits for the game (a frame or two).
+	raycast: (from: vector, to: vector, options: RaycastOptions?) -> RaycastHit?,
+	-- What the camera looks at, `distance` (1000 m) at most, through the player's ped: waits as raycast.
+	crosshair: (options: { distance: number?, flags: number?, ignore: any }?) -> RaycastHit?,
+	-- The height of the ground below `pos` (where the game has it loaded), nil if none.
+	groundZ: (pos: vector) -> number?,
+	-- The map's waypoint (its height may be 0), nil if none; setWaypoint(nil) removes it.
+	waypoint: () -> vector?,
+	setWaypoint: (pos: vector?) -> (),
+	-- The zone's name, as the game shows it, and its code ("AIRP").
+	zoneName: (pos: vector) -> (string, string),
+	-- The street's name, and the crossing's if at one.
+	streetName: (pos: vector) -> (string, string?),
+}

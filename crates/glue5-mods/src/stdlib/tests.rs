@@ -104,3 +104,32 @@ fn rotations() {
     );
     close("return geo.distance(vector.create(0, 0, 0), vector.create(3, 4, 12), true) == 5");
 }
+
+/// Entities near a place (the pools' own filter); near an entity, without
+/// it.
+#[test]
+fn nearby() {
+    let lua = stubbed(
+        "local at = { [1] = vector.create(10, 0, 0), [2] = vector.create(2, 0, 0), [3] = vector.create(50, 0, 0), [4] = vector.create(0, 0, 0) }
+         -- As world.rs filters: within radius of near, the closest first, max of them.
+         world.peds = function(f)
+             local found = {}
+             for e, p in at do
+                 if vector.magnitude(p - f.near) <= f.radius then table.insert(found, e) end
+             end
+             table.sort(found, function(a, b) return vector.magnitude(at[a] - f.near) < vector.magnitude(at[b] - f.near) end)
+             while f.max and #found > f.max do table.remove(found) end
+             return found
+         end
+         entity = { getEntityCoords = function(e) return at[e] end }",
+    );
+    let near: Vec<i64> = eval(&lua, "return world.nearby('peds', vector.create(0, 0, 0), 20)");
+    assert_eq!(near, [4, 2, 1]);
+    let around: Vec<i64> = eval(&lua, "return world.nearby('peds', 4, 20)");
+    assert_eq!(around, [2, 1]);
+    let closest: i64 = eval(&lua, "return world.closest('peds', 4)");
+    assert_eq!(closest, 2);
+    let none: Option<i64> = eval(&lua, "return world.closest('peds', vector.create(100, 100, 0), 5)");
+    assert!(none.is_none());
+    fails(&lua, "world.nearby('cars', 4, 1)", "no kind \"cars\"");
+}
