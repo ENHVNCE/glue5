@@ -109,6 +109,17 @@ files with `--!strict` to have every type checked.
 - Natives that create entities are refused when the game's pool is nearly
   full; an entity of the wrong kind (a Ped where a Vehicle is wanted) is
   an error before the native runs.
+- `memory.offsets`: this game build's field offsets (not PC GTA V's) for
+  `memory.read*`/`write*` from `memory.entity(handle)`:
+  `memory.readFloat(memory.entity(car) + memory.offsets.vehicle.rpm)`.
+  Groups: entity, vehicle, wheel, handling, ped, pedIntelligence,
+  playerInfo, weaponManager, damageRecords; the hovers say each field's
+  type.
+- `handling.get(target, "fInitialDriveForce")`, `handling.set(target,
+  field, value)`, `handling.fields(target?)`: every handling.meta field by
+  name; a target is a vehicle or a handling name ("ADDER"). A model's
+  vehicles share one handling; a vehicle's gearbox is set up from it when
+  the vehicle is made.
 
 ## Standard library
 - Constants by the game's names without their prefix: `Control.JUMP`
