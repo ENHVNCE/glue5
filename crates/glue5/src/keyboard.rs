@@ -12,7 +12,7 @@ use sdl3::video::Window;
 /// units (an `f32`'s bits); 0 without one, or with one that floats.
 static OVERLAP: AtomicU32 = AtomicU32::new(0);
 
-#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "ios", target_os = "android")), allow(dead_code))]
 fn set(units: f32) {
     OVERLAP.store(units.max(0.0).to_bits(), Ordering::Relaxed);
 }
@@ -102,3 +102,15 @@ mod ios {
     }
 }
 
+/// Android 11 and later: SDL's surface (platform/android, Glue5Surface)
+/// reports the keyboard's bottom inset as the system lays it out, in pixels,
+/// SDL's window units there; Android 10 reports nothing (the window pans).
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_local_glue5_Glue5Surface_onKeyboardInset(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    bottom: i32,
+) {
+    set(bottom as f32);
+}

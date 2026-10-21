@@ -1,10 +1,14 @@
 package local.glue5;
 
+import android.content.Context;
+import android.os.Build;
 import android.os.Bundle;
 import android.system.ErrnoException;
 import android.system.Os;
+import android.view.WindowManager;
 
 import org.libsdl.app.SDLActivity;
+import org.libsdl.app.SDLSurface;
 
 /** The app's activity: SDL's, with our library (libglue5.so) as the main one. */
 public class Glue5Activity extends SDLActivity {
@@ -27,6 +31,17 @@ public class Glue5Activity extends SDLActivity {
             }
         }
         super.onCreate(savedInstanceState);
+        // Android 11 and later tell where the on-screen keyboard is
+        // (Glue5Surface): the app's pages end above it, so the window stays
+        // put. Android 10 pans the window for the text being typed.
+        if (Build.VERSION.SDK_INT >= 30 /* Android 11 (R) */) {
+            getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
+        }
+    }
+
+    @Override
+    protected SDLSurface createSDLSurface(Context context) {
+        return new Glue5Surface(context);
     }
 
     @Override
