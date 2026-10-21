@@ -147,7 +147,12 @@ pub fn run() -> Result<()> {
             glue5_gpu::set_background(true);
         }
         // The system is short of memory: iOS's memory warning, Android's
-        // onTrimMemory (any level).
+        // onTrimMemory. SDL passes on every level of the latter, the app's
+        // window hidden included, so it comes at each trip to the
+        // background: that is wanted, as Android ends background apps by
+        // their memory, and from Android 14 the levels for an app still
+        // running are no longer sent. A trim is cheap (what it frees is made
+        // again as frames need it).
         Event::AppLowMemory { .. } => glue5_gpu::trim(),
         Event::AppDidEnterForeground { .. } => {
             life.background.store(false, Ordering::Relaxed);
