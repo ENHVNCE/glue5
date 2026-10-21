@@ -401,7 +401,13 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
     json::install(&lua)?;
     // `world.vehicles()`..., the catalog's lists.
     let world = lua.create_table()?;
-    for (key, pool) in [("vehicles", Pool::Vehicles), ("peds", Pool::Peds), ("objects", Pool::Objects)] {
+    for (key, pool) in [
+        ("vehicles", Pool::Vehicles),
+        ("peds", Pool::Peds),
+        ("objects", Pool::Objects),
+        ("pickups", Pool::Pickups),
+        ("projectiles", Pool::Projectiles),
+    ] {
         world.set(
             key,
             lua.create_function(move |_, max: Option<usize>| {

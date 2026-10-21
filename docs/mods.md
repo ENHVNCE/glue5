@@ -110,7 +110,7 @@ end)
 | `ui.menu(title)` | A menu: `toggle`, `slider`, `choice`, `button`, `label`. `ui.notify(text)` shows a notification. |
 | `task.spawn`, `task.delay` | Coroutines on the game's clock (they stop while the game is paused). |
 | `input` | The keyboard, the mouse and the player's pad as the game gets them: `input.isDown("F5")`, `input.pressed("PadSouth")` (since the mod's last turn), `input.onKey(function(key, down, mods) ... end)`, `input.mousePosition()`. Keys are named as on a US keyboard by position: `"A"`, `"F5"`, `"LeftShift"`, `"MouseLeft"`. |
-| `world` | The vehicles, peds and objects around, and the installed game's model names. |
+| `world` | The vehicles, peds, objects and pickups around, the projectiles in flight, and the installed game's model names. |
 | `json`, `storage` | JSON text, and values kept between sessions (1 MB a mod, for this player). |
 
 Files and the network are not available to mods.

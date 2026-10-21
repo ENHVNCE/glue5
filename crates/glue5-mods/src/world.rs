@@ -1,7 +1,7 @@
 //! The game world for mods, read from the engine's own tables:
 //!
-//! - the entities in the ped, vehicle and object pools, as script handles
-//!   (`world.vehicles()`...);
+//! - the entities in the ped, vehicle, object and pickup pools and the
+//!   projectiles in flight, as script handles (`world.vehicles()`...);
 //! - how much room the pools have left (natives that create entities are
 //!   refused before the engine would fail);
 //! - the catalog of the installed game's names: vehicle and ped models,
@@ -15,9 +15,15 @@ use std::sync::Mutex;
 use glue5_game::{Env, orig};
 use glue5_runtime::memory::Mem;
 
-/// fwBasePool* of the peds and of the objects.
+/// fwBasePool* of the peds, of the objects and of the pickups (objects
+/// too: `CPickupManager::CreatePickup`, `RemoveAllPickups`).
 const PED_POOL: u64 = 20159656;
 const OBJECT_POOL: u64 = 19670000;
+const PICKUP_POOL: u64 = 20306344;
+/// The projectiles in flight (`CProjectileManager`): an atFixedArray of 50
+/// pointers, its i32 count right after them.
+const PROJECTILES: u64 = 28497840;
+const MAX_PROJECTILES: u64 = 50;
 /// The vehicles' pool allocator: u64 at u64 here; base +0, size +8, free
 /// +16, element size +24, used bits +56 (a pointer per slot).
 const VEHICLE_POOL: u64 = 26005240;
@@ -36,6 +42,8 @@ pub enum Pool {
     Peds,
     Vehicles,
     Objects,
+    Pickups,
+    Projectiles,
 }
 
 /// The entities alive in an fwBasePool (slot flags: bit 7 = free).
@@ -81,11 +89,19 @@ fn vehicles(mem: Mem) -> Vec<u64> {
         .collect()
 }
 
+/// The projectiles in flight.
+fn projectiles(mem: Mem) -> Vec<u64> {
+    let count = (mem.i32(PROJECTILES + 8 * MAX_PROJECTILES).max(0) as u64).min(MAX_PROJECTILES);
+    (0..count).map(|i| mem.u64(PROJECTILES + 8 * i)).filter(|&p| p != 0).collect()
+}
+
 /// How many more entities of a kind the game takes.
 pub fn free(mem: Mem, pool: Pool) -> u64 {
     match pool {
         Pool::Peds => base_free(mem, PED_POOL),
         Pool::Objects => base_free(mem, OBJECT_POOL),
+        Pool::Pickups => base_free(mem, PICKUP_POOL),
+        Pool::Projectiles => MAX_PROJECTILES - projectiles(mem).len() as u64,
         Pool::Vehicles => match vehicle_allocator(mem) {
             0 => 0,
             p => mem.u64(p + 16),
@@ -104,6 +120,8 @@ pub unsafe fn handles(env: *mut Env, pool: Pool, max: usize) -> Vec<i32> {
     let entities = match pool {
         Pool::Peds => base_pool(mem, PED_POOL),
         Pool::Objects => base_pool(mem, OBJECT_POOL),
+        Pool::Pickups => base_pool(mem, PICKUP_POOL),
+        Pool::Projectiles => projectiles(mem),
         Pool::Vehicles => vehicles(mem),
     };
     let mut out = Vec::new();

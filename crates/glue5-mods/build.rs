@@ -794,6 +794,9 @@ declare world: {
 \tvehicles: (max: number?) -> { Vehicle },
 \tpeds: (max: number?) -> { Ped },
 \tobjects: (max: number?) -> { Object },
+\t-- The pickups lying around (objects; a pickup placement's handle is another thing), the projectiles in flight.
+\tpickups: (max: number?) -> { Object },
+\tprojectiles: (max: number?) -> { Object },
 \t-- The installed game's names (empty until the game has loaded once).
 \tvehicleModels: () -> { VehicleModel },
 \tpedModels: () -> { PedModel },
