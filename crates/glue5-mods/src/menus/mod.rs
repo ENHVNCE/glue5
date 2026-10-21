@@ -20,6 +20,10 @@ use std::time::Instant;
 
 pub use lua::{Handlers, install, take_calls};
 
+/// The Luau definitions of `ui` and the menus' types, for the type
+/// checker, the Studio and MCP.
+pub const DEFINITIONS: &str = include_str!("menus.d.luau");
+
 use crate::{Menu, MenuInput, MenuItem, MenuKind, SHARED};
 
 /// What waits for a mod's turn.

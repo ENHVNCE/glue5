@@ -196,7 +196,7 @@ fn color(what: &str, v: &Value, alpha: bool) -> Result<Rgba> {
             };
             Rgba { r: part("r")?, g: part("g")?, b: part("b")?, a: part("a")? }
         }
-        other => return Err(error(format!("{what}: a Color or \"#rrggbb\", not {}", type_of(other)))),
+        other => return Err(error(format!("{what}: {{r, g, b, a}} or \"#rrggbb\", not {}", type_of(other)))),
     };
     if !alpha {
         c.a = 255;

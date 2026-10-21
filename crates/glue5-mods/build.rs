@@ -906,22 +906,6 @@ declare mod: {
 \tlist: (path: string?) -> { string },
 }
 
-export type Toggle = { id: number, value: boolean, set: (self: Toggle, value: boolean | string) -> () }
-export type Slider = { id: number, value: number, set: (self: Slider, value: number | string) -> () }
-export type Choice = { id: number, value: number, set: (self: Choice, value: number | string) -> () }
-export type Button = { id: number, set: (self: Button, label: string) -> () }
-export type Menu = {
-	id: number,
-	-- A switch; `value` follows the player, `onChange` runs as a task.
-	toggle: (self: Menu, label: string, on: boolean?, note: (string | (on: boolean) -> ())?, onChange: ((on: boolean) -> ())?) -> Toggle,
-	slider: (self: Menu, label: string, value: number, min: number, max: number, step: number?, onChange: ((value: number) -> ())?) -> Slider,
-	-- `value` is the option's index, from 1.
-	choice: (self: Menu, label: string, options: { string }, index: number?, onChange: ((index: number, option: string) -> ())?) -> Choice,
-	button: (self: Menu, label: string, note: (string | () -> ())?, onPress: (() -> ())?) -> Button,
-	label: (self: Menu, text: string) -> Button,
-	remove: (self: Menu) -> (),
-}
-
 -- Which entities `world.vehicles()`... return: at most `max` (1024 by default), only those within `radius` of
 -- `near` (the closest first), only those of `model` (a name or a hash).
 export type WorldFilter = { max: number?, near: vector?, radius: number?, model: (string | number)? }
@@ -1022,14 +1006,6 @@ declare globals: {
 declare game: {
 	-- The game build these natives and globals are for (getGameVersion).
 	version: () -> string,
-}
-
-declare ui: {
-	-- A menu the app shows (the Mods page's MENUS: F7, or the button beside the settings
-	-- button on touch screens); a mod with one stays running. 16 menus of 64 items at most.
-	menu: (title: string) -> Menu,
-	-- A notification over the game.
-	notify: (text: string) -> (),
 }
 
 ";

@@ -528,3 +528,67 @@ fn show_from_a_mod() {
     m.run("m:remove()");
     assert!(m.fails("m:show()").contains("menu:show: the menu was removed"));
 }
+
+/// The definitions (menus.d.luau) type every form of the API: the legacy
+/// Garage, a mod using each builder and property, the docs' examples.
+#[test]
+fn definitions_check() {
+    let legacy = r#"--!strict
+local cars = { "adder", "zentorno" }
+local garage = ui.menu("Garage")
+local car = garage:choice("Car", cars, 2)
+garage:button("Deliver", "Right where you stand", function() print(cars[car.value]) end)
+garage:choice("Weather", { "CLEAR" }, 1, function(_, weather) print(weather) end)
+garage:slider("Hour", 19, 0, 23, 1, function(hour) print(hour + 1) end)
+garage:toggle("Lights", true, function(on) print(on) end)
+garage:label("Have fun"):set("More fun")
+"#;
+    let every = r##"--!strict
+local m = ui.menu("All", { note = "everything" })
+local b = m:button("B", { action = "Go", note = "n" }, function() end)
+b.onPress = function() end
+local t = m:toggle("T", false, "note", function(v: boolean) end)
+t.value = not t.value
+local s = m:slider("S", 0.5, 0, 1, { step = 0.1, unit = "%" })
+s.onChange = function(v: number) print(v * 2) end
+local n = m:number("N", 10, { min = 0, step = 5, unit = "$" })
+n.max = 100
+local c = m:choice("C", { "a", "b" }, "b", function(i: number, o: string) end)
+c:set("a")
+local option: string = c.option
+local mu = m:multi("M", { "a", "b" }, { 1 }, function(indices: { number }, options: { string }) end)
+mu.options = { "x" }
+local tx = m:text("Tx", "", { placeholder = "Plate", max = 8 })
+tx.value = "ABC"
+local co = m:color("Co", "#ff8800", { alpha = true })
+co.value = { r = 1, g = 2, b = 3 }
+local r: number = co.value.r
+m:label("text")
+m:separator("Section")
+local p = m:progress("P", 0.5)
+p:set(0.75)
+local sub = m:submenu("Sub", "into it")
+sub.enabled = false
+sub:onOpen(function() sub:clear() end)
+sub:onClose(nil)
+m:show()
+t:remove()
+print(option, r)
+"##;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples");
+    let mut sources = vec![("legacy/main.luau".to_string(), legacy.to_string()), ("every/main.luau".into(), every.into())];
+    for example in ["garage", "menu-gallery"] {
+        if let Ok(text) = std::fs::read_to_string(root.join(example).join("main.luau")) {
+            sources.push((format!("{example}/main.luau"), text));
+        }
+    }
+    crate::checker::Checker::with(|c| {
+        for (name, source) in &sources {
+            c.set(name, Some(source));
+            let diagnostics = c.check(name);
+            let errors: Vec<_> = diagnostics.as_array().unwrap().iter().filter(|d| d["severity"] == 1 || d["severity"] == "error").collect();
+            assert!(errors.is_empty(), "{name}: {errors:?}");
+        }
+    })
+    .unwrap();
+}
