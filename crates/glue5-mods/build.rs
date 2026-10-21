@@ -794,14 +794,18 @@ export type Menu = {
 	remove: (self: Menu) -> (),
 }
 
+-- Which entities `world.vehicles()`... return: at most `max` (1024 by default), only those within `radius` of
+-- `near` (the closest first), only those of `model` (a name or a hash).
+export type WorldFilter = { max: number?, near: vector?, radius: number?, model: (string | number)? }
+
 declare world: {
-\t-- The entities around, as handles (at most `max`, 1024 by default).
-\tvehicles: (max: number?) -> { Vehicle },
-\tpeds: (max: number?) -> { Ped },
-\tobjects: (max: number?) -> { Object },
+\t-- The entities around, as handles; a number alone is `max`.
+\tvehicles: (filter: (number | WorldFilter)?) -> { Vehicle },
+\tpeds: (filter: (number | WorldFilter)?) -> { Ped },
+\tobjects: (filter: (number | WorldFilter)?) -> { Object },
 \t-- The pickups lying around (objects; a pickup placement's handle is another thing), the projectiles in flight.
-\tpickups: (max: number?) -> { Object },
-\tprojectiles: (max: number?) -> { Object },
+\tpickups: (filter: (number | WorldFilter)?) -> { Object },
+\tprojectiles: (filter: (number | WorldFilter)?) -> { Object },
 \t-- The installed game's names (empty until the game has loaded once).
 \tvehicleModels: () -> { VehicleModel },
 \tpedModels: () -> { PedModel },

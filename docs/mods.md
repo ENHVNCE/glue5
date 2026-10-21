@@ -110,7 +110,7 @@ end)
 | `ui.menu(title)` | A menu: `toggle`, `slider`, `choice`, `button`, `label`. `ui.notify(text)` shows a notification. |
 | `task.spawn`, `task.delay` | Coroutines on the game's clock (they stop while the game is paused). |
 | `input` | The keyboard, the mouse and the player's pad as the game gets them: `input.isDown("F5")`, `input.pressed("PadSouth")` (since the mod's last turn), `input.onKey(function(key, down, mods) ... end)`, `input.mousePosition()`. Keys are named as on a US keyboard by position: `"A"`, `"F5"`, `"LeftShift"`, `"MouseLeft"`. |
-| `world` | The vehicles, peds, objects and pickups around, the projectiles in flight, and the installed game's model names. |
+| `world` | The vehicles, peds, objects and pickups around and the projectiles in flight, as handles: `world.vehicles()`, or only some, the closest first: `world.peds({ near = pos, radius = 50, model = "a_c_cat_01", max = 5 })`. And the installed game's model names. |
 | `draw` | Images from the mod's folder over the game: `local logo = draw.loadImage("images/logo.png")` (PNG, waits while it is decoded), then each frame `draw.image(logo, 0.9, 0.1, 0.1, nil, { rotation = 15, color = { 255, 255, 255, 200 }, z = 1 })`; `draw.rect` and `draw.text` too, above the images or below. Centred positions and sizes in fractions of the screen, as DRAW_SPRITE's; drawn at the window's resolution over everything the game draws. A mod holds 64 images, 32 MB of them, at most (2048×2048 each), freed when it stops or by `image:release()`. |
 | `json`, `storage` | JSON text, and values kept between sessions (1 MB a mod, for this player). |
 

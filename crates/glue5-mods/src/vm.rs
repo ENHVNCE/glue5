@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 
 use mlua::{Function, Lua, LuaOptions, MultiValue, StdLib, Table, Thread, Value, VmState};
 
-use crate::world::Pool;
 use crate::storage::Storage;
 use crate::{EvalResult, input, json, menus, natives};
 
@@ -411,27 +410,7 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
     input::install(&lua, &sched.keys)?;
     crate::draw::install(&lua)?;
     json::install(&lua)?;
-    // `world.vehicles()`..., the catalog's lists.
-    let world = lua.create_table()?;
-    for (key, pool) in [
-        ("vehicles", Pool::Vehicles),
-        ("peds", Pool::Peds),
-        ("objects", Pool::Objects),
-        ("pickups", Pool::Pickups),
-        ("projectiles", Pool::Projectiles),
-    ] {
-        world.set(
-            key,
-            lua.create_function(move |_, max: Option<usize>| {
-                let env = natives::env().ok_or_else(|| mlua::Error::runtime(format!("world.{key}: only in a mod's script")))?;
-                Ok(unsafe { crate::world::handles(env, pool, max.unwrap_or(1024).min(4096)) })
-            })?,
-        )?;
-    }
-    world.set("vehicleModels", lua.create_function(|_, ()| Ok(crate::world::catalog().map(|c| c.vehicles).unwrap_or_default()))?)?;
-    world.set("pedModels", lua.create_function(|_, ()| Ok(crate::world::catalog().map(|c| c.peds).unwrap_or_default()))?)?;
-    world.set("weapons", lua.create_function(|_, ()| Ok(crate::world::catalog().map(|c| c.weapons).unwrap_or_default()))?)?;
-    g.set("world", world)?;
+    crate::world::install(&lua)?;
     g.set("joaat", lua.create_function(|_, s: mlua::LuaString| Ok(natives::joaat(&s.to_str()?)))?)?;
     let m = lua.create_table()?;
     m.set("name", name)?;
