@@ -105,7 +105,11 @@ end)
 
 | | |
 |---|---|
-| **Natives** | The game's script functions by namespace, named the Luau way: `vehicle.createVehicle(...)`, `player.playerPedId()`. Outputs come back as extra return values; a handle of 0 as `nil`. |
+| **Natives** | The game's script functions by namespace, named the Luau way: `vehicle.createVehicle(...)`, `player.playerPedId()`; and by their game names, the same functions: `VEHICLE.CREATE_VEHICLE(...)`. Outputs come back as extra return values; a handle of 0 as `nil`, and `nil` (or 0) where a native takes none. A vector also goes as three numbers. |
+| `native.invoke(hash, ...)` | A native by its ScriptHookV hash or its game name, as ScriptHookV calls it: `native.invoke("0xAF35D0D2583051B0", model, x, y, z, heading, false, false, false)`. See [Porting ScriptHookV mods](#porting-scripthookv-mods). |
+| `globals` | The game scripts' globals by ScriptHookV's index: `globals.int(i)`, `float`, `bool`, `string`, `setInt(i, v)`..., `valid(i)`. |
+| `memory` | The game's memory: `memory.entity(handle)` (an entity's address), `readFloat(address)`, `writeInt(address, v)`... (U8, U16, U32, Int, U64, Ptr, Float, Vector3, String), `read(address, bytes)` into a Luau `buffer` and `write(address, buffer)`, scratch memory for natives: `alloc(bytes)`, `free(address)`. |
+| `game.version()` | The game build the natives, globals and offsets are for (`"8b0b5899ed"`). |
 | `wait(ms)` | Back to the game for `ms` milliseconds (none: until the next frame). |
 | `ui.menu(title)` | A menu: `toggle`, `slider`, `choice`, `button`, `label`. `ui.notify(text)` shows a notification. |
 | `task.spawn`, `task.delay` | Coroutines on the game's clock (they stop while the game is paused). |
@@ -125,10 +129,50 @@ it each frame, as the game's scripts do
 controls are the player's pad, so a mod for every device puts its
 actions in a menu.
 
-**A mod cannot take the game down.** An error stops that mod with its
-message and traceback; arguments are checked before a native runs; a mod
-gets at most 2 ms a frame, and one that runs 2 seconds without waiting is
-stopped.
+**A mod cannot take the game down** through the natives' namespaces. An
+error stops that mod with its message and traceback; arguments are checked
+before a native runs; a mod gets at most 2 ms a frame, and one that runs 2
+seconds without waiting is stopped. `native.invoke`, `globals` and
+`memory` are the exception: they do what ScriptHookV does, and can (see
+below).
+
+## Porting ScriptHookV mods
+
+ScriptHookV's and ScriptHookVDotNet's calls have their counterparts:
+
+| ScriptHookV | Here |
+|---|---|
+| `VEHICLE::CREATE_VEHICLE(...)`, `Function.Call(Hash.CREATE_VEHICLE, ...)` | `VEHICLE.CREATE_VEHICLE(...)` (typed, vectors as vectors and outputs as results), or `native.invoke("CREATE_VEHICLE", ...)` |
+| `nativeInit(0xAF35D0D2583051B0); nativePush(...); nativeCall()` | `native.invoke("0xAF35D0D2583051B0", ...)` |
+| `getGlobalPtr(i)` | `globals.int(i)`, `globals.setFloat(i, v)`... |
+| `getScriptHandleBaseAddress(handle)` | `memory.entity(handle)` |
+| `getGameVersion()` | `game.version()` |
+
+- **Hashes** are the natives database's (nativedb), the ones ScriptHookV
+  mods use; the game names too. Write a hash as a string,
+  `"0xAF35D0D2583051B0"`: as a number it works, but past 2^53 Luau rounds
+  it (the editor warns).
+- **`native.invoke`** passes the arguments as ScriptHookV does: a
+  `Vector3` as three numbers, a pointer as an address (`memory.alloc`) or a
+  Luau `buffer` (copied in before the call and back after it, 16 KB at
+  most); the native's result comes back. It also reaches the natives the
+  namespaces leave out (structures and buffers: `COPY_SCRIPT_STRUCT`,
+  `GET_EVENT_DATA`, the save natives), but not `WAIT` (use `wait()`).
+- **Globals' indices depend on the game's scripts**: an index from a
+  mod for another game version reads something else. Check each one
+  against this game. Reads and writes are kept inside the blocks of
+  globals the game has loaded.
+- **Addresses** are the game's own (offsets in its memory); a pointer read
+  from the game's objects (`memory.readPtr`) is an address too. Field
+  offsets are not PC GTA V's (another build, another layout):
+  ScriptHookVDotNet's offsets do not carry over, find them for this build.
+- **What can crash the game.** Every address is checked against the
+  game's memory, so nothing outside it is touched; inside it nothing is
+  protected. A wrong write with `memory` or `globals`, a native given a
+  buffer too small for what it writes, or a native that keeps a pointer
+  (`START_SAVE_*`, `NETWORK_REGISTER_*_BROADCAST_VARIABLES`) given memory
+  that is freed (by `memory.free`, or when the mod stops) can corrupt the
+  game or make it stop. Installing such a mod is trusting its author.
 
 ## Coding agents
 
