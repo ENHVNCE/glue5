@@ -49,21 +49,17 @@ gallery:label("A label: muted text that wraps over as many lines as it needs, fo
 gallery:progress("Progress", 0.4, "A bar with a percentage")
 gallery:separator() -- a gap
 
--- Submenus nest four deep: this menu is the first level.
+-- Submenus open over the menu they are in, as deep as a mod likes: four levels here.
 gallery:separator("Submenus")
 local second = gallery:submenu("Deeper", "A submenu: back with ‹, B or Esc")
 second:label("Level 2")
 local third = second:submenu("Deeper still")
 third:label("Level 3")
 local fourth = third:submenu("Bottom")
-fourth:label("Level 4: as deep as menus go.")
-local ok, err = pcall(function()
-	fourth:submenu("Too deep")
-end)
-print("a fifth level:", ok, err)
+fourth:label("Level 4. Back with ‹, B or Esc, one level at a time.")
 
 -- A long list: every vehicle model of the installed game (the list is empty until the
--- game has loaded once). A choice holds 1024 options at most.
+-- game has loaded once).
 local cars = gallery:submenu("Vehicles", "Every model of the game")
 local model = cars:choice("Model", { "adder" }, 1, "‹ › or search the full list")
 cars:button("Deliver", { action = "Deliver" }, function()
@@ -86,14 +82,14 @@ task.spawn(function()
 		models = world.vehicleModels()
 	end
 	local options: { string } = {}
-	for i = 1, math.min(#models, 1024) do
-		table.insert(options, models[i])
+	for _, name in models do
+		table.insert(options, name)
 	end
 	model.options = options
 	print("models:", #model.options)
 end)
 
--- A list made when the page opens: the vehicles around the player.
+-- A list made when the page opens: the vehicles around the player, the closest first.
 local around = gallery:submenu("Around you", "Filled each time it opens")
 local names: { [number]: string } = {}
 around:onOpen(function()
@@ -105,7 +101,7 @@ around:onOpen(function()
 	around:clear()
 	local here = entity.getEntityCoords(player.playerPedId(), true)
 	local found = 0
-	for _, v in world.vehicles(20) do
+	for _, v in world.vehicles({ near = here, radius = 100, max = 20 }) do
 		local name = names[entity.getEntityModel(v)] or "vehicle"
 		local metres = vector.magnitude(entity.getEntityCoords(v, true) - here)
 		around:button(name, `{math.floor(metres)} m away`, function()
