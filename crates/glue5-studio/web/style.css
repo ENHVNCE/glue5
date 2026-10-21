@@ -419,7 +419,9 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
   .ptab, .ptabs .grow { display: none; }
   .app.screen-problems .ptabs, .app.screen-menus .ptabs { display: none; }
   .app.screen-problems .panel, .app.screen-menus .panel { grid-template-rows: minmax(0, 1fr); }
-  .menus { padding: 10px max(10px, env(safe-area-inset-right)) calc(max(12px, env(safe-area-inset-bottom)) + var(--kb, 0px)) max(10px, env(safe-area-inset-left)); }
+  /* No padding above: a long list's header sticks to the very top. */
+  .menus { padding: 0 max(10px, env(safe-area-inset-right)) calc(max(12px, env(safe-area-inset-bottom)) + var(--kb, 0px)) max(10px, env(safe-area-inset-left)); }
+  .menus > :first-child { margin-top: 10px; }
   .mcard { flex-basis: 100%; }
   .mitem, .mopt { min-height: 48px; }
   .mitem.wide { flex-wrap: wrap; }
