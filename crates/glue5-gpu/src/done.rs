@@ -349,12 +349,16 @@ fn finish(mem: Mem, pool: &StagingPool, work: Work, done: bool) {
             release(pool, staging);
             // Encoding takes tens of milliseconds: not on this thread.
             if let Some(pixels) = pixels {
-                std::thread::spawn(move || {
+                use glue5_runtime::qos::{Qos, spawn};
+                let encoded = spawn("gpu screenshot", Qos::Utility, move || {
                     match crate::present::write_png(&path, &pixels, width, height, bpr, format) {
                         Ok(()) => log::info!("gpu: screenshot {}", path.display()),
                         Err(e) => log::warn!("gpu: screenshot {}: {e:#}", path.display()),
                     }
                 });
+                if let Err(e) = encoded {
+                    log::warn!("gpu: no thread for a screenshot: {e}");
+                }
             }
         }
     }

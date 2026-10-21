@@ -245,9 +245,8 @@ impl Screen {
             let shader_dir = settings.shader_dir.clone();
             let progress = Arc::new(prepare::Progress::default());
             let shared = progress.clone();
-            let thread = std::thread::Builder::new()
-                .name("gpu prepare".into())
-                .spawn(move || prepare::prepare(&gpu, &settings, &shared))
+            let prepare = move || prepare::prepare(&gpu, &settings, &shared);
+            let thread = glue5_runtime::qos::spawn("gpu prepare", glue5_runtime::qos::Qos::Initiated, prepare)
                 .expect("spawning the prepare thread");
             self.preparing = Some(Preparing { shader_dir, progress, thread });
         }

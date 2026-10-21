@@ -1394,7 +1394,7 @@ impl App {
             }
             s.0 = true;
         }
-        let spawned = std::thread::Builder::new().name("find servers".into()).spawn(move || {
+        let spawned = glue5_runtime::qos::spawn("find servers", glue5_runtime::qos::Qos::Utility, move || {
             let mut found = glue5_stream::discovery::find(Duration::from_secs(3));
             // In the same order at every search (the page searches all the
             // while), shown at once with what they answered last time; each
