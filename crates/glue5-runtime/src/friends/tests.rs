@@ -445,6 +445,39 @@ fn one_address_does_not_use_up_the_handshakes_of_all() {
 }
 
 #[test]
+fn a_lobby_of_more_players_than_are_kept_changes_nothing_until_one_comes() {
+    let now = Instant::now();
+    let mut a = Player::new("Ann", 1);
+    let player = |i: u64| {
+        let card = crate::p2p::Card { gamer: 5000 + i, key: crypto::random(), name: format!("P{i}") };
+        (card, SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, i as u8), 47000))
+    };
+    let lobby: Vec<_> = (0..MAX_RECENT as u64 + 10).map(player).collect();
+    a.s.meet(&lobby, now, &mut Out::default());
+    assert_eq!(a.s.recent.len(), MAX_RECENT);
+    a.flush();
+    let generation = a.s.generation;
+    for t in 1..10 {
+        a.s.meet(&lobby, now + Duration::from_millis(250 * t), &mut Out::default());
+    }
+    assert_eq!(a.s.generation, generation);
+    assert!(a.s.saving(now, true).is_none());
+    // One not kept can be asked all the same.
+    let other = lobby.iter().find(|(c, _)| a.s.recent.iter().all(|r| r.key != c.key)).unwrap();
+    assert_eq!(a.s.met_gamer(other.0.gamer), Some(other.0.key));
+    assert_eq!(a.s.met_name(&other.0.key).as_deref(), Some(other.0.name.as_str()));
+    // One kept gone, a new one come: a player here takes the place.
+    let mut next = lobby[1..].to_vec();
+    next.push(player(200));
+    let gone = lobby[0].0.key;
+    assert!(a.s.recent.iter().any(|r| r.key == gone));
+    a.s.meet(&next, now, &mut Out::default());
+    assert_eq!(a.s.recent.len(), MAX_RECENT);
+    assert!(a.s.recent.iter().all(|r| next.iter().any(|(c, _)| c.key == r.key)));
+    assert_eq!(a.s.generation, generation + 1);
+}
+
+#[test]
 fn junk_handshakes_from_everywhere_use_up_nothing() {
     let mut now = Instant::now();
     let (mut a, mut b) = (Player::new("Ann", 1), Player::new("Bob", 2));

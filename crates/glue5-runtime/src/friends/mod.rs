@@ -486,9 +486,9 @@ pub(crate) struct Service {
     /// ids, when), kept while the game is between sessions.
     joins: VecDeque<(u64, Instant)>,
     /// Players met in lobbies, the latest first, and the ones in them now
-    /// (their keys, addresses and gamer ids).
+    /// (their keys, addresses, gamer ids and names).
     recent: Vec<Recent>,
-    met: Vec<(Key, SocketAddrV4, u64)>,
+    met: Vec<(Key, SocketAddrV4, u64, String)>,
     /// The newest handshake time from each player met who asked.
     stranger_times: HashMap<Key, u64>,
     /// Whether friends may join this player's session without an invite (a
@@ -1006,7 +1006,7 @@ impl Service {
         let me = *self.identity.as_ref().unwrap().public();
         let today = unix();
         let mut changed = false;
-        self.met = players.iter().map(|(c, a)| (c.key, *a, c.gamer)).collect();
+        self.met = players.iter().map(|(c, a)| (c.key, *a, c.gamer, clean_name(&c.name))).collect();
         for (card, addr) in players {
             if card.key == me || self.friends.contains_key(&card.key) {
                 continue;
@@ -1023,6 +1023,10 @@ impl Service {
                         changed = true;
                     }
                 }
+                // Kept in place of the one met longest ago not here now: not
+                // when all are (with more players here, they went in and out
+                // at every tick, the file written every few seconds).
+                None if self.recent.len() >= MAX_RECENT && !self.make_room() => {}
                 None => {
                     self.recent.insert(0, Recent { key: card.key, name, id: card.gamer, seen: today });
                     changed = true;
@@ -1040,12 +1044,26 @@ impl Service {
         }
     }
 
-    /// The player met in a lobby now (and kept as one met) with gamer id
-    /// `id`: none when another one met now says it has the same.
+    /// Drops the player met longest ago that is not in the lobbies now.
+    fn make_room(&mut self) -> bool {
+        let here = |key: &Key| self.met.iter().any(|(k, ..)| k == key);
+        let gone = self.recent.iter().enumerate().filter(|(_, r)| !here(&r.key)).min_by_key(|(_, r)| r.seen).map(|(i, _)| i);
+        gone.map(|i| self.recent.remove(i)).is_some()
+    }
+
+    /// The player met in a lobby now (not this one, not a friend) with gamer
+    /// id `id`: none when another one met now says it has the same.
     fn met_gamer(&self, id: u64) -> Option<Key> {
-        let mut keys = self.met.iter().filter(|(.., g)| *g == id && id != 0).map(|(k, ..)| *k);
+        let mut keys = self.met.iter().filter(|(_, _, g, _)| *g == id && id != 0).map(|(k, ..)| *k);
         let key = keys.next()?;
-        (keys.all(|k| k == key) && self.recent.iter().any(|r| r.key == key)).then_some(key)
+        let me = self.identity.as_ref().map(|i| *i.public());
+        (keys.all(|k| k == key) && Some(key) != me && !self.friends.contains_key(&key)).then_some(key)
+    }
+
+    /// The name of a player met, kept or in the lobbies now.
+    fn met_name(&self, key: &Key) -> Option<String> {
+        let kept = self.recent.iter().find(|r| r.key == *key).map(|r| &r.name);
+        kept.or_else(|| self.met.iter().find(|(k, ..)| k == key).map(|(.., name)| name)).cloned()
     }
 
     /// The friend (gamer id) to join, while it is waited for.
@@ -1366,7 +1384,7 @@ impl Service {
     /// come from that address) asking to be friends; anyone else is not
     /// answered.
     fn stranger_asks(&mut self, key: Key, mut h: Handshake, time: u64, from: SocketAddrV4, now: Instant, out: &mut Out) {
-        let met = self.met.iter().any(|(k, a, _)| *k == key && *a == from);
+        let met = self.met.iter().any(|(k, a, ..)| *k == key && *a == from);
         if !met || self.blocked.contains(&key) || self.stranger_times.get(&key).is_some_and(|t| time <= *t) {
             return;
         }
@@ -2054,7 +2072,7 @@ pub fn ask(code: &str) -> Result<(), AddError> {
 pub fn ask_player(key: &str) {
     let Some(key) = crypto::unhex::<32>(key) else { return };
     with(|s, _| {
-        let Some(name) = s.recent.iter().find(|r| r.key == key).map(|r| r.name.clone()) else { return };
+        let Some(name) = s.met_name(&key) else { return };
         if s.friends.contains_key(&key) || s.asked.iter().any(|a| a.player.as_ref().is_some_and(|(k, _)| *k == key)) {
             return;
         }
