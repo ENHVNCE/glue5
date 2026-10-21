@@ -141,11 +141,18 @@ pub(crate) unsafe fn create(env: *mut Env, pthread: u64, start: u64, arg: u64) -
     // They take little (a third of an efficiency core). Not the render
     // thread: with it above the workers, loading after a cutscene took 6-10 s.
     // (Apple's classes; on Android interactive threads form the frames'
-    // performance hint session instead.)
+    // performance hint session instead.) The game's audio update is the
+    // frame's: the main thread starts it (`audNorthAudioEngine::StartUpdate`)
+    // and waits for it at the end of every frame (`FinishUpdate`), one
+    // update a frame, so it is as interactive as the main thread.
     let qos = match &name {
         Some(n) if cfg!(target_vendor = "apple") && n.starts_with("[RAGE Audio]") => crate::qos::Qos::Interactive,
+        Some(n) if n == "North Audio Update" => crate::qos::Qos::Interactive,
         _ => crate::qos::Qos::Initiated,
     };
+    if let (Some(n), crate::qos::Qos::Interactive) = (&name, qos) {
+        log::info!("threads: {n} interactive");
+    }
     let spawned = thread::Builder::new()
         .name(name.unwrap_or_else(|| format!("pthread {pthread:#x}")))
         .stack_size(PTHREAD_STACK)
