@@ -31,7 +31,8 @@ struct Args {
     #[arg(long, num_args = 2, value_names = ["S", "BUTTON"])]
     press: Vec<String>,
     /// Press a key at S seconds: esc, enter, tab, backspace, space, grave,
-    /// shift, up, down, left, right, a letter or a digit.
+    /// shift, up, down, left, right, a letter or a digit, or another key
+    /// by the mods' name for it (f5, leftshift, keypad8).
     #[arg(long, num_args = 2, value_names = ["S", "KEY"])]
     key: Vec<String>,
     /// Also take commands from standard input, one per line: press
@@ -311,6 +312,8 @@ fn main() -> Result<()> {
                 let held = (*at..*at + *hold).contains(&t);
                 if held != *down {
                     input.key(*vk, held);
+                    // As the app reports them (no-op without mods).
+                    glue5_mods::input::key(*vk, held);
                     *down = held;
                 }
             }
@@ -444,6 +447,7 @@ fn parse_key(name: &str) -> Result<u8> {
         "right" => 0x27,
         "down" => 0x28,
         s if s.len() == 1 && s.as_bytes()[0].is_ascii_alphanumeric() => s.as_bytes()[0].to_ascii_uppercase(),
-        other => bail!("unknown key {other}"),
+        // The mods' names for the others (f5, leftshift, keypad8).
+        other => glue5_mods::input::vk(other).with_context(|| format!("unknown key {other}"))?,
     })
 }
