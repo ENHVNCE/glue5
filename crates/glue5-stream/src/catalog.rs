@@ -74,7 +74,11 @@ impl Catalog {
             .map(|e| date(&game, e.path.strip_prefix("data/").unwrap_or(&e.path), e.size).unwrap_or(e.mtime))
             .collect();
         data.extend(shaders);
-        Ok(Catalog { dates, ..Catalog::new(build.to_string(), data, data_files) })
+        let catalog = Catalog { dates, ..Catalog::new(build.to_string(), data, data_files) };
+        if let Some((a, b)) = catalog.same_but_case() {
+            bail!("{a} and {b} differ only in case: one file where the game plays (rename or remove one)");
+        }
+        Ok(catalog)
     }
 
     pub fn new(build: String, entries: Vec<Entry>, data_files: usize) -> Catalog {
@@ -89,6 +93,20 @@ impl Catalog {
         let hash = hex(&sha.finalize()[..8]);
         let lookup = entries.iter().enumerate().map(|(i, e)| (e.path.to_ascii_lowercase(), i as u32)).collect();
         Catalog { build, entries, data_files, hash, dates: Vec::new(), lookup }
+    }
+
+    /// Two of its paths the same but for case: one file on the volumes
+    /// that ignore case (Apple's, Windows'), and to the engine, which
+    /// looks paths up in any case.
+    fn same_but_case(&self) -> Option<(&str, &str)> {
+        if self.lookup.len() == self.entries.len() {
+            return None;
+        }
+        // (The lookup has the last of them.)
+        self.entries.iter().enumerate().find_map(|(i, e)| {
+            let last = self.lookup[&e.path.to_ascii_lowercase()] as usize;
+            (last != i).then(|| (e.path.as_str(), self.entries[last].path.as_str()))
+        })
     }
 
     /// The id of the file at `path` (relative to the game folder, any case).
@@ -149,7 +167,11 @@ impl Catalog {
         if let Some(t) = dates.iter().find(|&&t| t > LAST_DATE) {
             bail!("catalog: a file dated {t}");
         }
-        Ok(Catalog { dates, ..Catalog::new(build, entries, data_files) })
+        let catalog = Catalog { dates, ..Catalog::new(build, entries, data_files) };
+        if let Some((a, b)) = catalog.same_but_case() {
+            bail!("catalog: {a} and {b} differ only in case");
+        }
+        Ok(catalog)
     }
 
     /// The manifest the engine reads (`wasm_httpfs_manifest_js`), in the
@@ -295,4 +317,27 @@ fn untrusted_catalogs() {
     assert!(refused(serde_json::json!([["data/a", 1, 2]]), 0));
     // A date past any a file can have.
     assert!(refused(serde_json::json!([["data/a", 1, u64::MAX]]), 1));
+    // One file on many a device.
+    assert!(refused(serde_json::json!([["data/A.rpf", 1, 2], ["data/a.rpf", 1, 2]]), 2));
+    assert!(refused(serde_json::json!([["data/a.rpf", 1, 2], ["data/a.rpf", 1, 2]]), 2));
+}
+
+/// A game folder with two paths the same but for case (a case-sensitive
+/// volume's) is not served.
+#[test]
+fn refuses_paths_the_same_but_for_case() {
+    let dir = std::env::temp_dir().join(format!("glue5-catalog-case-{}", std::process::id()));
+    fs::create_dir_all(dir.join("data/x64")).unwrap();
+    fs::create_dir_all(dir.join("b/x/shaders")).unwrap();
+    fs::write(dir.join("b/x/shaders/index.json"), b"{}").unwrap();
+    fs::write(dir.join("data/x64/a.rpf"), b"a").unwrap();
+    assert!(Catalog::scan(&dir, "x").is_ok());
+    fs::create_dir_all(dir.join("data/X64")).unwrap();
+    fs::write(dir.join("data/X64/a.rpf"), b"b").unwrap();
+    // (Not on a volume that ignores case: one folder.)
+    if fs::read_dir(dir.join("data")).unwrap().count() == 2 {
+        let e = Catalog::scan(&dir, "x").err().unwrap().to_string();
+        assert!(e.contains("differ only in case"), "{e}");
+    }
+    let _ = fs::remove_dir_all(dir);
 }
