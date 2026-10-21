@@ -82,6 +82,25 @@ files with `--!strict` to have every type checked.
 - A mod with a menu keeps running after its main code returns, until it is
   stopped.
 
+## Input
+- `input.isDown(key)`; `input.pressed(key)` and `input.released(key)`:
+  since the mod's last turn (the last frame in a loop that `wait()`s).
+  `input.onKey(function(key, down, mods) ... end)` runs for every key that
+  goes down or up, as a task, in order (`mods.shift/ctrl/alt/meta`); it
+  returns a handle with `:remove()`; a mod with one keeps running.
+  `input.mousePosition()`: x, y as fractions of the screen.
+- Keys are physical, named as on a US keyboard: "A".."Z", "0".."9",
+  "F1".."F12", "Space", "Enter", "Escape", "LeftShift", "RightCtrl",
+  "LeftAlt", "LeftMeta" (Cmd), "Up", "Keypad8"...; "MouseLeft",
+  "MouseRight", "MouseWheelUp"; the player's pad by position: "PadSouth"
+  (A / Cross), "PadEast", "PadWest", "PadNorth", "PadLeftShoulder",
+  "PadRightTrigger", "PadStart", "PadUp"... (the `Key` type lists them).
+- Mods get keys only when the game does (not behind the app's pages or
+  while the game's text box takes text), and the game gets them too: to
+  take over a control, call `pad.disableControlAction(0, control, true)`
+  every frame. Touch screens have no keyboard: their touch controls are
+  the pad, and a menu is how a mod reaches every device.
+
 ## World
 - `world.vehicles()`, `world.peds()`, `world.objects()`: handles of the
   entities around. `world.vehicleModels()`, `world.pedModels()`,
