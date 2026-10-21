@@ -10,10 +10,12 @@
 //! job's header and its file at once).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
 
-use super::{Job, Kind, MAX_FILE, add, fingerprint, is_content_id, library, parse_job, shared_dir};
+use super::{Job, Kind, MAX_FILE, add, fingerprint, is_content_id, library, modified, parse_job, read_job, shared_dir};
 
 use crate::Locked;
 
@@ -186,43 +188,62 @@ fn on_announce(from: u32, d: &[u8]) {
 fn on_get(from: u32, id: &[u8], hash: &[u8], index: usize) {
     let Ok(id) = std::str::from_utf8(id) else { return };
     // Looked up in place: pieces are asked for up to 160 times a second.
-    let Some(path) = library()
+    let Some((path, size, modified)) = library()
         .as_ref()
         .unwrap()
         .iter()
         .find(|j| shareable(j) && j.id == id && j.hash == hash)
-        .map(|j| j.path.clone())
+        .map(|j| (j.path.clone(), j.size, j.modified))
     else {
         return;
     };
-    // Read and checked once, then kept while the pieces are asked for (up
-    // to 160 a second per player: reading and hashing the whole file for
-    // each held up the network thread).
-    static SERVING: Mutex<Option<(String, [u8; 8], Arc<Vec<u8>>)>> = Mutex::new(None);
-    let data = {
-        let mut serving = SERVING.locked();
-        match &*serving {
-            Some((i, h, d)) if i == id && h == hash => d.clone(),
-            _ => {
-                let Ok(d) = std::fs::read(&path) else { return };
-                if fingerprint(&d) != hash {
-                    return;
-                }
-                let d = Arc::new(d);
-                *serving = Some((id.to_owned(), hash.try_into().unwrap(), d.clone()));
-                d
-            }
-        }
-    };
-    let count = data.len().div_ceil(PIECE_SIZE);
-    let Some(piece) = data.chunks(PIECE_SIZE).nth(index) else { return };
+    // Read from the file alone: its fingerprint in the library holds while
+    // it keeps the size and time it had (players asking for pieces of
+    // different jobs at once made whole files read and hashed again and
+    // again). A file written since is read again, another version of its
+    // job.
+    let Ok(mut file) = std::fs::File::open(&path) else { return };
+    if !unchanged(&file, size, modified) {
+        changed(&path);
+        return;
+    }
+    let Some(piece) = read_piece(&mut file, size, index) else { return };
+    let count = (size as usize).div_ceil(PIECE_SIZE);
     let mut p = vec![PIECE];
     p.extend_from_slice(id.as_bytes());
     p.extend_from_slice(hash);
     p.extend_from_slice(&(index as u32).to_be_bytes());
     p.extend_from_slice(&(count as u32).to_be_bytes());
-    p.extend_from_slice(piece);
+    p.extend_from_slice(&piece);
     send(from, &p);
+}
+
+/// Whether a job's file is as it was read: its size and time.
+fn unchanged(file: &std::fs::File, size: u32, modified: SystemTime) -> bool {
+    file.metadata().is_ok_and(|m| m.len() == u64::from(size) && m.modified().ok() == Some(modified))
+}
+
+/// Piece `index` of a file of `size` bytes.
+fn read_piece(file: &mut std::fs::File, size: u32, index: usize) -> Option<Vec<u8>> {
+    let start = index.checked_mul(PIECE_SIZE).filter(|s| *s < size as usize)?;
+    let mut piece = vec![0; PIECE_SIZE.min(size as usize - start)];
+    file.seek(SeekFrom::Start(start as u64)).ok()?;
+    file.read_exact(&mut piece).ok()?;
+    Some(piece)
+}
+
+/// The job of a file written since it was read: read again, or dropped
+/// when it is no longer one.
+fn changed(path: &Path) {
+    let job = library().as_ref().unwrap().iter().find(|j| j.path == path).map(|j| (j.id.clone(), j.kind, j.creator.clone()));
+    let Some((id, kind, creator)) = job else { return };
+    match read_job(path, &id, kind, &creator) {
+        Some(job) => add(job),
+        None => {
+            log::info!("jobs: {id} is no longer a job");
+            library().as_mut().unwrap().retain(|j| j.id != id);
+        }
+    }
 }
 
 fn on_piece(from: u32, id: &[u8], hash: &[u8], index: usize, count: usize, piece: &[u8]) {
@@ -252,7 +273,7 @@ fn on_piece(from: u32, id: &[u8], hash: &[u8], index: usize, count: usize, piece
         log::warn!("jobs: saving {}: {e}", path.display());
         return;
     }
-    add(job);
+    add(Job { modified: modified(&path), ..job });
     make_room();
 }
 
@@ -285,3 +306,26 @@ fn make_room() {
 
 // An announcement and a piece fit a datagram the Internet carries whole.
 const _: () = assert!(1 + PER_ANNOUNCEMENT * 34 < 1200 && 1 + 22 + 8 + 8 + PIECE_SIZE < 1200);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pieces_are_read_while_the_file_is_as_it_was() {
+        let path = std::env::temp_dir().join(format!("glue5-job-{}-{:x}.json", std::process::id(), crate::p2p::random()));
+        let data: Vec<u8> = (0..2500u32).map(|i| i as u8).collect();
+        std::fs::write(&path, &data).unwrap();
+        let (size, when) = (data.len() as u32, modified(&path));
+        let mut file = std::fs::File::open(&path).unwrap();
+        assert!(unchanged(&file, size, when));
+        assert_eq!(read_piece(&mut file, size, 0).as_deref(), Some(&data[..1024]));
+        assert_eq!(read_piece(&mut file, size, 2).as_deref(), Some(&data[2048..]));
+        assert_eq!(read_piece(&mut file, size, 3), None);
+        assert_eq!(read_piece(&mut file, size, usize::MAX), None);
+        // Written again: another version.
+        std::fs::write(&path, &data[..2000]).unwrap();
+        assert!(!unchanged(&std::fs::File::open(&path).unwrap(), size, when));
+        let _ = std::fs::remove_file(&path);
+    }
+}
