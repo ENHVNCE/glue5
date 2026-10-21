@@ -161,7 +161,7 @@ impl Vm {
             let values: Vec<Value> = args.collect();
             if let Some(sender) = waiting.borrow_mut().remove(&id) {
                 let _ = sender.send(if ok {
-                    Ok(values.iter().map(describe).collect::<Vec<_>>().join(", "))
+                    Ok(describe_list(values.iter(), ", ", true))
                 } else {
                     Err(values.first().map_or_else(|| "error".into(), describe_plain))
                 });
@@ -347,7 +347,7 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
     g.set(
         "print",
         lua.create_function(move |_, args: MultiValue| {
-            let line = args.iter().map(describe_plain).collect::<Vec<_>>().join(" ");
+            let line = describe_list(args.iter(), " ", false);
             log(&line);
             Ok(())
         })?,
@@ -501,22 +501,33 @@ pub fn error_text(e: &mlua::Error) -> String {
     }
 }
 
-/// What `print` and the console show of one value at most, a table's
-/// contents included: past it, `…`.
+/// What `print` and the console show at most, tables' contents included:
+/// past it, `…`.
 const DESCRIBE_TEXT: usize = 8 << 10;
 /// Tables nested deeper show as `{…}`.
 const DESCRIBE_DEPTH: usize = 8;
 /// Entries shown of each table.
 const DESCRIBE_ENTRIES: usize = 16;
 
-/// A value as the REPL shows it.
-pub fn describe(v: &Value) -> String {
-    Describe::default().run(v, true)
-}
-
 /// A value as `print` shows it: strings as they are.
 fn describe_plain(v: &Value) -> String {
-    Describe::default().run(v, false)
+    describe_list(std::slice::from_ref(v), "", false)
+}
+
+/// Values one after the other (`print`'s arguments, the REPL's results),
+/// within the one limit.
+fn describe_list<'a>(values: impl IntoIterator<Item = &'a Value>, separator: &str, quoted: bool) -> String {
+    let mut d = Describe::default();
+    for (i, v) in values.into_iter().enumerate() {
+        if i > 0 {
+            d.push(separator);
+        }
+        d.value(v, quoted);
+    }
+    if d.full {
+        d.out.push('…');
+    }
+    d.out
 }
 
 /// Writes a value as text within [`DESCRIBE_TEXT`]: the work ends with the
@@ -531,14 +542,6 @@ struct Describe {
 }
 
 impl Describe {
-    fn run(mut self, v: &Value, quoted: bool) -> String {
-        self.value(v, quoted);
-        if self.full {
-            self.out.push('…');
-        }
-        self.out
-    }
-
     /// Adds `text`, or what fits of it.
     fn push(&mut self, text: &str) {
         if self.full {
@@ -664,7 +667,12 @@ impl Drop for Vm {
 mod tests {
     use mlua::{Lua, Value};
 
-    use super::{DESCRIBE_TEXT, describe, describe_plain};
+    use super::{DESCRIBE_TEXT, describe_list, describe_plain};
+
+    /// A value as the REPL shows it.
+    fn describe(v: &Value) -> String {
+        describe_list(std::slice::from_ref(v), "", true)
+    }
 
     fn value(lua: &Lua, code: &str) -> Value {
         lua.load(code).eval().unwrap()
@@ -701,6 +709,9 @@ mod tests {
         assert!(long.len() <= DESCRIBE_TEXT + 4 && long.ends_with('…'));
         let quoted = describe(&value(&lua, "{string.rep('x', 100000)}"));
         assert!(quoted.len() <= DESCRIBE_TEXT + 4 && quoted.ends_with('…'));
+        let many: mlua::MultiValue = lua.load("local t = {} for i = 1, 5000 do t[i] = string.rep('x', 100) end return unpack(t)").eval().unwrap();
+        let many = describe_list(many.iter(), ", ", true);
+        assert!(many.len() <= DESCRIBE_TEXT + 4 && many.ends_with('…'));
         assert!(start.elapsed().as_secs() < 2, "took {:?}", start.elapsed());
     }
 }

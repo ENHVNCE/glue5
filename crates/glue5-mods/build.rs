@@ -822,7 +822,7 @@ declare storage: {
 
 declare ui: {
 	-- A menu the app shows (the Mods page's MENUS: F7, or the button beside the settings
-	-- button on touch screens); a mod with one stays running.
+	-- button on touch screens); a mod with one stays running. 16 menus of 64 items at most.
 	menu: (title: string) -> Menu,
 	-- A notification over the game.
 	notify: (text: string) -> (),

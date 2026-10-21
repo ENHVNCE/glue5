@@ -831,6 +831,9 @@ playing.
     `value` changes and its callback runs as a task.
   - `ui.notify` shows a notification over the game.
   - A mod with a menu stays running after its main code returns.
+  - The app keeps them, outside the mod's memory: a run of a mod has 16
+    menus of 64 items at most, and titles, labels, notes and options are
+    cut short; a log line is cut at 8 KB.
 - **Tasks**: a mod's coroutines are scheduled by game time
   (`GET_GAME_TIMER`, so they stop while the game is paused):
   - the main chunk;
