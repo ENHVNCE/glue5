@@ -210,7 +210,25 @@ pub(super) fn Row(s: S, module: String, menu: u32, id: u32) -> impl IntoView {
             .into_any()
         }
         Some(Kind::Label) => view! { <div class="mitem label"><p>{label}</p>{note}</div> }.into_any(),
-        Some(Kind::Multi { .. } | Kind::Separator | Kind::Progress { .. } | Kind::Submenu { .. } | Kind::Other) | None => ().into_any(),
+        Some(Kind::Separator) => view! { <h3 class=move || if label().is_empty() { "msep gap" } else { "msep" }>{label}</h3> }.into_any(),
+        Some(Kind::Progress { .. }) => {
+            let part = move || match it().kind {
+                Kind::Progress { value } => value.clamp(0.0, 1.0),
+                _ => 0.0,
+            };
+            view! {
+                <div class=row_class("")>
+                    {text}
+                    <div class="mprogress" role="progressbar" aria-label=label aria-valuemin="0" aria-valuemax="100"
+                        aria-valuenow=move || (part() * 100.0).round()>
+                        <div class="mrail"><i style:width=move || format!("{:.1}%", part() * 100.0)></i></div>
+                        <span>{move || format!("{:.0}%", part() * 100.0)}</span>
+                    </div>
+                </div>
+            }
+            .into_any()
+        }
+        Some(Kind::Multi { .. } | Kind::Submenu { .. } | Kind::Other) | None => ().into_any(),
     }
 }
 
