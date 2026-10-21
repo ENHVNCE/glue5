@@ -17,6 +17,9 @@ use std::{env, fs};
 use anyhow::{Context, Result};
 use serde_json::Value;
 
+#[path = "build/constants.rs"]
+mod constants;
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("error: {e:#}");
@@ -295,6 +298,7 @@ fn run() -> Result<()> {
     fs::write(out.join("natives.rs"), rust_table(&natives, &raw, &reserved, &excluded))?;
     fs::write(out.join("natives.d.luau"), definitions(&natives))?;
     fs::write(out.join("aliases.d.luau"), aliases(&natives))?;
+    constants::write(&out, db.as_ref())?;
     checker(&root)?;
     let web = studio_files(&root, &out)?;
     assets(&out, &web)?;

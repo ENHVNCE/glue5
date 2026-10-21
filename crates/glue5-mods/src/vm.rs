@@ -424,6 +424,8 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
     natives::install(&lua, &task)?;
     crate::globals::install(&lua)?;
     crate::memory::install(&lua, sched.instance)?;
+    // The standard library, Luau over the natives and the tables above.
+    crate::stdlib::install(&lua)?;
     // Natives that fill structures, as tables (events, DLC data, nearby peds).
     crate::structs::install(&lua)?;
 
