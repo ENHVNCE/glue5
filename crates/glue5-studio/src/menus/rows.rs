@@ -7,7 +7,7 @@ use leptos::html;
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
-use super::model::{Item, Kind, decimals, shown};
+use super::model::{Item, Kind, decimals, parse_hex, shown, split_color};
 use super::{find_item, send};
 use crate::state::*;
 
@@ -167,8 +167,50 @@ pub(super) fn Row(s: S, module: String, menu: u32, id: u32) -> impl IntoView {
             }
             .into_any()
         }
+        Some(Kind::Color { .. }) => {
+            let get = move || match it().kind {
+                Kind::Color { value, alpha } => (value, alpha),
+                _ => ("#ffffff".to_string(), false),
+            };
+            let has_alpha = move || get().1;
+            let rgb = move || split_color(&get().0).0;
+            let opacity = move || split_color(&get().0).1;
+            let with_alpha = move |rgb: &str, a: u8| if has_alpha() { format!("{rgb}{a:02x}") } else { rgb.to_string() };
+            let hex = NodeRef::<html::Input>::new();
+            let focused = RwSignal::new(false);
+            follow(hex, focused, move || get().0);
+            view! {
+                <div class=row_class("")>
+                    {text}
+                    <div class="mcolor">
+                        <Show when=has_alpha>
+                            <input type="range" class="malpha" min="0" max="255" title="Opacity" aria-label="Opacity"
+                                prop:value=opacity prop:disabled=off
+                                on:change=move |ev| input(json!(with_alpha(&rgb(), event_target_value(&ev).parse().unwrap_or(255))))/>
+                        </Show>
+                        <input type="text" class="mhex" node_ref=hex aria-label=move || format!("{} (hex)", label()) spellcheck="false"
+                            maxlength=move || if has_alpha() { 9 } else { 7 } prop:disabled=off
+                            on:focus=move |_| focused.set(true)
+                            on:blur=move |_| { focused.set(false); resync.notify(); }
+                            on:keydown=move |ev| commit_keys(&ev, hex, move || get().0)
+                            on:change=move |ev| match parse_hex(&event_target_value(&ev), has_alpha()) {
+                                Some(c) => input(json!(c)),
+                                None => {
+                                    s.notice.set(Some(format!("{}: a colour is #rrggbb{}", label(), if has_alpha() { " or #rrggbbaa" } else { "" })));
+                                    resync.notify();
+                                }
+                            }/>
+                        <span class="mswatch" style:background=move || get().0>
+                            <input type="color" aria-label=label prop:value=rgb prop:disabled=off
+                                on:change=move |ev| input(json!(with_alpha(&event_target_value(&ev), opacity())))/>
+                        </span>
+                    </div>
+                </div>
+            }
+            .into_any()
+        }
         Some(Kind::Label) => view! { <div class="mitem label"><p>{label}</p>{note}</div> }.into_any(),
-        Some(Kind::Multi { .. } | Kind::Color { .. } | Kind::Separator | Kind::Progress { .. } | Kind::Submenu { .. } | Kind::Other) | None => ().into_any(),
+        Some(Kind::Multi { .. } | Kind::Separator | Kind::Progress { .. } | Kind::Submenu { .. } | Kind::Other) | None => ().into_any(),
     }
 }
 

@@ -153,3 +153,28 @@ pub(crate) fn shown(value: f64, step: f64, unit: Option<&str>) -> String {
     let k = if percent { 100.0 } else { 1.0 };
     format!("{:.*}{}", decimals(step * k), value * k, unit.unwrap_or(""))
 }
+
+/// `#rrggbb` or `#rrggbbaa` split into the colour (`#rrggbb`, what a colour
+/// input takes) and its opacity (0 to 255).
+pub(crate) fn split_color(hex: &str) -> (String, u8) {
+    let h = hex.trim_start_matches('#');
+    let rgb = h.get(..6).filter(|s| s.chars().all(|c| c.is_ascii_hexdigit())).unwrap_or("ffffff");
+    let alpha = h.get(6..8).and_then(|a| u8::from_str_radix(a, 16).ok()).unwrap_or(255);
+    (format!("#{}", rgb.to_ascii_lowercase()), alpha)
+}
+
+/// A typed hex colour, normalized: `#rgb`/`rrggbb`/`#rrggbbaa` (the alpha
+/// only when `alpha`), or None when it is not one.
+pub(crate) fn parse_hex(text: &str, alpha: bool) -> Option<String> {
+    let h = text.trim().trim_start_matches('#').to_ascii_lowercase();
+    if !h.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let full = match h.len() {
+        3 => h.chars().flat_map(|c| [c, c]).collect(),
+        6 => h,
+        8 if alpha => h,
+        _ => return None,
+    };
+    Some(format!("#{full}"))
+}
