@@ -90,6 +90,8 @@ impl Param {
 struct Native {
     name: String,
     hash: u64,
+    /// The database's hash (the one ScriptHookV's mods use), 0 if none.
+    db_hash: u64,
     handler: u64,
     namespace: String,
     lua: String,
@@ -158,14 +160,16 @@ fn run() -> Result<()> {
             None
         }
     };
-    // The database's entries by name, with their namespace.
-    let mut by_name: HashMap<String, (String, &Value)> = HashMap::new();
+    // The database's entries by name, with their namespace and hash.
+    let mut by_name: HashMap<String, (String, &Value, u64)> = HashMap::new();
     if let Some(Value::Object(spaces)) = &db {
         for (space, entries) in spaces {
             if let Value::Object(entries) = entries {
-                for entry in entries.values() {
+                for (hash, entry) in entries {
                     if let Some(name) = entry["name"].as_str() {
-                        by_name.insert(name.to_string(), (space.clone(), entry));
+                        let hash = u64::from_str_radix(hash.trim_start_matches("0x"), 16)
+                            .with_context(|| format!("natives.json: the hash of {name}"))?;
+                        by_name.insert(name.to_string(), (space.clone(), entry, hash));
                     }
                 }
             }
@@ -175,7 +179,7 @@ fn run() -> Result<()> {
     // have in the database (camera -> CAM), so the names match the docs.
     let mut votes: HashMap<&str, HashMap<&str, usize>> = HashMap::new();
     for b in &binary {
-        if let Some((space, _)) = by_name.get(&b.name) {
+        if let Some((space, ..)) = by_name.get(&b.name) {
             *votes.entry(&b.group).or_default().entry(space).or_default() += 1;
         }
     }
@@ -189,17 +193,25 @@ fn run() -> Result<()> {
     let mut natives = Vec::new();
     let mut skipped = BTreeMap::<&str, usize>::new();
     let mut reserved = Vec::new();
+    // The natives left out, with the database's hash and why, for
+    // `native.invoke`'s errors.
+    let mut excluded: Vec<(String, u64, &str)> = Vec::new();
     for b in &binary {
+        let db_hash = by_name.get(&b.name).map_or(0, |&(_, _, h)| h);
+        let mut skip = |why: &'static str| {
+            *skipped.entry(why).or_default() += 1;
+            excluded.push((b.name.clone(), db_hash, why));
+        };
         if RESERVED.contains(&b.name.as_str()) {
             reserved.push((b.name.clone(), b.handler));
-            *skipped.entry("reserved").or_default() += 1;
+            skip("reserved");
             continue;
         }
         if keeps_pointer(&b.name) || STRUCTURES.contains(&b.name.as_str()) {
-            *skipped.entry("pointers kept or structures").or_default() += 1;
+            skip("pointers kept or structures");
             continue;
         }
-        let entry = by_name.get(&b.name).map(|(_, e)| *e);
+        let entry = by_name.get(&b.name).map(|(_, e, _)| *e);
         let from_db = entry.map(|e| db_params(e, &b.name)).transpose()?;
         let from_binary = b.command.as_ref().map(|c| binary_params(c, &b.name));
         // A pointer the database cannot type (`Any*`: a structure, an array,
@@ -214,12 +226,12 @@ fn run() -> Result<()> {
             (Some(Some(db)), Some(Some(bin))) => merge(db, &bin),
             (Some(Some(db)), _) => db,
             (_, Some(Some(bin))) if untyped && bin.iter().any(|p| p.dir != Dir::In && p.kind == Kind::Int) => {
-                *skipped.entry("untyped pointers").or_default() += 1;
+                skip("untyped pointers");
                 continue;
             }
             (_, Some(Some(bin))) => bin,
             _ => {
-                *skipped.entry(if b.unused { "unused, untyped" } else { "untyped" }).or_default() += 1;
+                skip(if b.unused { "unused, untyped" } else { "untyped" });
                 continue;
             }
         };
@@ -228,14 +240,14 @@ fn run() -> Result<()> {
                 Some(k) => Some(k),
                 None if t == "void" => None,
                 None => {
-                    *skipped.entry("return type").or_default() += 1;
+                    skip("return type");
                     continue;
                 }
             },
             None => match binary_return(b) {
                 Some(r) => r,
                 None => {
-                    *skipped.entry("return type").or_default() += 1;
+                    skip("return type");
                     continue;
                 }
             },
@@ -244,6 +256,7 @@ fn run() -> Result<()> {
         natives.push(Native {
             name: b.name.clone(),
             hash: b.hash,
+            db_hash,
             handler: b.handler,
             namespace: namespace_of(&b.group),
             lua: camel(&b.name),
@@ -253,10 +266,33 @@ fn run() -> Result<()> {
         });
     }
     natives.sort_by(|a, b| (&a.namespace, &a.lua).cmp(&(&b.namespace, &b.lua)));
+    // The database's natives this build does not have (ScriptHookV's mods
+    // may name them).
+    let in_build: std::collections::HashSet<&str> = binary.iter().map(|b| b.name.as_str()).collect();
+    let mut missing: Vec<(String, u64, &str)> = by_name
+        .iter()
+        .filter(|(name, _)| !in_build.contains(name.as_str()))
+        .map(|(name, &(_, _, hash))| (name.clone(), hash, "not in this build"))
+        .collect();
+    excluded.append(&mut missing);
+    excluded.sort();
+    // The left-out natives `native.invoke` still calls, ScriptHookV's way:
+    // pointers as addresses (all but the script thread's own).
+    let binary_by_name: HashMap<&str, &Binary> = binary.iter().map(|b| (b.name.as_str(), b)).collect();
+    let mut raw = Vec::new();
+    excluded.retain(|(name, db_hash, why)| {
+        let Some(b) = binary_by_name.get(name.as_str()).filter(|_| *why != "reserved") else { return true };
+        let entry = by_name.get(name).map(|(_, e, _)| *e);
+        let Some((params, ret)) = raw_signature(entry, b) else { return true };
+        let doc = entry.and_then(|e| e["comment"].as_str()).unwrap_or("").to_string();
+        let namespace = namespace_of(&b.group);
+        raw.push(Native { name: name.clone(), hash: b.hash, db_hash: *db_hash, handler: b.handler, namespace, lua: camel(name), params, ret, doc });
+        false
+    });
     let skipped_text = skipped.iter().map(|(why, n)| format!("{n} {why}")).collect::<Vec<_>>().join(", ");
     println!("cargo:rustc-env=GLUE5_MODS_NATIVES_SUMMARY={} natives; not exposed: {skipped_text}", natives.len());
 
-    fs::write(out.join("natives.rs"), rust_table(&natives, &reserved))?;
+    fs::write(out.join("natives.rs"), rust_table(&natives, &raw, &reserved, &excluded))?;
     fs::write(out.join("natives.d.luau"), definitions(&natives))?;
     fs::write(out.join("aliases.d.luau"), aliases(&natives))?;
     checker(&root)?;
@@ -676,15 +712,31 @@ fn rust_kind(k: Kind) -> String {
     }
 }
 
-fn rust_table(natives: &[Native], reserved: &[(String, u64)]) -> String {
+fn rust_table(natives: &[Native], raw: &[Native], reserved: &[(String, u64)], excluded: &[(String, u64, &str)]) -> String {
     let mut spaces: Vec<&str> = natives.iter().map(|n| n.namespace.as_str()).collect();
     spaces.dedup();
     let mut s = String::new();
     s.push_str("// Generated by glue5-mods' build script from game.wasm and nativedb.\n");
     let _ = writeln!(s, "pub const NAMESPACES: &[&str] = &{spaces:?};");
     s.push_str("pub static NATIVES: &[Native] = &[\n");
+    native_rows(&mut s, natives, &spaces);
+    s.push_str("];\n");
+    s.push_str("pub static RAW: &[Native] = &[\n");
+    native_rows(&mut s, raw, &spaces);
+    s.push_str("];\n");
+    let _ = writeln!(s, "pub const RESERVED: &[(&str, u64)] = &{reserved:?};");
+    s.push_str("pub static EXCLUDED: &[Excluded] = &[\n");
+    for (name, db_hash, why) in excluded {
+        let _ = writeln!(s, "    Excluded {{ name: {name:?}, db_hash: {db_hash:#x}, why: {why:?} }},");
+    }
+    s.push_str("];\n");
+    s
+}
+
+fn native_rows(s: &mut String, natives: &[Native], spaces: &[&str]) {
     for n in natives {
-        let ns = spaces.iter().position(|&x| x == n.namespace).unwrap();
+        // A left-out native of a namespace with none exposed: its group's name.
+        let ns = spaces.iter().position(|&x| x == n.namespace).unwrap_or(u16::MAX as usize);
         let params: Vec<String> = n
             .params
             .iter()
@@ -693,19 +745,66 @@ fn rust_table(natives: &[Native], reserved: &[(String, u64)]) -> String {
         let ret = n.ret.map_or("None".to_string(), |k| format!("Some({})", rust_kind(k)));
         let _ = writeln!(
             s,
-            "    Native {{ ns: {ns}, lua: {:?}, name: {:?}, hash: {:#x}, handler: {}, params: &[{}], ret: {ret}, doc: {:?} }},",
+            "    Native {{ ns: {ns}, lua: {:?}, name: {:?}, hash: {:#x}, db_hash: {:#x}, handler: {}, params: &[{}], ret: {ret}, doc: {:?} }},",
             n.lua,
             n.name,
             n.hash,
+            n.db_hash,
             n.handler,
             params.join(", "),
             n.doc.trim()
         );
     }
-    s.push_str("];\n");
-    let _ = writeln!(s, "pub const RESERVED: &[(&str, u64)] = &{reserved:?};");
-    s
 }
+
+/// The parameters and result of a native left out, as `native.invoke` passes
+/// them: what the database or else the binary says, pointers as addresses
+/// (an in-out int); none if neither knows.
+fn raw_signature(entry: Option<&Value>, b: &Binary) -> Option<(Vec<Param>, Option<Kind>)> {
+    let param = |name: String, kind, dir| Param { name, kind, dir };
+    let params = match entry {
+        Some(e) => e["params"]
+            .as_array()?
+            .iter()
+            .map(|p| {
+                let name = param_name(p["name"].as_str().unwrap_or(""));
+                match p["type"].as_str().unwrap_or("") {
+                    "float" => param(name, Kind::Float, Dir::In),
+                    "BOOL" => param(name, Kind::Bool, Dir::In),
+                    "Hash" => param(name, Kind::Hash, Dir::In),
+                    "const char*" => param(name, Kind::Str, Dir::In),
+                    "Vector3" => param(name, Kind::Vec3, Dir::In),
+                    t if t.ends_with('*') => param(name, Kind::Int, Dir::InOut),
+                    _ => param(name, Kind::Int, Dir::In),
+                }
+            })
+            .collect(),
+        None => b
+            .command
+            .as_ref()?
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let name = format!("p{i}");
+                match t.as_str() {
+                    "float" => param(name, Kind::Float, Dir::In),
+                    "bool" => param(name, Kind::Bool, Dir::In),
+                    "char const*" => param(name, Kind::Str, Dir::In),
+                    "rage::scrVector const&" | "rage::Vector3 const&" => param(name, Kind::Vec3, Dir::In),
+                    t if t.ends_with('&') || t.ends_with('*') => param(name, Kind::Int, Dir::InOut),
+                    _ => param(name, Kind::Int, Dir::In),
+                }
+            })
+            .collect(),
+    };
+    let ret = match entry.and_then(|e| e["return_type"].as_str()) {
+        Some("void") => None,
+        Some(t) => Some(value_kind(t).unwrap_or(Kind::Any)),
+        None => binary_return(b).unwrap_or(Some(Kind::Any)),
+    };
+    Some((params, ret))
+}
+
 
 fn luau_type(k: Kind, input: bool) -> String {
     match k {
@@ -830,6 +929,15 @@ declare storage: {
 	set: (key: string, value: any) -> (),
 	keys: () -> { string },
 	clear: () -> (),
+}
+
+-- Natives the ScriptHookV way.
+declare native: {
+	-- Calls a native by its ScriptHookV (nativedb) hash, `0xAF35D0D2583051B0` (or that as a string), or by its
+	-- name, \"CREATE_VEHICLE\", with ScriptHookV's arguments: a vector as three numbers (or a vector), a pointer
+	-- as an address (memory.alloc) or a buffer (copied in, and back after the call; 16 KB at most); its result
+	-- comes back. Natives the namespaces leave out too: a wrong buffer can corrupt or crash the game.
+	invoke: (native: number | string, ...any) -> any,
 }
 
 -- The game's memory (addresses are the game's; a read pointer is an address too). Checked against the

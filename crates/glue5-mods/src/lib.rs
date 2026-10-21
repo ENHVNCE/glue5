@@ -161,10 +161,7 @@ pub fn note_failure() -> Option<String> {
     let running: Vec<String> =
         mods().into_iter().filter(|m| m.state == ModState::Running).map(|m| m.name).collect();
     let during = RUNNING_MOD.try_lock().map(|m| m.clone()).unwrap_or_default();
-    let native = match natives::RUNNING.load(Ordering::Relaxed) {
-        0 => None,
-        i => natives::NATIVES.get(i - 1).map(natives::qualified),
-    };
+    let native = natives::running();
     if running.is_empty() && during.is_empty() {
         return None;
     }

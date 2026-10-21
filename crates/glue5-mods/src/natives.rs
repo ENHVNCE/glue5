@@ -73,12 +73,24 @@ pub struct Native {
     pub name: &'static str,
     /// The hash this game build registers it with.
     pub hash: u64,
+    /// The natives database's hash, the one ScriptHookV's mods use (0: none).
+    pub db_hash: u64,
     /// The handler's function table index.
     pub handler: u64,
     pub params: &'static [Param],
     pub ret: Option<Kind>,
     /// The natives database's notes.
     pub doc: &'static str,
+}
+
+/// A native of the game or of the database that the mods cannot call.
+#[derive(Debug)]
+pub struct Excluded {
+    pub name: &'static str,
+    /// The database's hash (0: none).
+    pub db_hash: u64,
+    /// Why, as the build script says it.
+    pub why: &'static str,
 }
 
 use {Dir as D, Handle as H, Kind as K, Param as P};
@@ -107,14 +119,107 @@ pub fn find(ns: usize, lua: &str) -> Option<usize> {
 
 /// The native of namespace `ns` with the game's name `name` (`CREATE_VEHICLE`).
 pub fn find_name(ns: usize, name: &str) -> Option<usize> {
-    static NAMES: LazyLock<HashMap<&str, usize>> =
-        LazyLock::new(|| NATIVES.iter().enumerate().map(|(i, n)| (n.name, i)).collect());
-    NAMES.get(name).copied().filter(|&i| NATIVES[i].ns as usize == ns)
+    match LOOKUP.names.get(name) {
+        Some(&Target::Native(i)) if NATIVES[i].ns as usize == ns => Some(i),
+        _ => None,
+    }
+}
+
+/// What a name or a hash stands for: a native, one only `native.invoke`
+/// calls, or one left out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Target {
+    /// Index in [`NATIVES`].
+    Native(usize),
+    /// Index in [`RAW`].
+    Raw(usize),
+    /// Index in [`EXCLUDED`].
+    Excluded(usize),
+}
+
+impl Target {
+    fn native(self) -> Option<&'static Native> {
+        match self {
+            Target::Native(i) => Some(&NATIVES[i]),
+            Target::Raw(i) => Some(&RAW[i]),
+            Target::Excluded(_) => None,
+        }
+    }
+}
+
+/// The natives by the names and hashes ScriptHookV's mods use.
+struct Lookup {
+    /// By the game's name.
+    names: HashMap<&'static str, Target>,
+    /// By the database's hash.
+    hashes: HashMap<u64, Target>,
+    /// By the database's hash as a Luau number has it (the bits of a
+    /// double, rounded past 2^53: no two hashes round alike, see the tests).
+    numbers: HashMap<u64, Target>,
+}
+
+static LOOKUP: LazyLock<Lookup> = LazyLock::new(|| {
+    let mut l = Lookup { names: HashMap::new(), hashes: HashMap::new(), numbers: HashMap::new() };
+    let excluded = EXCLUDED.iter().enumerate().map(|(i, e)| (e.name, e.db_hash, Target::Excluded(i)));
+    let natives = NATIVES.iter().enumerate().map(|(i, n)| (n.name, n.db_hash, Target::Native(i)));
+    let raw = RAW.iter().enumerate().map(|(i, n)| (n.name, n.db_hash, Target::Raw(i)));
+    for (name, hash, target) in excluded.chain(natives).chain(raw) {
+        l.names.insert(name, target);
+        if hash != 0 {
+            l.hashes.insert(hash, target);
+            l.numbers.insert((hash as f64).to_bits(), target);
+        }
+    }
+    l
+});
+
+/// Why a native cannot be called at all, for people.
+fn why_excluded(why: &str) -> &'static str {
+    match why {
+        "reserved" => "it is the script thread's own: a mod waits with wait() and ends when its code returns",
+        "not in this build" => "this game build does not have it",
+        _ => "the types of its parameters are unknown",
+    }
+}
+
+/// The native a hash (a number, or a `0x...` string) or a game name names,
+/// as `native.invoke` takes them.
+fn resolve(target: &Value) -> Result<&'static Native, String> {
+    let l = &*LOOKUP;
+    let (found, what) = match target {
+        Value::Integer(_) | Value::Number(_) => {
+            let n = number(target).unwrap_or_default();
+            (l.numbers.get(&n.to_bits()), format!("with the hash {:#018X}", n as u64))
+        }
+        Value::String(s) => {
+            let s = s.to_string_lossy();
+            match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+                Some(hex) => {
+                    let hash = u64::from_str_radix(hex, 16).map_err(|_| format!("native.invoke: {s:?} is not a hash"))?;
+                    (l.hashes.get(&hash), format!("with the hash {hash:#018X}"))
+                }
+                None => {
+                    let name = s.to_ascii_uppercase();
+                    (l.names.get(name.as_str()), format!("named {name}"))
+                }
+            }
+        }
+        _ => return Err("native.invoke: argument 1 must be a native's hash or name".into()),
+    };
+    match found {
+        Some(&Target::Excluded(i)) => {
+            let e = &EXCLUDED[i];
+            Err(format!("native.invoke: {} is not available to mods: {}", e.name, why_excluded(e.why)))
+        }
+        Some(t) => Ok(t.native().expect("not excluded")),
+        None => Err(format!("native.invoke: no native {what} (hashes are ScriptHookV's, from the natives database)")),
+    }
 }
 
 /// The natives' tables: one per namespace (`vehicle.createVehicle`), the
-/// same under the game's names (`VEHICLE.CREATE_VEHICLE`). `task`'s
-/// functions (the scheduler) go in the TASK_ natives' table.
+/// same under the game's names (`VEHICLE.CREATE_VEHICLE`), and
+/// `native.invoke`. `task`'s functions (the scheduler) go in the TASK_
+/// natives' table.
 pub fn install(lua: &Lua, task: &Table) -> mlua::Result<()> {
     let g = lua.globals();
     for (ns, space) in NAMESPACES.iter().enumerate() {
@@ -128,7 +233,16 @@ pub fn install(lua: &Lua, task: &Table) -> mlua::Result<()> {
         g.set(*space, table)?;
         g.set(space.to_ascii_uppercase(), namespace(lua, move |key| find_name(ns, key))?)?;
     }
-    Ok(())
+    let native = lua.create_table()?;
+    native.set(
+        "invoke",
+        lua.create_function(|lua, args: MultiValue| {
+            let mut args = args.into_iter();
+            let n = resolve(&args.next().unwrap_or(Value::Nil)).map_err(mlua::Error::runtime)?;
+            call_native(lua, n, args.collect(), true)
+        })?,
+    )?;
+    lua.globals().set("native", native)
 }
 
 /// A namespace's table: a native's function is made the first time it is
@@ -152,36 +266,6 @@ fn namespace(lua: &Lua, find: impl Fn(&str) -> Option<usize> + 'static) -> mlua:
     table.set_metatable(Some(meta))?;
     Ok(table)
 }
-
-thread_local! {
-    /// The engine thread's environment while a mod runs: natives can only
-    /// be called then.
-    static ENV: Cell<*mut Env> = const { Cell::new(std::ptr::null_mut()) };
-}
-
-/// Runs `f` with natives callable through `env`.
-pub fn with_env<R>(env: *mut Env, f: impl FnOnce() -> R) -> R {
-    let old = ENV.replace(env);
-    let r = f();
-    ENV.set(old);
-    r
-}
-
-/// Jenkins' one-at-a-time hash of the lowercase string (`GET_HASH_KEY`).
-pub fn joaat(s: &str) -> u32 {
-    let mut h: u32 = 0;
-    for b in s.bytes() {
-        h = h.wrapping_add(b.to_ascii_lowercase() as u32);
-        h = h.wrapping_add(h << 10);
-        h ^= h >> 6;
-    }
-    h = h.wrapping_add(h << 3);
-    h ^= h >> 11;
-    h.wrapping_add(h << 15)
-}
-
-/// The script handles' pool (`rage::fwScriptGuid`), u64 at this address.
-const GUID_POOL: u64 = 12318120;
 
 thread_local! {
     /// The engine thread's environment while a mod runs: natives can only
@@ -259,8 +343,14 @@ pub fn env() -> Option<*mut Env> {
     (!e.is_null()).then_some(e)
 }
 
-/// The native running now (index + 1, 0: none), for the failure note.
-pub static RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The native running now (null: none), for the failure note.
+static RUNNING: std::sync::atomic::AtomicPtr<Native> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// The native running now, for the failure note (`vehicle.createVehicle`).
+pub fn running() -> Option<String> {
+    let n = RUNNING.load(std::sync::atomic::Ordering::Relaxed);
+    (!n.is_null()).then(|| qualified(unsafe { &*n }))
+}
 
 /// A trap happened in a native: the engine may be in a bad state.
 pub static TAINTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -292,9 +382,13 @@ pub unsafe fn call_int(env: *mut Env, name: &str) -> Option<i32> {
     r
 }
 
-/// The full name of native `n`, for messages (`vehicle.createVehicle`).
+/// The full name of native `n`, for messages (`vehicle.createVehicle`;
+/// the game's name for one only `native.invoke` calls).
 pub fn qualified(n: &Native) -> String {
-    format!("{}.{}", NAMESPACES[n.ns as usize], n.lua)
+    match NAMESPACES.get(n.ns as usize) {
+        Some(space) if NATIVES.as_ptr_range().contains(&(n as *const Native)) => format!("{space}.{}", n.lua),
+        _ => n.name.to_string(),
+    }
 }
 
 /// The longest string a native takes from Lua.
@@ -302,7 +396,12 @@ const MAX_STRING: usize = 16 << 10;
 
 /// Calls native `index` with Lua's arguments.
 pub fn call(lua: &Lua, index: usize, args: MultiValue) -> mlua::Result<MultiValue> {
-    let n = &NATIVES[index];
+    call_native(lua, &NATIVES[index], args, false)
+}
+
+/// Calls native `n` with Lua's arguments; `raw`: ScriptHookV's way, with
+/// pointers as addresses (nothing comes back through them as results).
+fn call_native(lua: &Lua, n: &'static Native, args: MultiValue, raw: bool) -> mlua::Result<MultiValue> {
     let env = ENV.get();
     if env.is_null() {
         return Err(mlua::Error::runtime(format!("{}: natives can only run in a mod's script", qualified(n))));
@@ -321,12 +420,37 @@ pub fn call(lua: &Lua, index: usize, args: MultiValue) -> mlua::Result<MultiValu
         let params = alloc(slots.max(1) * 8)?;
         let result = alloc(32)?;
         let mut outputs = Vec::new();
+        // Buffers passed for pointers: copied in, and back after the call.
+        let mut buffers: Vec<(u64, mlua::Buffer)> = Vec::new();
+        let mut buffer = |b: mlua::Buffer, i: usize| -> mlua::Result<u64> {
+            if b.len() > MAX_STRING {
+                let e = format!("{}: argument {}: a buffer of at most {} KB (or memory.alloc)", qualified(n), i + 1, MAX_STRING >> 10);
+                return Err(mlua::Error::runtime(e));
+            }
+            // Room for a value or a vector at least: one value's pointer may
+            // be written as 8 bytes, or 24.
+            let at = alloc(b.len().max(24) as u64)?;
+            mem.bytes_mut(at, b.len()).copy_from_slice(&b.to_vec());
+            buffers.push((at, b));
+            Ok(at)
+        };
         let mut args = args.into_iter();
         let mut slot = params;
         for (i, p) in n.params.iter().enumerate() {
             let bad = |what: &str| {
                 mlua::Error::runtime(format!("{}: argument {} must be {what}", qualified(n), i + 1))
             };
+            if raw && p.dir != D::In {
+                let at = match args.next().unwrap_or(Value::Nil) {
+                    Value::Nil => 0,
+                    Value::Buffer(b) => buffer(b, i)?,
+                    // A value of a vector is three.
+                    v => crate::memory::address(env, &v, if p.kind == K::Vec3 { 24 } else { 8 }).map_err(|e| mlua::Error::runtime(format!("{}: argument {}: {e}", qualified(n), i + 1)))?,
+                };
+                mem.set_u64(slot, at);
+                slot += 8;
+                continue;
+            }
             let value = if p.dir == D::Out { Value::Nil } else { args.next().unwrap_or(Value::Nil) };
             let target = if p.dir == D::In {
                 slot
@@ -358,6 +482,11 @@ pub fn call(lua: &Lua, index: usize, args: MultiValue) -> mlua::Result<MultiValu
                     v => mem.set_u32(target, number(v).ok_or_else(|| bad("a hash or a name"))? as i64 as u32),
                 },
                 K::Str => match &value {
+                    Value::Buffer(b) if raw => mem.set_u64(target, buffer(b.clone(), i)?),
+                    // A buffer of the mod's.
+                    Value::Integer(_) | Value::Number(_) if raw => {
+                        mem.set_u64(target, crate::memory::address(env, &value, 1).map_err(|e| mlua::Error::runtime(format!("{}: argument {}: {e}", qualified(n), i + 1)))?)
+                    }
                     Value::String(s) => {
                         let bytes = s.as_bytes();
                         if bytes.contains(&0) {
@@ -473,12 +602,15 @@ pub fn call(lua: &Lua, index: usize, args: MultiValue) -> mlua::Result<MultiValu
         mem.set_u32(info + 8, slots as u32);
         mem.set_u64(info + 16, params);
         mem.set_i32(info + 24, 0);
-        RUNNING.store(index + 1, std::sync::atomic::Ordering::Relaxed);
+        RUNNING.store((n as *const Native).cast_mut(), std::sync::atomic::Ordering::Relaxed);
         let called = unsafe { glue5_game::call_native(env, n.handler, info) };
-        RUNNING.store(0, std::sync::atomic::Ordering::Relaxed);
+        RUNNING.store(std::ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
         if let Err(e) = called {
             TAINTED.store(true, std::sync::atomic::Ordering::Relaxed);
             return Err(mlua::Error::runtime(format!("{} stopped with a {e}", qualified(n))));
+        }
+        for (at, b) in buffers {
+            b.write_bytes(0, mem.bytes(at, b.len()));
         }
         // Vectors the native took by reference go back where they came from.
         for k in 0..mem.i32(info + 24).clamp(0, 4) as u64 {
@@ -542,6 +674,51 @@ fn read(lua: &Lua, mem: Mem, at: u64, k: Kind) -> mlua::Result<Value> {
 mod tests {
     use super::*;
 
+    fn named(lua: &Lua, s: &str) -> Value {
+        Value::String(lua.create_string(s).unwrap())
+    }
+
+    /// ScriptHookV's hashes (nativedb's) to this build's natives, the pairs
+    /// as natives.json and game.wasm's table have them.
+    #[test]
+    fn hashes() {
+        let lua = Lua::new();
+        for (db, ours, name) in [
+            (0xAF35D0D2583051B0u64, 0xBA715A7BEBA5A1F9u64, "CREATE_VEHICLE"),
+            (0xD80958FC74E988A6, 0xE2D3D51028F0428A, "PLAYER_PED_ID"),
+            (0x3FEF770D40960D5A, 0x6B62510F212526DC, "GET_ENTITY_COORDS"),
+        ] {
+            // As Luau has the hex literal: a double, rounded.
+            for v in [Value::Number(db as f64), named(&lua, &format!("{db:#X}")), named(&lua, name), named(&lua, &name.to_lowercase())] {
+                let n = resolve(&v).unwrap_or_else(|e| panic!("{v:?}: {e}"));
+                assert_eq!((n.name, n.hash, n.db_hash), (name, ours, db));
+            }
+        }
+        // No two hashes are the same double.
+        assert_eq!(LOOKUP.numbers.len(), LOOKUP.hashes.len());
+        assert!(LOOKUP.hashes.len() > 6000, "{}", LOOKUP.hashes.len());
+    }
+
+    /// Natives the namespaces leave out: `native.invoke` calls them, but for
+    /// the script thread's own and those this build lacks.
+    #[test]
+    fn left_out() {
+        let lua = Lua::new();
+        for name in ["TASK_SCRIPTED_ANIMATION", "COPY_SCRIPT_STRUCT", "START_SAVE_DATA", "GET_EVENT_DATA"] {
+            let n = resolve(&named(&lua, name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(RAW.as_ptr_range().contains(&(n as *const Native)), "{name}");
+            assert_eq!(qualified(n), name);
+        }
+        let n = resolve(&Value::Number(0x126EF75F1E17ABE5u64 as f64)).unwrap();
+        assert_eq!(n.name, "TASK_SCRIPTED_ANIMATION");
+        let e = resolve(&named(&lua, "WAIT")).unwrap_err();
+        assert!(e.contains("not available") && e.contains("wait()"), "{e}");
+        assert!(resolve(&Value::Number(0x1234 as f64)).unwrap_err().contains("no native with the hash 0x0000000000001234"));
+        assert!(resolve(&named(&lua, "NOT_A_NATIVE")).unwrap_err().contains("no native named NOT_A_NATIVE"));
+        assert!(resolve(&named(&lua, "0xZZ")).unwrap_err().contains("not a hash"));
+        assert!(resolve(&Value::Boolean(true)).is_err());
+    }
+
     /// `VEHICLE.CREATE_VEHICLE` is `vehicle.createVehicle`, and only that.
     #[test]
     fn game_names() {
@@ -560,9 +737,14 @@ mod tests {
             .exec()
             .unwrap_err();
         assert!(e.to_string().contains("vehicle.createVehicle: natives can only run in a mod's script"), "{e}");
+        let e = lua.load("native.invoke(0xAF35D0D2583051B0, 'adder', 0, 0, 0, 0, false, false, false)").exec().unwrap_err();
+        assert!(e.to_string().contains("natives can only run"), "{e}");
+        let e = lua.load("native.invoke('WAIT', 0)").exec().unwrap_err();
+        assert!(e.to_string().contains("not available"), "{e}");
     }
 
-    /// The checker knows the game names, as their Luau ones.
+    /// The checker knows the game names (as their Luau ones) and the
+    /// ScriptHookV-style globals.
     #[test]
     fn game_names_typed() {
         crate::checker::Checker::with(|c| {
@@ -570,7 +752,11 @@ mod tests {
             c.set(file, Some("--!strict\nlocal me = PLAYER.PLAYER_PED_ID()\nVEHICLE.SET_VEHICLE_FIXED(me)\n"));
             let text = c.check(file).to_string();
             assert!(text.contains("Ped") && text.contains("Vehicle"), "{text}");
-            let ok = "--!strict\nlocal car: Vehicle? = VEHICLE.CREATE_VEHICLE('adder', vector.create(0, 0, 0), 0, false, false, false)\nprint(car)\n";
+            let ok = "--!strict\nlocal car: Vehicle? = VEHICLE.CREATE_VEHICLE('adder', vector.create(0, 0, 0), 0, false, false, false)\n\
+                      local r = native.invoke('0xAF35D0D2583051B0', 'adder', 0, 0, 0, 0, false, false, false)\n\
+                      local n: number = globals.int(262145) + memory.readInt(memory.alloc(8))\n\
+                      local v: string = game.version()\n\
+                      globals.setString(1, 'x', 16)\nmemory.writeVector3(1, vector.create(1, 2, 3))\nprint(car, r, n, v, memory.entity(car))\n";
             c.set(file, Some(ok));
             assert_eq!(c.check(file).to_string(), "[]");
             let hover = c.hover(file, 1, 26);

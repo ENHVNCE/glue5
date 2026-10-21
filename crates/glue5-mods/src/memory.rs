@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use glue5_game::{Env, orig};
 use glue5_runtime::memory::Mem;
-use mlua::Lua;
+use mlua::{Lua, Value};
 
 use crate::natives;
 
@@ -42,6 +42,17 @@ fn span(address: f64, bytes: u64, size: u64) -> Result<u64, String> {
         return Err(format!("{at} + {bytes} bytes is past the end of the game's memory"));
     }
     Ok(at)
+}
+
+/// A value Lua passes as an address of `bytes` bytes (a native's pointer
+/// parameter), checked against the memory.
+pub fn address(env: *mut Env, value: &Value, bytes: u64) -> Result<u64, String> {
+    let n = match *value {
+        Value::Integer(i) => i as f64,
+        Value::Number(n) => n,
+        _ => return Err("not an address (memory.alloc gives them, or read one from the game)".into()),
+    };
+    span(n, bytes, size(env))
 }
 
 /// Memory and the address of `bytes` bytes at `address`, in a mod's script.

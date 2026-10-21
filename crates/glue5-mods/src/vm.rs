@@ -418,7 +418,8 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
     g.set("mod", m)?;
 
     // The natives' tables (the scheduler shares `task` with the TASK_
-    // natives); the scripts' globals, the game's version; the game's memory.
+    // natives) and `native.invoke`; the scripts' globals, the game's version;
+    // the game's memory.
     natives::install(&lua, &task)?;
     crate::globals::install(&lua)?;
     crate::memory::install(&lua, sched.instance)?;
