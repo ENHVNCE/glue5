@@ -836,8 +836,10 @@ impl App {
         let page = self.ui.page();
         if page != page_before {
             if let Some(input) = self.game.as_ref().and_then(|g| g.input.as_ref()) {
-                // Nothing stays pressed in the game behind a page.
+                // Nothing stays pressed in the game behind a page (nor for
+                // the mods).
                 input.release_all();
+                glue5_mods::input::release_all();
             }
             if matches!(page_before, Some(Page::Settings | Page::Servers | Page::Mods)) {
                 self.settings.save(&self.user_dir);
@@ -1647,12 +1649,25 @@ fn game_input(
             let (ww, wh) = window.size();
             input.mouse_position((x * bw / ww as f32) as i32, (y * bh / wh as f32) as i32);
             input.mouse_motion(xrel.round() as i32, yrel.round() as i32);
+            glue5_mods::input::mouse_position(x / ww.max(1) as f32, y / wh.max(1) as f32);
         }
-        Event::MouseButtonDown { mouse_btn, .. } => input.mouse_button(mouse_bit(mouse_btn), true),
-        Event::MouseButtonUp { mouse_btn, .. } => input.mouse_button(mouse_bit(mouse_btn), false),
-        Event::MouseWheel { y, .. } => input.mouse_wheel(y.round() as i32),
+        Event::MouseButtonDown { mouse_btn, .. } => {
+            input.mouse_button(mouse_bit(mouse_btn), true);
+            glue5_mods::input::mouse_button(mouse_bit(mouse_btn), true);
+        }
+        Event::MouseButtonUp { mouse_btn, .. } => {
+            input.mouse_button(mouse_bit(mouse_btn), false);
+            glue5_mods::input::mouse_button(mouse_bit(mouse_btn), false);
+        }
+        Event::MouseWheel { y, .. } => {
+            input.mouse_wheel(y.round() as i32);
+            glue5_mods::input::mouse_wheel(y.round() as i32);
+        }
         Event::Window { win_event: WindowEvent::FocusGained, .. } => input.focus(true),
-        Event::Window { win_event: WindowEvent::FocusLost, .. } => input.focus(false),
+        Event::Window { win_event: WindowEvent::FocusLost, .. } => {
+            input.focus(false);
+            glue5_mods::input::release_all();
+        }
         _ => {}
     }
 }
@@ -1679,6 +1694,8 @@ fn relaunch(play: bool) {
 fn key(input: &InputBlock, sc: sdl3::keyboard::Scancode, down: bool) {
     if let Some(vk) = keymap::vk(sc) {
         input.key(vk, down);
+        // The key itself for the mods, not its generic code or alias.
+        glue5_mods::input::key(vk, down);
         if let Some(generic) = keymap::generic(vk) {
             input.key(generic, down);
         }
