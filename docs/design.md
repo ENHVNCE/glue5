@@ -483,6 +483,21 @@ SwiftUI and Android implementations. Using Scaleform would require hooks
 into the game's menus, while iced or Slint would add their own event loops
 and renderers.
 
+Pages are laid out in egui's content rect: the window less the safe area
+(notch, rounded corners, home indicator, from SDL) and, while a page is
+open, less the on-screen keyboard, so a sheet ends above the keyboard and
+a field being edited scrolls into sight inside it (`widgets::keep_in_view`).
+SDL says when the keyboard shows, not where it is; `keyboard.rs` learns its
+height from the platform: on iOS UIKit's keyboard notifications (its end
+frame in the window); on Android 11 and later the IME inset, reported by
+SDL's surface (`Glue5Surface`), with the window set not to pan. For the
+game's text box, which the game draws where it does, Android pans the
+window as before (the app switches the mode before the keyboard shows),
+and Android 10, which has no IME inset, always pans. On iOS SDL still
+shifts its view when the text area handed to it would be under the
+keyboard, which it no longer is for the app's fields. What is drawn over
+the game keeps to the safe area and off the touch controls.
+
 Graphics quality remains in the game's menu to avoid conflicting settings
 (see Known limits).
 
