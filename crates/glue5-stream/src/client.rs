@@ -696,9 +696,13 @@ impl Client {
 
     /// Waits for the clients stopped before it (its copy may be one of
     /// theirs), serves until stopped, then finishes: its other threads end,
-    /// and the index is saved one last time.
+    /// the index is saved one last time, and the copy's files and lock are
+    /// closed (with the client, if this thread had the last of it: the app
+    /// lets go of a client it stops) before it says it has finished. Work
+    /// on the folder waits for that: Windows moves no folder with a file
+    /// open in it.
     fn run(self: Arc<Self>, before: Vec<Arc<Done>>, threads: [JoinHandle<()>; 2]) {
-        let _over = Over(self.finished.clone());
+        let over = Over(self.finished.clone());
         for done in before {
             done.wait();
         }
@@ -707,6 +711,8 @@ impl Client {
             let _ = t.join();
         }
         self.flush();
+        drop(self);
+        drop(over);
     }
 
     /// Connects, syncs, serves; again after every lost connection.

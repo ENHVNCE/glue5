@@ -666,6 +666,33 @@ fn refuses_what_no_server_sends() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// A stopped client let go of has closed its copy (files, lock) by the time
+/// work on its folder starts.
+#[test]
+fn a_stopped_client_closes_its_copy_before_it_has_finished() {
+    let dir = temp("closes");
+    game(&dir);
+    let server = serve(&dir, &dir.join("packs"), "127.0.0.1:0".parse().unwrap());
+    let root = temp("closes-copy");
+    let client = Client::start(Options { server: server.addr().to_string(), root: root.clone(), build: BUILD.into(), low_memory: false });
+    wait_ready(&client);
+    let mut buf = vec![0u8; 100];
+    assert_eq!(client.read(client.find("data/x64/big.rpf").unwrap(), 0, &mut buf), Some(100));
+    client.stop();
+    drop(client);
+    // Another open of the lock file can take it only once the copy's is closed.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let lock = root.join(".glue5-lock");
+    crate::after_stopped(move || {
+        let taken = fs::File::open(&lock).and_then(|f| f.try_lock().map_err(std::io::Error::from));
+        let _ = tx.send(taken.map_err(|e| e.to_string()));
+    });
+    assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), Ok(()));
+    drop(server);
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&root);
+}
+
 /// A stopped client finishes in the background, a sync it was in too; what
 /// touches its folder after it (work on it, the next client) waits for it.
 #[test]
