@@ -1,10 +1,13 @@
-//! A menu's rows, one per item. Each row's control follows the game's value
-//! in place; what the player does is sent at once.
+//! A menu's rows, one per item. Each row's
+//! control follows the game's value in place; what the player does is sent
+//! at once (a text or a typed number when it is committed: Enter or
+//! leaving the field; Esc puts back the game's value).
 
+use leptos::html;
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
-use super::model::{Item, Kind, shown};
+use super::model::{Item, Kind, decimals, shown};
 use super::{find_item, send};
 use crate::state::*;
 
@@ -83,6 +86,47 @@ pub(super) fn Row(s: S, module: String, menu: u32, id: u32) -> impl IntoView {
             }
             .into_any()
         }
+        Some(Kind::Number { .. }) => {
+            let get = move || match it().kind {
+                Kind::Number { value, min, max, step, unit } => (value, min, max, step, unit),
+                _ => (0.0, None, None, 1.0, None),
+            };
+            // `%` shows (and takes) the value times 100, as the slider.
+            let k = move || if get().4.as_deref() == Some("%") { 100.0 } else { 1.0 };
+            let field = NodeRef::<html::Input>::new();
+            let focused = RwSignal::new(false);
+            follow(field, focused, move || {
+                let (v, _, _, step, _) = get();
+                format!("{:.*}", decimals(step * k()), v * k())
+            });
+            let by = move |steps: f64| {
+                let (v, min, max, step, _) = get();
+                let next = (v + steps * step).clamp(min.unwrap_or(f64::MIN), max.unwrap_or(f64::MAX));
+                input(json!(next));
+            };
+            let unit = move || get().4.filter(|u| u != "%").map(|u| view! { <span class="munit">{u}</span> });
+            view! {
+                <div class=row_class("")>
+                    {text}
+                    <div class="mnumber">
+                        <button class="mstep" aria-label="Less" title="Less" prop:disabled=off on:click=move |_| by(-1.0)>"−"</button>
+                        <input type="number" node_ref=field aria-label=label inputmode="decimal" prop:disabled=off
+                            step=move || get().3 * k() min=move || get().1.map(|m| m * k()) max=move || get().2.map(|m| m * k())
+                            on:focus=move |_| focused.set(true)
+                            on:blur=move |_| { focused.set(false); resync.notify(); }
+                            on:keydown=move |ev| commit_keys(&ev, field, move || format!("{:.*}", decimals(get().3 * k()), get().0 * k()))
+                            on:change=move |ev| {
+                                if let Ok(v) = event_target_value(&ev).trim().parse::<f64>() {
+                                    input(json!(v / k()));
+                                }
+                            }/>
+                        <button class="mstep" aria-label="More" title="More" prop:disabled=off on:click=move |_| by(1.0)>"+"</button>
+                        {unit}
+                    </div>
+                </div>
+            }
+            .into_any()
+        }
         Some(Kind::Choice { .. }) => {
             let get = move || match it().kind {
                 Kind::Choice { value, options } => (value, options),
@@ -103,6 +147,36 @@ pub(super) fn Row(s: S, module: String, menu: u32, id: u32) -> impl IntoView {
             .into_any()
         }
         Some(Kind::Label) => view! { <div class="mitem label"><p>{label}</p>{note}</div> }.into_any(),
-        Some(Kind::Number { .. } | Kind::Multi { .. } | Kind::Text { .. } | Kind::Color { .. } | Kind::Separator | Kind::Progress { .. } | Kind::Submenu { .. } | Kind::Other) | None => ().into_any(),
+        Some(Kind::Multi { .. } | Kind::Text { .. } | Kind::Color { .. } | Kind::Separator | Kind::Progress { .. } | Kind::Submenu { .. } | Kind::Other) | None => ().into_any(),
+    }
+}
+
+/// Keeps a field showing the game's value, except while it is being typed in.
+fn follow(field: NodeRef<html::Input>, focused: RwSignal<bool>, value: impl Fn() -> String + 'static) {
+    Effect::new(move |_| {
+        let v = value();
+        if let Some(el) = field.get()
+            && !focused.get_untracked()
+        {
+            el.set_value(&v);
+        }
+    });
+}
+
+/// Enter commits a field (it loses the focus, which sends it); Esc puts the
+/// game's value back first.
+fn commit_keys(ev: &web_sys::KeyboardEvent, field: NodeRef<html::Input>, value: impl Fn() -> String) {
+    let Some(el) = field.get_untracked() else { return };
+    match ev.key().as_str() {
+        "Enter" => {
+            ev.prevent_default();
+            let _ = el.blur();
+        }
+        "Escape" => {
+            ev.prevent_default();
+            el.set_value(&value());
+            let _ = el.blur();
+        }
+        _ => {}
     }
 }

@@ -305,6 +305,13 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
 .mslider input { flex: 1; min-width: 0; accent-color: #fff; }
 .mslider span { min-width: 40px; text-align: right; font: 400 12px/1 var(--mono); color: var(--text-2); white-space: nowrap; }
 .mchoice { max-width: 55%; height: 30px; padding: 0 8px; border-radius: 7px; background: rgba(36,36,36,.9); border: 1px solid var(--line); color: var(--text); font: inherit; }
+.mnumber { display: flex; align-items: center; gap: 4px; flex: none; }
+.mnumber input { width: 84px; height: 30px; padding: 0 8px; border-radius: 7px; background: rgba(36,36,36,.9); border: 1px solid var(--line); color: var(--text); font: 400 12.5px/1 var(--mono); text-align: right; outline: none; -moz-appearance: textfield; }
+.mnumber input::-webkit-inner-spin-button, .mnumber input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.mstep { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 7px; background: rgba(255,255,255,.06); border: 1px solid var(--line); color: var(--text); font-size: 16px; line-height: 1; }
+.mstep:hover:not(:disabled) { background: rgba(255,255,255,.11); }
+.munit { color: var(--muted); font-size: 12px; margin-left: 2px; }
+.mnumber input:focus { border-color: rgba(255,255,255,.3); }
 .mitem :focus-visible { outline: 2px solid rgba(255,255,255,.6); outline-offset: -2px; }
 .cnt.n { background: rgba(255,255,255,.18); color: var(--text); }
 .prompt { display: flex; align-items: center; gap: 10px; margin: 0 10px 8px; padding: 0 5px 0 12px; min-height: 40px; border-radius: 9px; background: rgba(36,36,36,.85); border: 1px solid var(--line); font: 400 12.5px/1 var(--mono); color: var(--text); }
@@ -368,7 +375,8 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
   .menus { padding: 10px; }
   .mcard { flex-basis: 100%; }
   .mitem { min-height: 48px; }
-  .mchoice { height: 38px; }
+  .mstep { width: 38px; height: 38px; }
+  .mnumber input, .mchoice { height: 38px; }
   .row { display: block; padding: 5px 14px; border-bottom: 1px solid rgba(255,255,255,.04); }
   .row .time, .row .src { display: inline; font: 600 11.5px/1.3 var(--ui); margin-right: 8px; }
   .row .msg { display: block; }
