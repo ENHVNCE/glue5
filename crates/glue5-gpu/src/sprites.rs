@@ -22,7 +22,7 @@ use egui::epaint::{
     ClippedPrimitive, Color32, CornerRadiusF32, FontId, Fonts, Galley, Mesh, PathStroke, Primitive,
     TessellationOptions, Tessellator, TextOptions, TextShape, TextureId, Vertex,
 };
-use egui::emath::{Align2, Pos2, Rect, Rot2, Vec2, pos2, vec2};
+use egui::emath::{Align2, Pos2, Rect, Rot2, pos2, vec2};
 use glue5_runtime::sprites::{self, Align, Image, List, Rgba, Shape, Stroke};
 
 /// The font atlas's side at most (and its texture's).
@@ -83,7 +83,7 @@ impl Sprites {
             let mut renderer = egui_wgpu::Renderer::new(device, format, Default::default());
             // The images again, in this renderer; the font's atlas whole.
             for t in self.textures.values_mut() {
-                t.id = renderer.register_native_texture(device, &t.view, wgpu::FilterMode::Linear);
+                t.id = register(&mut renderer, device, &t.view);
             }
             self.renderer = Some((format, renderer));
             self.layout.fonts = None;
@@ -140,29 +140,49 @@ impl Sprites {
         }
         let pixels = image.take_pixels()?;
         let (width, height) = image.size();
-        let extent = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
         // What egui's renderer takes: sRGB values read as they are.
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("sprite"),
-            size: extent,
-            mip_level_count: 1,
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: image.levels(),
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        queue.write_texture(
-            texture.as_image_copy(),
-            &pixels,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * width), rows_per_image: Some(height) },
-            extent,
-        );
+        let (mut w, mut h, mut at) = (width, height, 0);
+        for level in 0..image.levels() {
+            let len = 4 * w as usize * h as usize;
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: level, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &pixels[at..at + len],
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            );
+            at += len;
+            (w, h) = ((w / 2).max(1), (h / 2).max(1));
+        }
         let view = texture.create_view(&Default::default());
-        let id = self.renderer.as_mut()?.1.register_native_texture(device, &view, wgpu::FilterMode::Linear);
+        let id = register(&mut self.renderer.as_mut()?.1, device, &view);
         self.textures.insert(image.id(), Texture { image: Arc::downgrade(image), view, id });
         Some(id)
     }
+}
+
+/// An image's texture in egui's renderer, sampled from its levels.
+fn register(renderer: &mut egui_wgpu::Renderer, device: &wgpu::Device, view: &wgpu::TextureView) -> TextureId {
+    renderer.register_native_texture_with_sampler_options(
+        device,
+        view,
+        wgpu::SamplerDescriptor {
+            label: Some("sprite"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        },
+    )
 }
 
 /// A colour as the renderer blends it: premultiplied, and with no alpha
@@ -256,10 +276,12 @@ impl Layout {
         for sprite in &list.sprites {
             let add = sprite.additive;
             match &sprite.shape {
-                Shape::Image { image, center, size, rotation, tint } => {
+                Shape::Image { image, center, size, rotation, tint, uv, nine } => {
                     let (iw, ih) = image.size();
+                    // What is drawn of it, in its pixels.
+                    let (pw, ph) = ((uv[2] - uv[0]).abs() * iw as f32, (uv[3] - uv[1]).abs() * ih as f32);
                     let width = size[0] * w;
-                    let height = if size[1] > 0.0 { size[1] * h } else { width * ih as f32 / iw as f32 };
+                    let height = if size[1] > 0.0 { size[1] * h } else { width * ph / pw.max(1e-3) };
                     let c = at(*center);
                     let half = vec2(width, height) / 2.0;
                     if !visible(screen, c, half.length()) {
@@ -267,7 +289,27 @@ impl Layout {
                     }
                     let Some(id) = texture(image) else { continue };
                     let rot = Rot2::from_angle(rotation.to_radians());
-                    quad(self.batch(id, screen), c, half, rot, [0.0, 0.0, 1.0, 1.0], color(*tint, add));
+                    let mesh = self.batch(id, screen);
+                    match nine {
+                        None => quad(mesh, c, rot, [-half.x, -half.y, half.x, half.y], *uv, color(*tint, add)),
+                        Some(b) => {
+                            // Borders on screen as on a 1080-pixel-high one,
+                            // smaller when the drawing is.
+                            let k = (h / 1080.0).min(half.x * 2.0 / (b[0] + b[2]).max(1e-3)).min(half.y * 2.0 / (b[1] + b[3]).max(1e-3));
+                            let xs = [-half.x, -half.x + b[0] * k, half.x - b[2] * k, half.x];
+                            let ys = [-half.y, -half.y + b[1] * k, half.y - b[3] * k, half.y];
+                            // The borders in the texture, inward from each side.
+                            let (du, dv) = ((uv[2] - uv[0]).signum() / iw as f32, (uv[3] - uv[1]).signum() / ih as f32);
+                            let us = [uv[0], uv[0] + b[0] * du, uv[2] - b[2] * du, uv[2]];
+                            let vs = [uv[1], uv[1] + b[1] * dv, uv[3] - b[3] * dv, uv[3]];
+                            for j in 0..3 {
+                                for i in 0..3 {
+                                    let rect = [xs[i], ys[j], xs[i + 1], ys[j + 1]];
+                                    quad(mesh, c, rot, rect, [us[i], vs[j], us[i + 1], vs[j + 1]], color(*tint, add));
+                                }
+                            }
+                        }
+                    }
                 }
                 Shape::Rect { center, size, rotation, fill, gradient, rounding, stroke: line } => {
                     let c = at(*center);
@@ -418,12 +460,12 @@ fn visible(screen: Rect, center: Pos2, radius: f32) -> bool {
     screen.expand(radius + 1.0).contains(center)
 }
 
-/// A textured quad: `half` its half size, turned by `rot` around `center`;
-/// `uv` its part of the texture (u0, v0, u1, v1).
-fn quad(mesh: &mut Mesh, center: Pos2, half: Vec2, rot: Rot2, uv: [f32; 4], color: Color32) {
+/// A textured quad: `rect` (x0, y0, x1, y1) around `center`, turned by
+/// `rot` around it; `uv` its part of the texture (u0, v0, u1, v1).
+fn quad(mesh: &mut Mesh, center: Pos2, rot: Rot2, rect: [f32; 4], uv: [f32; 4], color: Color32) {
     let base = mesh.vertices.len() as u32;
-    for (x, y, u, v) in [(-1.0, -1.0, uv[0], uv[1]), (1.0, -1.0, uv[2], uv[1]), (1.0, 1.0, uv[2], uv[3]), (-1.0, 1.0, uv[0], uv[3])] {
-        let pos = center + rot * vec2(x * half.x, y * half.y);
+    for (x, y, u, v) in [(rect[0], rect[1], uv[0], uv[1]), (rect[2], rect[1], uv[2], uv[1]), (rect[2], rect[3], uv[2], uv[3]), (rect[0], rect[3], uv[0], uv[3])] {
+        let pos = center + rot * vec2(x, y);
         mesh.vertices.push(Vertex { pos, uv: pos2(u, v), color });
     }
     mesh.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);

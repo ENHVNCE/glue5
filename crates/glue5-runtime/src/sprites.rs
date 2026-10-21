@@ -10,22 +10,62 @@ use std::sync::{Arc, Mutex};
 use crate::Locked;
 
 /// An image to draw: RGBA, 8 bits a channel, sRGB values with the alpha
-/// premultiplied. Its pixels go to the GPU the first time it is drawn and
-/// are dropped here then.
+/// premultiplied, with its smaller levels (mipmaps: an image drawn smaller
+/// than it is reads one of them, sharper and with less memory traffic).
+/// Its pixels go to the GPU the first time it is drawn and are dropped
+/// here then.
 pub struct Image {
     id: u64,
     width: u32,
     height: u32,
+    levels: u32,
+    /// The levels one after the other, the largest first.
     pixels: Mutex<Option<Vec<u8>>>,
 }
 
 impl Image {
-    /// `pixels`: `width` × `height` × 4 bytes.
-    pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Arc<Image> {
+    /// `pixels`: `width` × `height` × 4 bytes. The smaller levels are made
+    /// here (a 2×2 average each), on the caller's thread.
+    pub fn new(width: u32, height: u32, mut pixels: Vec<u8>) -> Arc<Image> {
         assert_eq!(pixels.len(), width as usize * height as usize * 4, "an image's pixels");
+        let levels = 32 - width.max(height).max(1).leading_zeros();
+        pixels.reserve_exact(pixels.len() / 3 + 4 * levels as usize);
+        let (mut w, mut h, mut at) = (width as usize, height as usize, 0);
+        for _ in 1..levels {
+            let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+            for y in 0..nh {
+                for x in 0..nw {
+                    let px = |dx: usize, dy: usize| at + 4 * ((2 * y + dy).min(h - 1) * w + (2 * x + dx).min(w - 1));
+                    let (a, b, c, d) = (px(0, 0), px(1, 0), px(0, 1), px(1, 1));
+                    for i in 0..4 {
+                        let sum = u32::from(pixels[a + i]) + u32::from(pixels[b + i]) + u32::from(pixels[c + i]) + u32::from(pixels[d + i]);
+                        pixels.push(((sum + 2) / 4) as u8);
+                    }
+                }
+            }
+            at += 4 * w * h;
+            (w, h) = (nw, nh);
+        }
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        Arc::new(Image { id, width, height, pixels: Mutex::new(Some(pixels)) })
+        Arc::new(Image { id, width, height, levels, pixels: Mutex::new(Some(pixels)) })
+    }
+
+    /// Its levels, the full size first.
+    pub fn levels(&self) -> u32 {
+        self.levels
+    }
+
+    /// What an image of this size takes, its levels included.
+    pub fn bytes_for(width: u32, height: u32) -> usize {
+        let (mut w, mut h, mut bytes) = (width as usize, height as usize, 0);
+        loop {
+            bytes += 4 * w * h;
+            if w == 1 && h == 1 {
+                return bytes;
+            }
+            (w, h) = ((w / 2).max(1), (h / 2).max(1));
+        }
     }
 
     /// Unique for the process's life.
@@ -37,9 +77,9 @@ impl Image {
         (self.width, self.height)
     }
 
-    /// What it takes on the GPU (and here until then).
+    /// What it takes on the GPU (and here until then), its levels included.
     pub fn bytes(&self) -> usize {
-        self.width as usize * self.height as usize * 4
+        Image::bytes_for(self.width, self.height)
     }
 
     /// The pixels, for the upload (none after the first call).
@@ -79,9 +119,13 @@ pub struct Stroke {
 /// are degrees, clockwise.
 #[derive(Clone)]
 pub enum Shape {
-    /// `size` wide and high (a height of 0 keeps the image's proportions),
-    /// its pixels multiplied by `tint`.
-    Image { image: Arc<Image>, center: [f32; 2], size: [f32; 2], rotation: f32, tint: Rgba },
+    /// `size` wide and high (a height of 0 keeps the proportions of what is
+    /// drawn of it), its pixels multiplied by `tint`. `uv` is the part of it
+    /// drawn (u0, v0, u1, v1, fractions of its size: a sprite sheet's frame);
+    /// `nine` slices it nine ways (left, top, right, bottom borders, in its
+    /// pixels): the corners keep their size, as on a 1080-pixel-high screen,
+    /// the edges and the middle stretch.
+    Image { image: Arc<Image>, center: [f32; 2], size: [f32; 2], rotation: f32, tint: Rgba, uv: [f32; 4], nine: Option<[f32; 4]> },
     /// Filled with `fill`, or from `fill` to `gradient.0` top to bottom (left
     /// to right when `gradient.1`).
     Rect {
@@ -193,4 +237,28 @@ pub fn set_screen(width: u32, height: u32) {
 pub fn screen() -> (u32, u32) {
     let s = SCREEN.load(Ordering::Relaxed);
     ((s >> 32) as u32, s as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Image;
+
+    /// Each level halves the one before (2×2 averages, an odd edge
+    /// repeated), down to a pixel; they count in its bytes.
+    #[test]
+    fn mipmaps() {
+        let mut pixels = Vec::new();
+        for v in [0u8, 40, 80, 120, 160, 200] {
+            pixels.extend([v, v, v, 255]);
+        }
+        let image = Image::new(3, 2, pixels);
+        assert_eq!(image.levels(), 2);
+        assert_eq!(image.bytes(), Image::bytes_for(3, 2));
+        assert_eq!(Image::bytes_for(3, 2), 24 + 4);
+        let all = image.take_pixels().unwrap();
+        assert_eq!(all.len(), image.bytes());
+        // (0 + 40 + 120 + 160) / 4
+        assert_eq!(&all[24..], &[80, 80, 80, 255]);
+        assert_eq!(Image::bytes_for(16, 8), 4 * (128 + 32 + 8 + 2 + 1));
+    }
 }

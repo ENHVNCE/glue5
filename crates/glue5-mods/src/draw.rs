@@ -201,7 +201,7 @@ fn decode_png(bytes: &[u8], room: usize) -> Result<(u32, u32, Vec<u8>), String> 
     if width > SIDE || height > SIDE {
         return Err(format!("{width}×{height}: images of {SIDE}×{SIDE} at most"));
     }
-    let need = width as usize * height as usize * 4;
+    let need = Image::bytes_for(width, height);
     if need > room {
         return Err(format!(
             "{width}×{height} takes {:.1} MB, more than is left of the {} MB a mod's images may take",
@@ -330,6 +330,8 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
                     size: [fraction(w)?.max(0.0), fraction(h.unwrap_or(0.0))?.max(0.0)],
                     rotation: s.rotation,
                     tint: rgba(color)?,
+                    uv: s.uv,
+                    nine: s.nine,
                 };
                 c.add(&s, shape)
             },
@@ -602,6 +604,8 @@ struct Style {
     gradient: Option<Rgba>,
     horizontal: bool,
     align: Align,
+    uv: [f32; 4],
+    nine: Option<[f32; 4]>,
     additive: bool,
 }
 
@@ -616,6 +620,8 @@ const PLAIN: Style = Style {
     gradient: None,
     horizontal: false,
     align: Align::Left,
+    uv: [0.0, 0.0, 1.0, 1.0],
+    nine: None,
     additive: false,
 };
 
@@ -667,6 +673,24 @@ impl Style {
             "fill" => self.fill = color(&v)?,
             "gradient" => self.gradient = color(&v)?,
             "closed" => self.closed = flag(&v)?,
+            "uv" | "nineSlice" => {
+                let four = match &v {
+                    Value::Nil => None,
+                    Value::Table(t) if t.raw_len() == 4 => {
+                        let mut q = [0.0f32; 4];
+                        for (i, x) in q.iter_mut().enumerate() {
+                            *x = num(&t.raw_get(i + 1)?).ok_or_else(|| bad("four numbers"))? as f32;
+                        }
+                        Some(q)
+                    }
+                    _ => return Err(bad("four numbers")),
+                };
+                if key == "uv" {
+                    self.uv = four.map_or(PLAIN.uv, |q| q.map(|x| x.clamp(-16.0, 16.0)));
+                } else {
+                    self.nine = four.map(|q| q.map(|x| x.clamp(0.0, SIDE as f32)));
+                }
+            }
             "blend" => {
                 self.additive = match &v {
                     Value::Nil => false,
@@ -692,7 +716,7 @@ impl Style {
 }
 
 /// A style's fields, as `draw.style{...}` and assignments name them.
-const STYLE_FIELDS: &[&str] = &["z", "rotation", "rounding", "width", "stroke", "fill", "gradient", "closed", "horizontal", "align", "blend"];
+const STYLE_FIELDS: &[&str] = &["z", "rotation", "rounding", "width", "stroke", "fill", "gradient", "closed", "horizontal", "align", "uv", "nineSlice", "blend"];
 
 impl UserData for Style {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
@@ -703,6 +727,14 @@ impl UserData for Style {
         fields.add_field_method_get("rotation", |_, s| Ok(s.rotation));
         fields.add_field_method_get("rounding", |_, s| Ok(s.rounding));
         fields.add_field_method_get("width", |_, s| Ok(s.width));
+    }
+
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        // A sprite sheet's frame, without a table a frame.
+        methods.add_method_mut("setUv", |_, s, (u0, v0, u1, v1): (f64, f64, f64, f64)| {
+            s.uv = [fraction(u0)?, fraction(v0)?, fraction(u1)?, fraction(v1)?];
+            Ok(())
+        });
     }
 }
 
@@ -760,12 +792,19 @@ export type Style = {
 \thorizontal: boolean,
 \t-- \"add\": added to what is under it (light, glows); \"alpha\" by default.
 \tblend: \"alpha\" | \"add\",
+\t-- The part of an image drawn: {u0, v0, u1, v1}, fractions of its size (a sprite sheet's frame;
+\t-- style:setUv(u0, v0, u1, v1) changes it without a table).
+\tuv: { number }?,
+\t-- An image cut nine ways: {left, top, right, bottom} borders in its pixels. The corners keep
+\t-- their size (as on a 1080-pixel-high screen), the edges and the middle stretch: panels of any size.
+\tnineSlice: { number }?,
+\tsetUv: (self: Style, u0: number, v0: number, u1: number, v1: number) -> (),
 \t-- Which end of a text is at x.
 \talign: \"left\" | \"center\" | \"right\",
 }
 export type StyleOptions = {
 \tz: number?, rotation: number?, rounding: number?, stroke: Color?, width: number?, fill: Color?, closed: boolean?,
-\tgradient: Color?, horizontal: boolean?, align: (\"left\" | \"center\" | \"right\")?, blend: (\"alpha\" | \"add\")?,
+\tgradient: Color?, horizontal: boolean?, align: (\"left\" | \"center\" | \"right\")?, uv: { number }?, nineSlice: { number }?, blend: (\"alpha\" | \"add\")?,
 }
 
 -- Images, shapes and text over the game. What a turn of the mod draws shows until its next turn:
@@ -883,8 +922,8 @@ mod tests {
         let wide = png(SIDE + 1, 1, png::ColorType::Grayscale, &vec![0; SIDE as usize + 1]);
         assert!(decode_png(&wide, IMAGE_BYTES).unwrap_err().contains("2048×2048 at most"));
         let small = png(64, 64, png::ColorType::Grayscale, &[0; 64 * 64]);
-        assert!(decode_png(&small, 64 * 64 * 4 - 1).unwrap_err().contains("more than is left"));
-        assert!(decode_png(&small, 64 * 64 * 4).is_ok());
+        assert!(decode_png(&small, Image::bytes_for(64, 64) - 1).unwrap_err().contains("more than is left"));
+        assert!(decode_png(&small, Image::bytes_for(64, 64)).is_ok());
         assert!(decode_png(b"not a png", IMAGE_BYTES).unwrap_err().starts_with("not a PNG"));
     }
 
@@ -895,7 +934,7 @@ mod tests {
         let lua = vm();
         let size = run(&lua, "img = draw.loadImage('images/a.png') draw.image(img, 0.5, 0.5, 0.1) return img.width, img.height").unwrap();
         assert_eq!(size.into_iter().map(|v| v.as_i64().unwrap()).collect::<Vec<_>>(), [16, 8]);
-        assert_eq!(budget(&lua), (1, 16 * 8 * 4));
+        assert_eq!(budget(&lua), (1, Image::bytes_for(16, 8)));
         let drawn = shown(&lua);
         let Shape::Image { image, size, tint, .. } = &drawn[0].1.shape else { panic!("not an image") };
         assert_eq!((*size, *tint), ([0.1, 0.0], [255; 4]));
@@ -991,6 +1030,25 @@ mod tests {
         assert!(matches!(&drawn[3].1.shape, Shape::Path { points, closed: true, fill: Some([0x11, 0x22, 0x33, 0x44]), stroke: None } if c.ready.borrow().points[points.start as usize..points.end as usize] == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]));
         assert!(matches!(drawn[4].1.shape, Shape::Line { stroke: Stroke { color: [255, 255, 255, 255], .. }, .. }));
         assert!(matches!(&drawn[5].1.shape, Shape::Text { text, align: Align::Right, size: 0.05, .. } if &**text == "hi"));
+    }
+
+    /// A sprite sheet's frame and nine-slicing are the image's coordinates.
+    #[test]
+    fn image_parts() {
+        let lua = vm();
+        run(&lua, "
+            local img = draw.loadImage('images/a.png')
+            local frame = draw.style{ uv = { 0, 0, 0.25, 1 }, nineSlice = { 2, 2, 2, 2 } }
+            draw.image(img, 0.5, 0.5, 0.1, nil, nil, frame)
+            frame:setUv(0.25, 0, 0.5, 1)
+            draw.image(img, 0.5, 0.5, 0.1, nil, nil, frame)
+        ").unwrap();
+        let drawn = shown(&lua);
+        assert!(matches!(drawn[0].1.shape, Shape::Image { uv: [0.0, 0.0, 0.25, 1.0], nine: Some([2.0, 2.0, 2.0, 2.0]), .. }));
+        assert!(matches!(drawn[1].1.shape, Shape::Image { uv: [0.25, 0.0, 0.5, 1.0], .. }));
+        for bad in ["draw.style{ uv = { 0, 0, 1 } }", "draw.style{ nineSlice = 4 }"] {
+            assert!(run(&lua, bad).is_err(), "{bad}");
+        }
     }
 
     /// A turn cut short leaves the last whole one on screen; the next whole
