@@ -82,3 +82,21 @@ declare world: typeof(world) & {
 	-- The street's name, and the crossing's if at one.
 	streetName: (pos: vector) -> (string, string?),
 }
+
+-- A scaleform movie (scaleform.load).
+export type Scaleform = {
+	handle: number,
+	name: string,
+	-- Calls a method of the movie with numbers (whole ones as ints), booleans and strings.
+	call: (self: Scaleform, method: string, ...(number | boolean | string)) -> (),
+	-- Draws it this frame: over the whole screen, or centred at x, y (fractions of the screen) in width × height.
+	draw: (self: Scaleform, x: number?, y: number?, width: number?, height: number?) -> (),
+	-- Draws it this frame in the world.
+	draw3d: (self: Scaleform, pos: vector, rot: vector, scale: vector?) -> (),
+	release: (self: Scaleform) -> (),
+}
+
+declare scaleform: {
+	-- The movie, once loaded (waits; nil if it does not load in `timeoutMs`, 10 s).
+	load: (name: string, timeoutMs: number?) -> Scaleform?,
+}
