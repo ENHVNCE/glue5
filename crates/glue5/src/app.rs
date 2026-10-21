@@ -92,6 +92,7 @@ pub fn run() -> Result<()> {
         builder.metal_view();
     }
     let window = builder.build()?;
+    crate::keyboard::init(&window);
     let pixels = window.size_in_pixels();
     settings.for_screen(pixels.1);
 
@@ -745,6 +746,7 @@ impl App {
         let stream = stream.as_ref().map(|c| (c.server(), c.status()));
         let stream_alert = self.stream_alert(stream.as_ref().map(|(_, s)| s));
         let servers = self.servers.lock().unwrap().clone();
+        self.ui.keyboard(crate::keyboard::overlap(&self.window));
         if in_game || (!self.lifecycle.background.load(Ordering::Relaxed) && self.ui.wants_frame()) {
             let status = Status {
                 game_dir: self.game_dir.as_deref(),

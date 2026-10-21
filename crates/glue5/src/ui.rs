@@ -274,6 +274,9 @@ pub struct Ui {
     /// Where the focused text field was last drawn (the system keyboard
     /// keeps it in view).
     text_rect: Option<Rect>,
+    /// The on-screen keyboard's height over the window's bottom, in points:
+    /// the pages end above it.
+    keyboard: f32,
     /// The settings button's icon.
     gear_icon: Option<egui::TextureHandle>,
 }
@@ -331,6 +334,7 @@ impl Ui {
             chip: Default::default(),
             menus_button: None,
             text_rect: None,
+            keyboard: 0.0,
             gear_icon,
         }
     }
@@ -490,6 +494,18 @@ impl Ui {
     /// keyboard on touch screens).
     pub fn wants_text(&self) -> bool {
         self.page.is_some() && self.ctx.egui_wants_keyboard_input()
+    }
+
+    /// The on-screen keyboard's height over the window's bottom, in points
+    /// ([`crate::keyboard::overlap`]): an open page is drawn again above it
+    /// as it moves.
+    pub fn keyboard(&mut self, overlap: f32) {
+        if overlap != self.keyboard {
+            self.keyboard = overlap;
+            if self.page.is_some() {
+                self.repaint();
+            }
+        }
     }
 
     /// What the focused text field takes, and where it is (in points).
@@ -698,13 +714,16 @@ impl Ui {
         let ppp = pixels_per_point(window);
         let screen = Rect::from_min_size(Pos2::ZERO, screen_size(window));
         let safe = safe_rect(window);
+        // A page ends above the on-screen keyboard (egui's content rect, where
+        // the sheets go); what is drawn over the game keeps to the safe area.
+        let keyboard = if self.page.is_some() { self.keyboard } else { 0.0 };
         let mut raw = egui::RawInput {
             screen_rect: Some(screen),
             safe_area_insets: Some(SafeAreaInsets(egui::epaint::MarginF32 {
                 left: safe.min.x - screen.min.x,
                 right: screen.max.x - safe.max.x,
                 top: safe.min.y - screen.min.y,
-                bottom: screen.max.y - safe.max.y,
+                bottom: (screen.max.y - safe.max.y).max(keyboard),
             })),
             time: Some(self.start.elapsed().as_secs_f64()),
             events: std::mem::take(&mut self.events),
@@ -878,7 +897,7 @@ fn pixels_per_point(window: &Window) -> f32 {
 
 /// Points per unit of SDL's window coordinates (event and safe area
 /// positions).
-fn points_per_window_unit(window: &Window) -> f32 {
+pub(crate) fn points_per_window_unit(window: &Window) -> f32 {
     window.pixel_density() / pixels_per_point(window)
 }
 
