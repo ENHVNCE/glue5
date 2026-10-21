@@ -40,6 +40,7 @@ mod shader_settings;
 mod shadow_reveal;
 mod script_assets;
 mod skin;
+pub mod sprites;
 mod stats;
 mod stream;
 mod texts;
