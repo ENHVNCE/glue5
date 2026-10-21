@@ -715,6 +715,10 @@ fn luau_type(k: Kind, input: bool) -> String {
         Kind::Str => "string".into(),
         Kind::Vec3 => "vector".into(),
         Kind::Any => "any".into(),
+        Kind::Handle(Handle::Player) => "Player".into(),
+        // None (0, nil) where a native takes one: the game's scripts pass
+        // that where the native allows none.
+        Kind::Handle(h) if input => format!("{h:?}?"),
         Kind::Handle(h) => format!("{h:?}"),
     }
 }

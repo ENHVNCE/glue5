@@ -306,6 +306,13 @@ pub fn call(lua: &Lua, index: usize, args: MultiValue) -> mlua::Result<MultiValu
                     };
                     // DOES_ENTITY_EXIST and the like are how a mod checks one.
                     let checks = n.name.starts_with("DOES_") && n.name.ends_with("_EXIST");
+                    // None, where the native allows it (the engine finds no
+                    // entity for 0, and a pool always has an index 0).
+                    if id == 0 && p.dir == D::In {
+                        mem.set_i32(target, 0);
+                        slot += 8;
+                        continue;
+                    }
                     // One passed by reference (DELETE_ENTITY, ..._AS_NO_LONGER_NEEDED)
                     // that is gone already: nothing to do (the engine would
                     // trap on a handle past its pool).
