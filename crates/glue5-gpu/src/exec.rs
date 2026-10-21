@@ -112,7 +112,8 @@ pub struct PassInfo {
 #[derive(Default)]
 pub struct Bound {
     pub pipeline: usize,
-    pub groups: [Option<(u64, crate::draw::Offsets)>; 2],
+    /// The stages' groups, then their constants'.
+    pub groups: [Option<(u64, crate::draw::Offsets)>; 4],
     pub vb: [Option<(u32, u64)>; 16],
     pub ib: Option<(u32, u32, u64)>,
     pub viewport: Option<[f32; 6]>,

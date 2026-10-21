@@ -142,7 +142,13 @@ impl Compiler {
             .or_insert_with(|| {
                 self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: None,
-                    bind_group_layouts: &[vs.layout.as_ref(), ps.and_then(|p| p.layout.as_ref())],
+                    // Groups 0 and 1 the stages', 2 and 3 their constants'.
+                    bind_group_layouts: &[
+                        vs.layout.as_ref(),
+                        ps.and_then(|p| p.layout.as_ref()),
+                        vs.constants.as_ref(),
+                        ps.and_then(|p| p.constants.as_ref()),
+                    ],
                     immediate_size: 0,
                 })
             })

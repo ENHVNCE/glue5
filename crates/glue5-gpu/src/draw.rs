@@ -22,15 +22,20 @@ const ZERO_VB: u64 = 4096;
 
 /// Bind groups by the ids of what they hold (ids are never reused). Two
 /// generations: the oldest is dropped when the newest is full, or when it
-/// ages ([`BindCache::age`]).
+/// ages ([`BindCache::age`]). Constants groups apart: a few per program
+/// layout and chunk of the uniform ring, which stays.
 #[derive(Default)]
 pub struct BindCache {
     current: BindGroups,
     old: BindGroups,
+    constants: FxHashMap<ConstantsKey, (wgpu::BindGroup, u64)>,
     serial: u64,
 }
 
 type BindGroups = FxHashMap<Box<[u32]>, (wgpu::BindGroup, u64)>;
+
+/// A constants group: stage, then (binding, size, chunk id) per binding.
+type ConstantsKey = [u32; 1 + 3 * (1 + shader::OWN_MAX)];
 
 const BIND_GROUPS: usize = 16384;
 
@@ -55,7 +60,7 @@ impl BindCache {
     }
 
     pub fn len(&self) -> usize {
-        self.current.len() + self.old.len()
+        self.current.len() + self.old.len() + self.constants.len()
     }
 
     /// Starts a new generation: the groups no draw takes until the next one
@@ -79,8 +84,8 @@ struct Constants {
     own: [Option<Alloc>; shader::OWN_MAX],
 }
 
-/// A bind group's dynamic offsets, in binding order: its pack's, then its
-/// own constant buffers'.
+/// A constants group's dynamic offsets, in binding order: its pack's, then
+/// its own constant buffers' (none for the others).
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Offsets {
     values: [u32; 1 + shader::OWN_MAX],
@@ -499,40 +504,18 @@ impl Gpu {
 
     // ---- bind groups -----------------------------------------------------------------
 
-    /// The bind group of a program's stage and its dynamic offsets.
+    /// The bind group of a program's stage: what it binds but its constants.
     fn bind_group(
         &mut self,
         prog: &Program,
         stage: Stage,
         layout: &wgpu::BindGroupLayout,
     ) -> Option<(wgpu::BindGroup, u64, Offsets)> {
-        // The scene's draws move by its jitter (temporal upscaling, see scene.rs).
-        let jitter = match (stage, &self.pass_info) {
-            (Stage::Vertex, Some(p)) => self.scene.clip_jitter((p.width, p.height)),
-            _ => None,
-        };
-        let pack = match &prog.pack {
-            Some(pack) => Some(pack_constants(
-                &self.objs,
-                &self.s.cb,
-                &mut self.uniforms,
-                &mut self.packs,
-                &self.device,
-                prog,
-                stage,
-                pack,
-                jitter,
-            )),
-            None => None,
-        };
         let st = stage as usize;
         let epoch = self.epoch;
         let mut key = std::mem::take(&mut self.key);
         key.clear();
-        key.extend([prog.id, stage as u32, pack.map_or(0, |c| c.pack.chunk_id)]);
-        if let Some(c) = &pack {
-            key.extend(c.own.iter().flatten().map(|a| a.chunk_id));
-        }
+        key.extend([prog.id, stage as u32]);
         for b in &prog.bindings {
             match &b.kind {
                 Kind::Uniform => {}
@@ -553,7 +536,8 @@ impl Gpu {
                     let maybe_target = self.pass.is_some() && (depth_read || self.s.rt.iter().any(|r| r.tex == res));
                     let target = maybe_target
                         && self.objs.srv(id).is_some_and(|v| {
-                            self.reads_target(prog, stage, slot, v, *dim) || self.compares_depth_target(v, *sample, stage)
+                            self.reads_target(prog, stage, slot, v, *dim)
+                                || self.compares_depth_target(v, *sample, stage)
                         });
                     match (srvs.texture & bit != 0 && !target).then(|| self.objs.tex(res)).flatten() {
                         Some(t) => {
@@ -602,7 +586,7 @@ impl Gpu {
         let found = self.binds.get(&key);
         let result = match found {
             Some((bg, serial)) => Some((bg, serial)),
-            None => self.create_bind_group(prog, stage, layout, pack).map(|bg| {
+            None => self.create_bind_group(prog, stage, layout).map(|bg| {
                 self.stats.bind_groups += 1;
                 let (serial, dropped) = self.binds.insert(&key, bg.clone());
                 // Freed off the command thread (a hitch of tens of ms there).
@@ -613,12 +597,64 @@ impl Gpu {
             }),
         };
         self.key = key;
+        result.map(|(bg, serial)| (bg, serial, Offsets::default()))
+    }
+
+    /// The constants group of a program's stage (its pack, its own buffers)
+    /// and their dynamic offsets: one for each layout, sizes and chunks of
+    /// the uniform ring, shared by the programs.
+    fn constants_group(&mut self, prog: &Program, stage: Stage) -> Option<(wgpu::BindGroup, u64, Offsets)> {
+        let (pack, layout) = (prog.pack.as_ref()?, prog.constants.as_ref()?);
+        // The scene's draws move by its jitter (temporal upscaling, see scene.rs).
+        let jitter = match (stage, &self.pass_info) {
+            (Stage::Vertex, Some(p)) => self.scene.clip_jitter((p.width, p.height)),
+            _ => None,
+        };
+        let c = pack_constants(
+            &self.objs,
+            &self.s.cb,
+            &mut self.uniforms,
+            &mut self.packs,
+            &self.device,
+            prog,
+            stage,
+            pack,
+            jitter,
+        );
+        // (binding, size, where) in binding order.
+        let bindings = || pack.bindings().zip(std::iter::once(c.pack).chain(c.own.iter().flatten().copied()));
+        let mut key: ConstantsKey = [0; 1 + 3 * (1 + shader::OWN_MAX)];
+        key[0] = stage as u32;
         let mut offsets = Offsets::default();
-        if let Some(c) = &pack {
-            offsets.push(c.pack.offset);
-            c.own.iter().flatten().for_each(|a| offsets.push(a.offset));
+        for (i, ((binding, size), at)) in bindings().enumerate() {
+            key[1 + i * 3..4 + i * 3].copy_from_slice(&[binding, size, at.chunk_id]);
+            offsets.push(at.offset);
         }
-        result.map(|(bg, serial)| (bg, serial, offsets))
+        if let Some((bg, serial)) = self.binds.constants.get(&key) {
+            return Some((bg.clone(), *serial, offsets));
+        }
+        let entries: Vec<_> = bindings()
+            .map(|((binding, size), at)| wgpu::BindGroupEntry {
+                binding,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: self.uniforms.buffer(at.chunk),
+                    offset: 0,
+                    size: wgpu::BufferSize::new(size as u64),
+                }),
+            })
+            .collect();
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout, entries: &entries });
+        if let Some(e) = pollster::block_on(scope.pop()) {
+            crate::log_once(&format!("cbg{}", prog.label), || {
+                format!("{}: constants bind group failed: {e}", prog.label)
+            });
+            return None;
+        }
+        self.stats.bind_groups += 1;
+        self.binds.serial += 1;
+        self.binds.constants.insert(key, (bg.clone(), self.binds.serial));
+        Some((bg, self.binds.serial, offsets))
     }
 
     fn storage_view(&self, st: usize, binding: u32) -> (u32, Option<&View>) {
@@ -638,13 +674,13 @@ impl Gpu {
         prog: &Program,
         stage: Stage,
         layout: &wgpu::BindGroupLayout,
-        constants: Option<Constants>,
     ) -> Option<wgpu::BindGroup> {
         let st = stage as usize;
         let mut resources: Vec<(u32, Res)> = Vec::with_capacity(prog.bindings.len());
         for b in &prog.bindings {
             let res = match &b.kind {
-                Kind::Uniform if b.binding == shader::CONSTANT_TABLE => {
+                // The constant table (the constant buffers are in their own group).
+                Kind::Uniform => {
                     let Some(consts) = &prog.consts else {
                         crate::log_once(&format!("c15{}", prog.label), || {
                             format!("{} reads the constant table but has none", prog.label)
@@ -652,16 +688,6 @@ impl Gpu {
                         return None;
                     };
                     Res::Buffer(consts.clone(), 0, None)
-                }
-                Kind::Uniform => {
-                    let (pack, constants) = (prog.pack.as_ref()?, constants?);
-                    let (alloc, size) = if b.binding == shader::PACKED_CBUFFERS {
-                        (constants.pack, pack.size)
-                    } else {
-                        let i = pack.own.iter().position(|m| m.slot == b.binding)?;
-                        (constants.own[i]?, pack.own[i].size)
-                    };
-                    Res::Buffer(self.uniforms.buffer(alloc.chunk).clone(), 0, Some(size as u64))
                 }
                 Kind::Sampler { comparison } => {
                     let id = self.s.sampler[st][(b.binding - shader::SAMPLERS) as usize];
@@ -1088,6 +1114,20 @@ impl Gpu {
             },
             None => None,
         };
+        let g2 = match vs.pack {
+            Some(_) => match self.constants_group(&vs, Stage::Vertex) {
+                Some(g) => Some(g),
+                None => return self.skip("vertex constants"),
+            },
+            None => None,
+        };
+        let g3 = match ps.as_ref().filter(|p| p.pack.is_some()) {
+            Some(p) => match self.constants_group(p, Stage::Pixel) {
+                Some(g) => Some(g),
+                None => return self.skip("pixel constants"),
+            },
+            None => None,
+        };
 
         let indexed = kind == 4 || (kind < 4 && kind & 1 != 0);
         // SV_VertexID / SV_InstanceID do not include the draw's starts; WebGPU's
@@ -1225,7 +1265,7 @@ impl Gpu {
             pass.set_pipeline(&pipe.pipeline);
             bound.pipeline = pipe_id;
         }
-        for (i, g) in [g0, g1].into_iter().enumerate() {
+        for (i, g) in [g0, g1, g2, g3].into_iter().enumerate() {
             if let Some((bg, serial, offsets)) = g
                 && bound.groups[i] != Some((serial, offsets))
             {
@@ -1355,8 +1395,15 @@ impl Gpu {
         let Some(compute) = compute else {
             return self.skip("compute pipeline failed");
         };
-        let Some((bg, _, offsets)) = self.bind_group(&compute.program, Stage::Compute, &compute.layout) else {
+        let Some((bg, _, _)) = self.bind_group(&compute.program, Stage::Compute, &compute.layout) else {
             return self.skip("compute bind group");
+        };
+        let constants = match compute.program.pack {
+            Some(_) => match self.constants_group(&compute.program, Stage::Compute) {
+                Some((bg, _, offsets)) => Some((bg, offsets)),
+                None => return self.skip("compute constants"),
+            },
+            None => None,
         };
         self.stats.dispatches += 1;
         let ts = self.time_pass(&cs.label);
@@ -1367,7 +1414,10 @@ impl Gpu {
             timestamp_writes: ts.and_then(|i| self.profiler.as_ref().map(|p| p.compute(i))),
         });
         pass.set_pipeline(&compute.pipeline);
-        pass.set_bind_group(0, &bg, offsets.as_slice());
+        pass.set_bind_group(0, &bg, &[]);
+        if let Some((bg, offsets)) = constants {
+            pass.set_bind_group(Stage::Compute.constants_group(), &bg, offsets.as_slice());
+        }
         pass.dispatch_workgroups(x, y, z);
     }
 }

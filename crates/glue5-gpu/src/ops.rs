@@ -90,9 +90,10 @@ fn make_compute(
     let layout = device
         .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &program.layout_entries() });
     let module = program.module(device)?;
+    // Its constants in group 2, as a vertex stage's.
     let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
-        bind_group_layouts: &[Some(&layout)],
+        bind_group_layouts: &[Some(&layout), None, program.constants.as_ref()],
         immediate_size: 0,
     });
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
