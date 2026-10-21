@@ -734,6 +734,8 @@ pub struct Output {
     display: Option<Display>,
     offscreen: Option<Offscreen>,
     passes: Passes,
+    /// What mods draw over the game, under the overlay.
+    sprites: crate::sprites::Sprites,
     overlay: OverlayRenderer,
     fsr: crate::fsr::Fsr,
     /// When the last game frame came, and the time between them (smoothed).
@@ -839,6 +841,7 @@ impl Output {
             display,
             offscreen,
             passes: Passes::default(),
+            sprites: Default::default(),
             overlay: OverlayRenderer::new(overlay),
             fsr: Default::default(),
             last_frame: None,
@@ -953,7 +956,7 @@ impl Output {
     /// The commands that draw `frame`: the back buffer `src` scaled into it
     /// (by the bicubic filter, or as `scaled` by an upscaler, see
     /// [`Output::upscale`]; without one, the background colour), then the
-    /// overlay.
+    /// sprites (with a frame) and the overlay.
     pub fn compose(
         &mut self,
         device: &wgpu::Device,
@@ -972,6 +975,7 @@ impl Output {
         // before it; a second pass would load and store the whole window
         // again on tiling GPUs).
         let overlay = self.overlay.prepare(device, queue, &mut encoder, format, [size.0, size.1]);
+        let sprites = src.is_some() && self.sprites.prepare(device, queue, &mut encoder, format, [size.0, size.1]);
         let mut pass = begin_pass(&mut encoder, &target, if src.is_some() { wgpu::Color::BLACK } else { BACKGROUND })
             .forget_lifetime();
         if let Some(p) = src {
@@ -987,6 +991,9 @@ impl Output {
                 }
                 None => self.passes.blit(device, &mut pass, &p.view, format, rect),
             }
+        }
+        if sprites {
+            self.sprites.render(&mut pass, [size.0, size.1]);
         }
         if let Some(overlay) = overlay {
             self.overlay.render(&mut pass, overlay);

@@ -32,6 +32,7 @@ mod recycle;
 mod scene;
 mod shader;
 mod slabs;
+mod sprites;
 mod submit;
 mod uniforms;
 #[cfg(test)]
