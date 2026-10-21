@@ -24,6 +24,7 @@ use crate::settings::{PerfOverlay, Settings};
 mod chip;
 mod credits;
 mod friends;
+mod menus;
 mod mods;
 mod pages;
 mod perf;
@@ -379,10 +380,11 @@ impl Ui {
         self.repaint();
     }
 
-    /// The mods' menus (F7); again, back.
+    /// The mods' menus (F7); again, closed (where the player was in them
+    /// stays for the next time).
     pub fn toggle_mod_menus(&mut self) {
         if self.page == Some(Page::Mods) {
-            self.back();
+            self.show(self.behind);
         } else {
             self.mods.show_menus();
             self.show(Some(Page::Mods));
@@ -440,12 +442,17 @@ impl Ui {
                 self.repaint();
             }
             Some(Page::Settings) => self.show(self.home),
+            // Out of a field, or up a menu, first.
+            Some(Page::Mods) if self.mods.back(&self.ctx) => self.repaint(),
             Some(Page::Credits | Page::Friends | Page::Servers | Page::Mods) => self.show(self.behind),
             _ => {}
         }
     }
 
     fn show(&mut self, page: Option<Page>) {
+        if self.page == Some(Page::Mods) && page != Some(Page::Mods) {
+            self.mods.closed();
+        }
         let secondary = |p: Option<Page>| matches!(p, Some(Page::Credits | Page::Friends | Page::Servers | Page::Mods));
         if secondary(page) && self.page != page {
             // One opened from another goes back where the first came from
@@ -782,7 +789,8 @@ impl Ui {
                 back = friends_page(&ctx, &mut self.friends, game, &mut actions);
             }
             Some(Page::Servers) => back = servers_page(&ctx, &mut self.servers, settings, status, &mut actions),
-            Some(Page::Mods) => back = mods_page(&ctx, &mut self.mods, settings, status),
+            // Its X closes it, from inside a menu too (back goes up a menu).
+            Some(Page::Mods) => go = mods_page(&ctx, &mut self.mods, settings, status).then_some(self.behind),
             None => {}
         }
         let mut output = ctx.end_pass();
