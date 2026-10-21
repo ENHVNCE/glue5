@@ -110,6 +110,38 @@ files with `--!strict` to have every type checked.
   full; an entity of the wrong kind (a Ped where a Vehicle is wanted) is
   an error before the native runs.
 
+## Standard library
+- Constants by the game's names without their prefix: `Control.JUMP`
+  (INPUT_JUMP), `Bone.R_HAND` (BONETAG_R_HAND), `ExplosionType.GRENADE`,
+  `PedConfigFlag.NoCriticalHits`, `HudComponent.CASH`, `VehicleSeat.DRIVER`,
+  `Font.PRICEDOWN`.
+- `streaming.load(asset, [kind], [ms])` loads a model ("model", the
+  default), "anim", "animSet", "clipSet", "ptfx" or "texture", waiting;
+  false if it is missing or late. `spawn.vehicle(model, [pos], [heading],
+  [{warpIn}])`, `spawn.ped(model, [pos], [heading])`, `spawn.prop(model,
+  [pos], [{dynamic, ground}])`: loaded, made 5 m ahead of the player by
+  default, released; nil if the model did not load.
+- `world.nearby(kind, around, radius)` and `world.closest(kind, around,
+  [radius])`: kind "vehicles", "peds", "objects" or "pickups"; around a
+  vector, or an entity (left out). `world.raycast(from, to, [{flags,
+  ignore}])` waits a frame or two and returns {pos, normal, entity,
+  material} or nil; `world.crosshair()`, `world.groundZ(pos)`,
+  `world.waypoint()`, `world.setWaypoint(pos or nil)`, `world.zoneName(pos)`,
+  `world.streetName(pos)`.
+- The game's own text: `ui.notify(text, {icon = "CHAR_LESTER", title,
+  subtitle})` (without options: the app's notification), `ui.subtitle(text,
+  [ms])`, `ui.help(text)` each frame it stays, `ui.loading(text)` and
+  `ui.loading()`, `ui.hideHud([component])` this frame, `ui.prompt([label],
+  [default], [max])` (waits; nil if cancelled), `ui.buttons({{Control.JUMP,
+  "Jump"}})` until changed, nil to hide.
+- `local sf = scaleform.load(name)` (waits), `sf:call(method, ...)`, each
+  frame `sf:draw()` or `sf:draw3d(pos, rot, scale)`, `sf:release()`.
+- `task.every(ms, f)` returns a function that stops it. `mod.onStop(f)`: f
+  runs once when the mod stops, on its script, within 2 ms, no waiting.
+- `geo.direction(rot)`, `geo.rotation(dir)`, `geo.fromHeading(h)`,
+  `geo.heading(dir)`, `geo.distance(a, b, [flat])`, `geo.quaternion(rot)`,
+  `geo.fromQuaternion(x, y, z, w)`: the game's rotations, in degrees.
+
 ## Drawing
 - `local logo = draw.loadImage("images/logo.png")` loads a PNG of the
   mod's folder (2048×2048 at most; a mod holds 64 images, 32 MB, freed
