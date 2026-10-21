@@ -66,20 +66,24 @@ impl Drop for Mod {
     }
 }
 
+/// Menus and items in any number, up to the mod's budget for them all
+/// together; options likewise.
 #[test]
-fn menus_per_mod() {
-    let m = Mod::new("menus-test-limit");
-    let err = m.fails(&format!("for i = 1, {} do ui.menu('m' .. i) end", TOP_MENUS + 1));
-    assert!(err.contains("ui.menu: a mod has 16 menus at most (menu:remove() one)"), "{err}");
-    assert_eq!(crate::menus().iter().filter(|x| x.instance == m.instance).count(), TOP_MENUS);
-}
-
-#[test]
-fn items_per_menu() {
-    let m = Mod::new("menus-test-items");
-    m.run(&format!("m = ui.menu('x') for i = 1, {ITEMS} do m:label('l' .. i) end"));
-    let err = m.fails("m:toggle('one more')");
-    assert!(err.contains("64 items at most"), "{err}");
+fn budgets() {
+    let m = Mod::new("menus-test-budget");
+    m.run("for i = 1, 100 do ui.menu('m' .. i) end big = ui.menu('big') for i = 1, 1000 do big:label('l' .. i) end");
+    let mine = || crate::menus().iter().filter(|x| x.instance == m.instance).map(|x| 1 + x.items.len()).sum::<usize>();
+    assert_eq!(mine(), 101 + 1000);
+    let err = m.fails(&format!("for i = 1, {ENTRIES} do big:toggle('t' .. i) end"));
+    assert!(err.contains("menu:toggle: a mod's menus hold 4096 menus and items at most, all together"), "{err}");
+    assert_eq!(mine(), ENTRIES);
+    assert!(m.fails("ui.menu('one more')").contains("ui.menu: a mod's menus hold 4096"));
+    assert!(m.fails("big:submenu('one more')").contains("menu:submenu: a mod's menus hold 4096"));
+    m.run("big:clear()");
+    m.run(&format!("c = big:choice('c', table.create({OPTIONS}, 'o'))"));
+    let err = m.fails("big:multi('m', {'one more'})");
+    assert!(err.contains("menu:multi: a mod's choices and multis hold 65536 options at most, all together"), "{err}");
+    m.run("c.options = {'a'} big:multi('m', {'now it fits'})");
 }
 
 /// The player's value is the menu's at once; the mod's `value` and its
@@ -370,8 +374,8 @@ fn options_reassigned() {
     m.run("c.options = {'only'}");
     assert_eq!(m.eval::<i64>("c.value"), 1);
     assert_eq!(m.eval::<Vec<i64>>("mu.value"), vec![1]);
-    let many = m.fails("c.options = table.create(1025, 'o')");
-    assert!(many.contains("Choice.options: 1024 options at most"), "{many}");
+    let many = m.fails("c.options = table.create(65537, 'o')");
+    assert!(many.contains("Choice.options: 65536 options at most"), "{many}");
 }
 
 /// `clear` and `remove` free the items' callbacks with them.
@@ -390,13 +394,11 @@ fn clear_frees_handlers() {
     assert!(!super::has_menus(m.instance));
 }
 
-/// Submenus: rows that open them, four deep at most, 64 menus a mod.
+/// Submenus: rows that open them.
 #[test]
 fn submenus() {
     let m = Mod::new("menus-test-sub");
     m.run("top = ui.menu('Top') a = top:submenu('A', 'into A') b = a:submenu('B') c = b:submenu('C') t = c:toggle('deep')");
-    let err = m.fails("c:submenu('D')");
-    assert!(err.contains("menu:submenu: menus nest 4 deep at most"), "{err}");
     let menus = crate::menus();
     let mine: Vec<_> = menus.iter().filter(|x| x.instance == m.instance).collect();
     assert_eq!(mine.len(), 4);
@@ -423,19 +425,69 @@ fn submenus() {
     m.run("a:submenu('again'):toggle('x') top:clear()");
     assert_eq!(crate::menus().iter().filter(|x| x.instance == m.instance).count(), 1);
     assert!(m.handlers.borrow().items.is_empty());
-    let err = m.fails(&format!("for i = 1, {MENUS} do top:submenu('s' .. i) end"));
-    assert!(err.contains("a mod has 64 menus at most, submenus included") || err.contains("64 items at most"), "{err}");
 }
 
-/// 64 menus a mod, submenus included.
+/// Menus nest at any depth: a chain 20 deep is used at its end, listed
+/// with its submenus, and cut in the middle with all under it.
 #[test]
-fn menus_with_submenus() {
-    let m = Mod::new("menus-test-sub-limit");
-    m.run("for i = 1, 4 do top = ui.menu('t' .. i) for j = 1, 15 do top:submenu('s' .. j) end end");
-    let err = m.fails("ui.menu('one more')");
-    assert!(err.contains("ui.menu: a mod has 64 menus at most, submenus included"), "{err}");
-    let err = m.fails("top:submenu('one more')");
-    assert!(err.contains("menu:submenu: a mod has 64 menus at most, submenus included"), "{err}");
+fn deep_chain() {
+    let m = Mod::new("menus-test-deep");
+    m.run("top = ui.menu('L1') level = { top } for i = 2, 20 do level[i] = level[i - 1]:submenu('L' .. i) end t = level[20]:toggle('end')");
+    let mine = || crate::menus().iter().filter(|x| x.instance == m.instance).cloned().collect::<Vec<_>>();
+    let chain = mine();
+    assert_eq!(chain.len(), 20);
+    // Each menu's parent is the one before it, its row opens the next.
+    for w in chain.windows(2) {
+        assert_eq!(w[1].parent, Some(w[0].id));
+        assert_eq!(w[0].items[0].kind, MenuKind::Submenu(w[1].id));
+    }
+    // Back from the end: up the parents to the top, 19 steps.
+    let mut at = chain[19].id;
+    let mut steps = 0;
+    while let Some(parent) = chain.iter().find(|x| x.id == at).unwrap().parent {
+        at = parent;
+        steps += 1;
+    }
+    assert_eq!((at, steps), (chain[0].id, 19));
+    m.input("end", MenuInput::Toggle(true)).unwrap();
+    m.run("level[7].visible = false");
+    assert_eq!(m.input("end", MenuInput::Toggle(false)).unwrap_err(), "menu \"L20\" is hidden");
+    m.run("level[7].visible = true");
+    let open = crate::studio::api::menu_open(m.name, chain[0].id).unwrap();
+    assert_eq!(open["submenus"].as_array().unwrap().len(), 19);
+    m.run("level[10]:remove()");
+    assert_eq!(mine().len(), 9);
+    assert_eq!(m.handlers.borrow().items.len(), 8);
+    assert!(m.fails("t.value = true").contains("the item was removed"));
+}
+
+/// Menus refer to each other by id: a cycle (A's row opens B, B's opens A),
+/// which mods cannot make (a submenu is always a new menu), still ends
+/// every walk: inputs are refused, the Studio's tree is listed once.
+#[test]
+fn cycle_ends() {
+    let m = Mod::new("menus-test-cycle");
+    m.run("x = ui.menu('X') t = x:toggle('t')");
+    let (a, b) = (super::next_id(), super::next_id());
+    let menu = |id, parent, opens| crate::Menu {
+        module: m.name.into(),
+        instance: m.instance,
+        id,
+        parent: Some(parent),
+        title: format!("{id}"),
+        note: None,
+        items: vec![crate::MenuItem { id: super::next_id(), label: "row".into(), note: None, enabled: true, visible: true, kind: MenuKind::Submenu(opens) }],
+        rev: 0,
+    };
+    super::add_menu(menu(a, b, b));
+    super::add_menu(menu(b, a, a));
+    let row = super::next_id();
+    super::add_item(a, crate::MenuItem { id: row, label: "in the cycle".into(), note: None, enabled: true, visible: true, kind: MenuKind::Toggle(false) });
+    assert_eq!(m.input("in the cycle", MenuInput::Toggle(true)).unwrap_err(), format!("menu \"{a}\" is hidden"));
+    let open = crate::studio::api::menu_open(m.name, a).unwrap();
+    assert_eq!(open["submenus"].as_array().unwrap().len(), 1);
+    // The mod's other menus go on as ever.
+    m.input("t", MenuInput::Toggle(true)).unwrap();
 }
 
 /// `onOpen` and `onClose` run at the mod's turn when the first viewer

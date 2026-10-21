@@ -8,7 +8,7 @@
 //! and WebSockets must come from the page's own origin (a page elsewhere in
 //! the same browser could otherwise drive the game through localhost).
 
-mod api;
+pub(crate) mod api;
 mod assets;
 mod lsp;
 mod mcp;

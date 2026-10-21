@@ -5,16 +5,14 @@ use std::time::Duration;
 
 use crate::{MenuInput, MenuKind, Rgba};
 
-/// Top-level menus per run of a mod.
-pub const TOP_MENUS: usize = 16;
-/// Menus per run of a mod, submenus included.
-pub const MENUS: usize = 64;
-/// How deep menus nest (a top-level menu is 1).
-pub const DEPTH: usize = 4;
-/// Items per menu, of every kind.
-pub const ITEMS: usize = 64;
-/// Options of a choice or a multi.
-pub const OPTIONS: usize = 1024;
+/// Menus and items of a run of a mod, all together. Not a limit on how
+/// menus are made (any number, nested at any depth): the snapshot the app
+/// reads every frame is copied on every change, and the Studio gets it as
+/// JSON, so their size is bounded as the mods' other budgets are.
+pub const ENTRIES: usize = 4096;
+/// Options of a run of a mod's choices and multis, all together (and so
+/// of one list: its indices are 16-bit), for the same reason.
+pub const OPTIONS: usize = 65536;
 /// Characters kept of a menu's title, an item's label, a note, an option.
 pub const TITLE: usize = 40;
 pub const LABEL: usize = 60;

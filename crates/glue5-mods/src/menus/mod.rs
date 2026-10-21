@@ -82,8 +82,9 @@ impl Store {
 
     /// Whether every submenu row on the way to menu `id` is shown.
     fn chain_visible(&self, mut id: u32) -> bool {
-        // Bounded: menus nest DEPTH deep.
-        for _ in 0..validate::DEPTH {
+        // Up the parents: a menu's parent is made before it, so this ends
+        // at a top-level menu; bounded anyway by the number of menus.
+        for _ in 0..=self.menus.len() {
             let Some(menu) = self.menus.iter().find(|m| m.id == id) else { return false };
             let Some(parent) = menu.parent else { return true };
             let row = self.menus.iter().find(|m| m.id == parent).and_then(|p| p.items.iter().find(|i| i.kind == MenuKind::Submenu(id)));

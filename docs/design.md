@@ -844,7 +844,7 @@ playing.
 
 - **Menus**: `ui.menu(title)`, with buttons, toggles, sliders, numbers,
   choices, multiple choices, text, colours, labels, separators, progress
-  bars and submenus (four deep). The application draws them with its own
+  bars and submenus (at any depth). The application draws them with its own
   widgets (touch and controllers too): the Mods page's MENUS (see above
   for how it opens), a menu at a time with a back stack, never flattened.
   - The menus live in the shared state (glue5-mods `menus/`, under a
@@ -865,9 +865,10 @@ playing.
     page at a menu, at most every 2 seconds.
   - `ui.notify` shows a notification over the game.
   - A mod with a menu stays running after its main code returns.
-  - A run of a mod has 16 menus (64 with submenus) of 64 items at most,
-    and titles, labels, notes and options are cut short; a log line is cut
-    at 8 KB.
+  - A run of a mod has 4096 menus and items and 65536 options at most,
+    all together (every change copies the snapshot the app reads each
+    frame), and titles, labels, notes and options are cut short; a log
+    line is cut at 8 KB.
 - **Tasks**: a mod's coroutines are scheduled by game time
   (`GET_GAME_TIMER`, so they stop while the game is paused):
   - the main chunk;

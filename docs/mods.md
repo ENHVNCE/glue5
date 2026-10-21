@@ -254,10 +254,8 @@ Limits, for every run of a mod:
 
 | What | At most |
 |---|---|
-| Menus | 16, 64 with their submenus (more: an error) |
-| Depth | 4: a menu, its submenu and two more (more: an error) |
-| Items in a menu | 64, separators too (more: an error) |
-| A choice's or a multi's options | 1024 (more: an error) |
+| Menus and items | 4096, all together, nested at any depth (more: an error) |
+| Options of choices and multis | 65536, all together (more: an error) |
 | A menu's title, an item's label | 40, 60 characters (longer: cut) |
 | A note | 200 characters (cut) |
 | An option | 40 characters (cut) |

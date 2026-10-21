@@ -35,8 +35,6 @@ pub(super) struct LocalMenu {
     /// The menu whose row opens this one, and that row.
     parent: Option<u32>,
     row: Option<u32>,
-    /// 1 for a top-level menu.
-    depth: usize,
     title: String,
     note: Option<String>,
     /// A top-level menu's (a submenu's are its row's).
@@ -126,7 +124,7 @@ fn callback(what: &str, v: Value) -> Result<Option<Function>> {
     }
 }
 
-/// A list of options: 1 to 1024 strings, each cut to 40 characters.
+/// A list of options: 1 to 65536 strings, each cut to 40 characters.
 fn options(what: &str, v: &Value) -> Result<Arc<[String]>> {
     let Value::Table(t) = v else { return Err(error(format!("{what}: a list of strings, not {}", type_of(v)))) };
     let n = t.raw_len();
@@ -363,6 +361,15 @@ impl ItemRef {
     fn assign(&self, key: &str, v: Value) -> Result<()> {
         let what = format!("{}.{key}", self.type_name);
         let mut local = self.ctx.local.borrow_mut();
+        // New options, within the mod's budget.
+        let lists = matches!(self.type_name, "Choice" | "Multi");
+        let new_options = if key == "options" && lists && local.items.contains_key(&self.id) {
+            let o = options(&what, &v)?;
+            local.room_for_options(&what, Some(self.id), o.len())?;
+            Some(o)
+        } else {
+            None
+        };
         let Some(li) = local.items.get_mut(&self.id) else { return Err(self.removed(&format!(".{key}"))) };
         match key {
             "id" | "kind" | "option" => return Err(error(format!("{what} is read-only"))),
@@ -434,14 +441,14 @@ impl ItemRef {
             }
             (MenuKind::Choice { options, index }, "value") => *index = option(&what, options, &v)?,
             (MenuKind::Choice { options, index }, "options") => {
-                *options = self::options(&what, &v)?;
+                *options = new_options.clone().unwrap_or_default();
                 if *index >= options.len() {
                     *index = 0;
                 }
             }
             (MenuKind::Multi { options, selected }, "value") => *selected = selection(&what, options, &v)?,
             (MenuKind::Multi { options, selected }, "options") => {
-                *options = self::options(&what, &v)?;
+                *options = new_options.clone().unwrap_or_default();
                 selected.retain(|i| usize::from(*i) < options.len());
             }
             (MenuKind::Text { value, max, .. }, "value") => *value = validate::text(&string(&what, &v)?, *max),
@@ -582,10 +589,11 @@ impl MenuRef {
     /// Adds an item; `opts` already parsed.
     fn add(&self, lua: &Lua, what: &str, label: String, opts: Opts, kind: MenuKind, cb: Option<Function>) -> Result<AnyUserData> {
         let mut local = self.ctx.local.borrow_mut();
-        let Some(menu) = local.menus.get_mut(&self.id) else { return Err(self.removed(what)) };
-        if menu.items.len() >= validate::ITEMS {
-            return Err(error(format!("{what}: a menu holds {} items at most", validate::ITEMS)));
+        local.room(what, 1)?;
+        if let MenuKind::Choice { options, .. } | MenuKind::Multi { options, .. } = &kind {
+            local.room_for_options(what, None, options.len())?;
         }
+        let Some(menu) = local.menus.get_mut(&self.id) else { return Err(self.removed(what)) };
         let id = super::next_id();
         let item = MenuItem {
             id,
@@ -623,17 +631,11 @@ impl MenuRef {
             o => Opts::parse(what, o, &[])?,
         };
         let mut local = self.ctx.local.borrow_mut();
-        let Some(parent) = local.menus.get(&self.id) else { return Err(self.removed(what)) };
-        if parent.depth >= validate::DEPTH {
-            return Err(error(format!("{what}: menus nest {} deep at most", validate::DEPTH)));
+        if !local.menus.contains_key(&self.id) {
+            return Err(self.removed(what));
         }
-        if parent.items.len() >= validate::ITEMS {
-            return Err(error(format!("{what}: a menu holds {} items at most", validate::ITEMS)));
-        }
-        if local.menus.len() >= validate::MENUS {
-            return Err(error(format!("{what}: a mod has {} menus at most, submenus included", validate::MENUS)));
-        }
-        let depth = parent.depth + 1;
+        // The menu and its row.
+        local.room(what, 2)?;
         let (id, row) = (super::next_id(), super::next_id());
         // The menu before the row that opens it, for readers in between.
         super::add_menu(Menu {
@@ -661,7 +663,7 @@ impl MenuRef {
         local.items.insert(row, LocalItem { menu: self.id, item, callback: None });
         local.menus.insert(
             id,
-            LocalMenu { parent: Some(self.id), row: Some(row), depth, title, note: opts.note, enabled: true, visible: true, items: Vec::new(), on_open: None, on_close: None },
+            LocalMenu { parent: Some(self.id), row: Some(row), title, note: opts.note, enabled: true, visible: true, items: Vec::new(), on_open: None, on_close: None },
         );
         lua.create_userdata(MenuRef { id, ctx: self.ctx.clone() })
     }
@@ -710,11 +712,22 @@ fn under(local: &Local, item: u32, items: &mut Vec<u32>, menus: &mut Vec<u32>) {
     }
 }
 
-/// Menu `menu`, its items and the submenus they open.
+/// Menu `menu`, its items and the submenus they open, at any depth (a
+/// worklist, not recursion).
 fn subtree(local: &Local, menu: u32, items: &mut Vec<u32>, menus: &mut Vec<u32>) {
-    menus.push(menu);
-    for &i in local.menus.get(&menu).map(|m| m.items.as_slice()).unwrap_or_default() {
-        under(local, i, items, menus);
+    let mut todo = vec![menu];
+    while let Some(menu) = todo.pop() {
+        // Each menu once, whatever its rows say.
+        if menus.contains(&menu) {
+            continue;
+        }
+        menus.push(menu);
+        for &i in local.menus.get(&menu).map(|m| m.items.as_slice()).unwrap_or_default() {
+            items.push(i);
+            if let Some(MenuKind::Submenu(m)) = local.items.get(&i).map(|i| &i.item.kind) {
+                todo.push(*m);
+            }
+        }
     }
 }
 
@@ -936,12 +949,7 @@ pub fn install(lua: &Lua, module: &str, instance: u64, handlers: Handlers) -> Re
                 o => Opts::parse(what, o, &[])?,
             };
             let mut local = ctx.local.borrow_mut();
-            if local.menus.len() >= validate::MENUS {
-                return Err(error(format!("{what}: a mod has {} menus at most, submenus included", validate::MENUS)));
-            }
-            if top_level(&local) >= validate::TOP_MENUS {
-                return Err(error(format!("{what}: a mod has {} menus at most (menu:remove() one)", validate::TOP_MENUS)));
-            }
+            local.room(what, 1)?;
             let id = super::next_id();
             super::add_menu(Menu {
                 module: ctx.module.clone(),
@@ -958,7 +966,6 @@ pub fn install(lua: &Lua, module: &str, instance: u64, handlers: Handlers) -> Re
                 LocalMenu {
                     parent: None,
                     row: None,
-                    depth: 1,
                     title,
                     note: opts.note,
                     enabled: opts.enabled.unwrap_or(true),
@@ -974,8 +981,32 @@ pub fn install(lua: &Lua, module: &str, instance: u64, handlers: Handlers) -> Re
     lua.globals().set("ui", ui)
 }
 
-fn top_level(local: &Local) -> usize {
-    local.menus.values().filter(|m| m.parent.is_none()).count()
+impl Local {
+    /// Whether `n` more menus or items fit the mod's budget.
+    fn room(&self, what: &str, n: usize) -> Result<()> {
+        if self.menus.len() + self.items.len() + n > validate::ENTRIES {
+            return Err(error(format!("{what}: a mod's menus hold {} menus and items at most, all together", validate::ENTRIES)));
+        }
+        Ok(())
+    }
+
+    /// Whether a list of `n` options fits the mod's budget (in place of
+    /// item `replacing`'s).
+    fn room_for_options(&self, what: &str, replacing: Option<u32>, n: usize) -> Result<()> {
+        let used: usize = self
+            .items
+            .values()
+            .filter(|i| Some(i.item.id) != replacing)
+            .map(|i| match &i.item.kind {
+                MenuKind::Choice { options, .. } | MenuKind::Multi { options, .. } => options.len(),
+                _ => 0,
+            })
+            .sum();
+        if used + n > validate::OPTIONS {
+            return Err(error(format!("{what}: a mod's choices and multis hold {} options at most, all together", validate::OPTIONS)));
+        }
+        Ok(())
+    }
 }
 
 /// Applies a player's input to the mod's copy of the item; what its
