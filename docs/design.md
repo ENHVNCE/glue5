@@ -782,7 +782,10 @@ The build generates two things:
   `vehicle.createVehicle(model, coords, ...)`, with handle types.
 
 Output parameters come back as extra return values, and a handle of 0 comes
-back as `nil`.
+back as `nil`. An output is one value: natives that take a structure or an
+array through a pointer (the database's `Any*` where the command takes an
+`int&`), or keep the pointer after the call (save blocks, broadcast
+variables), are left out.
 
 **Each mod runs in a script thread of its own**, as the game's scripts do.
 Its program is built in wasm memory: a copy of a loaded `scrProgram` with
