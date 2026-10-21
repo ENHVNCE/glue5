@@ -821,6 +821,9 @@ playing.
   error in the mod, and the runtime is marked as possibly damaged.
 - A mod runs at most 2 ms before the interrupt suspends it until the next
   frame. One that runs 2 s without calling `wait` is stopped.
+- A mod's script thread is ended only by the hook, from outside it:
+  TERMINATE_THREAD and TERMINATE_ALL_SCRIPTS_WITH_THIS_NAME refuse the
+  mods' threads (ended from inside, the hook would go on in a dead one).
 
 ### Menus, tasks, the world, data
 
