@@ -107,6 +107,13 @@ pub fn trim() {
 
 static TRIM: AtomicBool = AtomicBool::new(false);
 
+/// The app went to the background (did, not only inactive), or came back:
+/// there iOS fails the GPU's work, which then says nothing of the GPU (see
+/// `done.rs`'s heartbeat). Callable from any thread.
+pub fn set_background(on: bool) {
+    done::set_background(on);
+}
+
 /// [`trim`] was asked for since the last call.
 pub(crate) fn take_trim() -> bool {
     TRIM.swap(false, Ordering::Relaxed)

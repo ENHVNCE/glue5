@@ -45,10 +45,12 @@ pub enum Work {
         period: f32,
     },
     /// A frame's heartbeat: `value`, which the GPU wrote into `staging`
-    /// with the frame if it ran it ([`Done::heartbeat`]).
+    /// with the frame if it ran it ([`Done::heartbeat`]); `moves`: the
+    /// app's moves to the background and back when it was submitted.
     Heartbeat {
         staging: Staging,
         value: u64,
+        moves: u32,
     },
     Screenshot {
         staging: Staging,
@@ -167,16 +169,16 @@ impl Done {
     }
 
     /// A small buffer the GPU writes `value` into first thing in the next
-    /// submission; map it after that submit, as [`Work::Heartbeat`].
+    /// submission; its work ([`Beat::work`]) follows that submit.
     ///
     /// A driver can lose the GPU's context without saying so: after a GPU
     /// page fault, Mali on MediaTek has the kernel terminate the context,
     /// and its submissions go on "completing" without running. The picture
     /// then stops for good while the game runs on; the heartbeats show it.
-    pub fn heartbeat(&self, device: &wgpu::Device, queue: &wgpu::Queue, value: u64) -> wgpu::Buffer {
+    pub fn heartbeat(&self, device: &wgpu::Device, queue: &wgpu::Queue, value: u64) -> Beat {
         let buffer = self.pool.get(device, 8);
         queue.write_buffer(&buffer, 0, &value.to_le_bytes());
-        buffer
+        Beat { buffer, value, moves: MOVES.load(Ordering::Acquire) }
     }
 
     /// Runs `work` once `submission` has completed.
@@ -184,6 +186,20 @@ impl Done {
         if !work.is_empty() {
             let _ = self.tx.send((submission, work));
         }
+    }
+}
+
+/// A frame's heartbeat on its way to the GPU ([`Done::heartbeat`]).
+pub struct Beat {
+    buffer: wgpu::Buffer,
+    value: u64,
+    moves: u32,
+}
+
+impl Beat {
+    /// What reads it back, once the submission that writes it is made.
+    pub fn work(self) -> Work {
+        Work::Heartbeat { staging: Staging::map(self.buffer), value: self.value, moves: self.moves }
     }
 }
 
@@ -293,10 +309,10 @@ fn finish(mem: Mem, pool: &StagingPool, work: Work, done: bool) {
             }
             release(pool, staging);
         }
-        Work::Heartbeat { mut staging, value } => {
+        Work::Heartbeat { mut staging, value, moves } => {
             let got = mapped(&mut staging, done).map(|data| u64::from_le_bytes(data[..8].try_into().unwrap()));
             release(pool, staging);
-            heartbeat(got, value);
+            heartbeat(got, value, moves);
         }
         Work::Screenshot { mut staging, width, height, bpr, format, path } => {
             let pixels = mapped(&mut staging, done).map(|data| data.to_vec());
@@ -318,16 +334,32 @@ fn finish(mem: Mem, pool: &StagingPool, work: Work, done: bool) {
 static MISSED: AtomicU32 = AtomicU32::new(0);
 
 /// Frames in a row without their heartbeat that make the GPU lost: more
-/// than a few, which a phone suspending the app with frames in flight may
-/// drop (iOS fails command buffers in the background).
+/// than a few, which a phone may fail as it sends the app to the background
+/// before the app learns of it.
 const MISSED_MAX: u32 = 30;
 
+/// The app's moves to the background and back, counted: odd while it is
+/// there ([`set_background`]).
+static MOVES: AtomicU32 = AtomicU32::new(0);
+
+/// The app went to the background, or came back.
+pub(crate) fn set_background(on: bool) {
+    let _ = MOVES.try_update(Ordering::AcqRel, Ordering::Acquire, |n| (on != (n % 2 == 1)).then_some(n + 1));
+}
+
 /// A frame's heartbeat back: `got` read where the GPU was to write `value`
-/// (None: not mapped, which a device lost reports on its own).
-fn heartbeat(got: Option<u64>, value: u64) {
+/// (None: not mapped, which a device lost reports on its own), for a frame
+/// submitted after `moves` moves to the background and back.
+fn heartbeat(got: Option<u64>, value: u64, moves: u32) {
     let Some(got) = got else { return };
     if got == value {
         MISSED.store(0, Ordering::Relaxed);
+        return;
+    }
+    // iOS fails the GPU work of an app in the background, and wgpu counts it
+    // finished: a frame submitted there, or still in flight as the app went
+    // there or came back, says nothing of the GPU.
+    if moves % 2 == 1 || moves != MOVES.load(Ordering::Acquire) {
         return;
     }
     if MISSED.fetch_add(1, Ordering::Relaxed) + 1 == MISSED_MAX {

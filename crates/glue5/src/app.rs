@@ -144,6 +144,7 @@ pub fn run() -> Result<()> {
         Event::AppDidEnterBackground { .. } => {
             life.suspended.store(true, Ordering::Relaxed);
             glue5_runtime::frame_pace::set_background(true);
+            glue5_gpu::set_background(true);
         }
         // The system is short of memory: iOS's memory warning, Android's
         // onTrimMemory (any level).
@@ -152,6 +153,7 @@ pub fn run() -> Result<()> {
             life.background.store(false, Ordering::Relaxed);
             life.came_back.store(true, Ordering::Relaxed);
             glue5_runtime::frame_pace::set_background(false);
+            glue5_gpu::set_background(false);
         }
         _ => {}
     });
