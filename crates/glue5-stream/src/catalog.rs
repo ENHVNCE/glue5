@@ -41,6 +41,15 @@ pub struct Catalog {
 /// game files.
 const NOT_GAME: [&str; 3] = ["manifest.json", "bootset.json", "bootset_low.json"];
 
+/// What a catalog from elsewhere (a server, which any device on the
+/// network can pretend to be; a copy's file) may hold, far above the
+/// game's 12,500 files and 21 GB: the copy makes every file's entry and
+/// bitmap of blocks before it reads any.
+const MAX_FILES: usize = 200_000;
+const MAX_BYTES: u64 = 1 << 40;
+/// A path's length (the copy's index keeps it in 16 bits).
+const MAX_PATH: usize = 1024;
+
 impl Catalog {
     /// The game folder `game` (`data/` and `b/<build>/shaders/`).
     pub fn scan(game: &Path, build: &str) -> Result<Catalog> {
@@ -95,28 +104,50 @@ impl Catalog {
         .expect("catalog json")
     }
 
+    /// A catalog as [`Catalog::to_json`] wrote it, from elsewhere: only
+    /// what [`Catalog::scan`] could list, within [`MAX_FILES`] and
+    /// [`MAX_BYTES`].
     pub fn from_json(bytes: &[u8]) -> Result<Catalog> {
         let v: serde_json::Value = serde_json::from_slice(bytes).context("parsing the catalog")?;
         let build = v["build"].as_str().context("catalog without build")?.to_string();
-        let data_files = v["data_files"].as_u64().context("catalog without data_files")? as usize;
-        let mut entries = Vec::new();
-        for f in v["files"].as_array().context("catalog without files")? {
+        let data_files = v["data_files"].as_u64().context("catalog without data_files")?;
+        let files = v["files"].as_array().context("catalog without files")?;
+        if files.len() > MAX_FILES || data_files > files.len() as u64 {
+            bail!("catalog: {} files, {data_files} of them data", files.len());
+        }
+        let data_files = data_files as usize;
+        let shaders = format!("b/{build}/shaders/");
+        let (mut entries, mut total) = (Vec::with_capacity(files.len()), 0u64);
+        for (i, f) in files.iter().enumerate() {
             let (Some(path), Some(size), Some(mtime)) = (f[0].as_str(), f[1].as_u64(), f[2].as_u64()) else {
                 bail!("bad catalog entry {f}");
             };
-            if !safe_path(path) {
+            if !safe_path(path) || path.len() > MAX_PATH {
                 bail!("catalog path {path:?} leaves the game folder");
             }
+            // The engine's files, then the shaders: nothing else of the
+            // copy's folder (its own files) is a catalog's.
+            let listed = match path.strip_prefix("data/") {
+                Some(rel) => i < data_files && !NOT_GAME.contains(&rel),
+                None => i >= data_files && path.starts_with(&shaders),
+            };
+            if !listed {
+                bail!("catalog path {path:?} is not a game file's");
+            }
+            total = total.checked_add(size).filter(|&t| t <= MAX_BYTES).context("catalog: too many bytes")?;
+            if mtime > LAST_DATE {
+                bail!("catalog: {path} dated {mtime}");
+            }
             entries.push(Entry { path: path.to_string(), size, mtime });
-        }
-        if data_files > entries.len() {
-            bail!("catalog: {data_files} data files of {}", entries.len());
         }
         // (A catalog of an earlier version has none.)
         let dates: Vec<u64> =
             v["dates"].as_array().map_or(Vec::new(), |d| d.iter().filter_map(|t| t.as_u64()).collect());
         if !dates.is_empty() && dates.len() != data_files {
             bail!("catalog: {} dates for {data_files} data files", dates.len());
+        }
+        if let Some(t) = dates.iter().find(|&&t| t > LAST_DATE) {
+            bail!("catalog: a file dated {t}");
         }
         Ok(Catalog { dates, ..Catalog::new(build, entries, data_files) })
     }
@@ -238,4 +269,30 @@ fn round_trip() {
     let m: serde_json::Value = serde_json::from_slice(&dated.engine_manifest()).unwrap();
     assert_eq!(m["files"][0][2], 5);
     assert!(!safe_path("data/../x") && !safe_path("/etc") && !safe_path("c:/x") && safe_path("data/x"));
+}
+
+/// A catalog from elsewhere holds only what a game folder's could, within
+/// bounds a device can hold.
+#[test]
+fn untrusted_catalogs() {
+    let json = |files: serde_json::Value, data_files: usize| {
+        serde_json::to_vec(&serde_json::json!({ "build": "x", "data_files": data_files, "files": files })).unwrap()
+    };
+    let ok = serde_json::json!([["data/a.rpf", 1, 2], ["b/x/shaders/index.json", 3, 4]]);
+    assert!(Catalog::from_json(&json(ok, 1)).is_ok());
+    let refused = |files, data_files| Catalog::from_json(&json(files, data_files)).is_err();
+    // Sizes past what any volume holds, or adding up past it.
+    assert!(refused(serde_json::json!([["data/a.rpf", u64::MAX, 2]]), 1));
+    assert!(refused(serde_json::json!([["data/a.rpf", 1u64 << 39, 2], ["data/b.rpf", 1u64 << 39, 2], ["data/c", 1, 2]]), 3));
+    // More files than a catalog may list.
+    let many: Vec<_> = (0..=MAX_FILES).map(|i| serde_json::json!([format!("data/{i}"), 0, 0])).collect();
+    assert!(refused(serde_json::Value::Array(many), MAX_FILES + 1));
+    // The copy's own files, files of no game folder, a server's manifest.
+    assert!(refused(serde_json::json!([["index", 1, 2]]), 0));
+    assert!(refused(serde_json::json!([["catalog.json", 1, 2]]), 0));
+    assert!(refused(serde_json::json!([["data/manifest.json", 1, 2]]), 1));
+    assert!(refused(serde_json::json!([["b/x/shaders/a", 1, 2]]), 1));
+    assert!(refused(serde_json::json!([["data/a", 1, 2]]), 0));
+    // A date past any a file can have.
+    assert!(refused(serde_json::json!([["data/a", 1, u64::MAX]]), 1));
 }
