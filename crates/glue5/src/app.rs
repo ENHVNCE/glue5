@@ -138,20 +138,27 @@ pub fn run() -> Result<()> {
         // iOS sends it also while the app is only inactive (Control Center,
         // a system alert): suspended is when it did go to the background.
         Event::AppWillEnterBackground { .. } => life.background.store(true, Ordering::Relaxed),
+        // The game stops at the end of its frame: Android lets it run on
+        // unseen, and iOS, until it suspends the app, fails its frames'
+        // GPU work (not while only inactive: the game shows there).
         Event::AppDidEnterBackground { .. } => {
             life.suspended.store(true, Ordering::Relaxed);
-            // Android lets the game run on unseen (iOS suspends it).
-            #[cfg(target_os = "android")]
             glue5_runtime::frame_pace::set_background(true);
+            glue5_gpu::set_background(true);
         }
         // The system is short of memory: iOS's memory warning, Android's
-        // onTrimMemory (any level).
+        // onTrimMemory. SDL passes on every level of the latter, the app's
+        // window hidden included, so it comes at each trip to the
+        // background: that is wanted, as Android ends background apps by
+        // their memory, and from Android 14 the levels for an app still
+        // running are no longer sent. A trim is cheap (what it frees is made
+        // again as frames need it).
         Event::AppLowMemory { .. } => glue5_gpu::trim(),
         Event::AppDidEnterForeground { .. } => {
             life.background.store(false, Ordering::Relaxed);
             life.came_back.store(true, Ordering::Relaxed);
-            #[cfg(target_os = "android")]
             glue5_runtime::frame_pace::set_background(false);
+            glue5_gpu::set_background(false);
         }
         _ => {}
     });
@@ -1392,7 +1399,7 @@ impl App {
             }
             s.0 = true;
         }
-        let spawned = std::thread::Builder::new().name("find servers".into()).spawn(move || {
+        let spawned = glue5_runtime::qos::spawn("find servers", glue5_runtime::qos::Qos::Utility, move || {
             let mut found = glue5_stream::discovery::find(Duration::from_secs(3));
             // In the same order at every search (the page searches all the
             // while), shown at once with what they answered last time; each

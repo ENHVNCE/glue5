@@ -70,6 +70,12 @@ impl BindCache {
     pub fn age(&mut self) -> BindGroups {
         std::mem::replace(&mut self.old, std::mem::take(&mut self.current))
     }
+
+    /// The groups no draw took since the generation began (memory is
+    /// short), to free elsewhere; the generation goes on.
+    pub fn take_old(&mut self) -> BindGroups {
+        std::mem::take(&mut self.old)
+    }
 }
 
 /// Identity of the constant buffers a pack reads: (buffer id, version, first

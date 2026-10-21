@@ -50,7 +50,7 @@ struct Download {
 static DOWNLOADS: Mutex<Option<HashMap<String, Download>>> = Mutex::new(None);
 
 pub(super) fn start() {
-    let started = std::thread::Builder::new().name("jobs".into()).spawn(|| {
+    let started = crate::qos::spawn("jobs", crate::qos::Qos::Utility, || {
         let mut announced = Instant::now() - ANNOUNCE_EVERY;
         loop {
             std::thread::sleep(TICK);

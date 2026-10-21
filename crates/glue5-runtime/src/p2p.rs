@@ -389,7 +389,7 @@ pub fn start() -> std::io::Result<&'static P2p> {
     p2p.vip.store(free_vip(&[]), Ordering::Relaxed);
     let p2p = P2P.get_or_init(|| p2p);
     log::info!("p2p: port {port}, address {}", Ipv4Addr::from(p2p.vip.load(Ordering::Relaxed)));
-    std::thread::Builder::new().name("p2p".into()).spawn(move || p2p.run())?;
+    crate::qos::spawn("p2p", crate::qos::Qos::Initiated, move || p2p.run())?;
     Ok(p2p)
 }
 
