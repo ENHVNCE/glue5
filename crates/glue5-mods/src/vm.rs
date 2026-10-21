@@ -14,7 +14,7 @@ use mlua::{Function, Lua, LuaOptions, MultiValue, StdLib, Table, Thread, Value, 
 
 use crate::world::Pool;
 use crate::storage::Storage;
-use crate::{EvalResult, json, menus, natives};
+use crate::{EvalResult, input, json, menus, natives};
 
 /// How long a mod may run before it yields to the game for this frame.
 pub const SLICE: Duration = Duration::from_millis(2);
@@ -52,6 +52,8 @@ struct Sched {
     /// The game time of the current turn, ms.
     now: Rc<Cell<u64>>,
     handlers: menus::Handlers,
+    /// What the mod sees of the keyboard, the mouse and the pad.
+    keys: input::Keys,
     /// This run of the mod (its menus are its own).
     instance: u64,
     /// The coroutine the scheduler is running (`Thread::to_pointer`).
@@ -194,6 +196,19 @@ impl Vm {
         if let Some(storage) = &self.storage {
             storage.flush(false);
         }
+        // Keys since the last turn: the handlers' calls become tasks.
+        match self.sched.keys.take(&self.lua) {
+            Ok(calls) => {
+                let mut tasks = self.sched.tasks.borrow_mut();
+                for (f, args) in calls {
+                    match self.lua.create_thread(f) {
+                        Ok(thread) => tasks.push(Task { thread, wake: now, args: Some(args), busy: Duration::ZERO }),
+                        Err(e) => crate::log_line(&self.module, crate::LogLevel::Error, &error_text(&e)),
+                    }
+                }
+            }
+            Err(e) => crate::log_line(&self.module, crate::LogLevel::Error, &error_text(&e)),
+        }
         for (item, input) in menus::take_inputs(&self.module) {
             match menus::apply(&self.lua, &self.sched.handlers, item, input) {
                 Ok(Some((f, args))) => match self.lua.create_thread(f) {
@@ -215,13 +230,13 @@ impl Vm {
                 return failed;
             }
         }
-        let menus = menus::has_menus(self.sched.instance);
+        // A menu may be used, a key pressed any time: every frame then.
+        let player = menus::has_menus(self.sched.instance) || self.sched.keys.listening();
         let tasks = self.sched.tasks.borrow();
-        if self.main.is_none() && tasks.is_empty() && !menus {
+        if self.main.is_none() && tasks.is_empty() && !player {
             return Step::Finished;
         }
-        // A menu may be used any time: every frame then.
-        if menus {
+        if player {
             return Step::Wait(0);
         }
         let next = tasks.iter().map(|t| t.wake).chain(self.main.as_ref().map(|_| self.main_wake)).min().unwrap_or(now);
@@ -382,6 +397,7 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
         })?,
     )?;
     menus::install(&lua, name, sched.instance, sched.handlers.clone())?;
+    input::install(&lua, &sched.keys)?;
     json::install(&lua)?;
     // `world.vehicles()`..., the catalog's lists.
     let world = lua.create_table()?;

@@ -10,6 +10,7 @@
 mod checker;
 mod engine;
 pub mod files;
+pub mod input;
 mod json;
 mod menus;
 pub mod natives;
@@ -386,7 +387,7 @@ fn natural(a: &str, b: &str) -> std::cmp::Ordering {
 /// installed game's names, the natives and the globals, the globals the
 /// modules add.
 pub(crate) fn definitions() -> String {
-    [world::definitions().as_str(), natives::DEFINITIONS].concat()
+    [world::definitions().as_str(), natives::DEFINITIONS, &input::definitions()].concat()
 }
 
 /// The mods and their state.
