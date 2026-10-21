@@ -80,7 +80,8 @@ impl Checker {
     }
 
     fn new() -> Result<Checker, String> {
-        let defs = crate::definitions();
+        // The natives' game names only here: they are their Luau names again.
+        let defs = crate::definitions() + natives::ALIASES;
         let mut error: *mut c_char = std::ptr::null_mut();
         let raw = unsafe { glue5_checker_new(defs.as_ptr().cast(), defs.len(), &mut error) };
         if raw.is_null() {
@@ -143,8 +144,9 @@ impl Drop for Checker {
 pub fn documentation(symbol: &str) -> Option<String> {
     let path = symbol.strip_prefix("@glue5/global/")?;
     let (space, name) = path.split_once('.')?;
-    let ns = natives::NAMESPACES.iter().position(|s| *s == space)?;
-    let n = &natives::NATIVES[natives::find(ns, name)?];
+    let ns = natives::NAMESPACES.iter().position(|s| s.eq_ignore_ascii_case(space))?;
+    // `VEHICLE.CREATE_VEHICLE` too.
+    let n = &natives::NATIVES[natives::find(ns, name).or_else(|| natives::find_name(ns, name))?];
     Some(if n.doc.is_empty() { format!("`{}`", n.name) } else { format!("{}\n\n`{}`", n.doc, n.name) })
 }
 

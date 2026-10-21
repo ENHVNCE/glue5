@@ -437,35 +437,9 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
     m.set("name", name)?;
     g.set("mod", m)?;
 
-    // A table per namespace; a native's function is made the first time it
-    // is looked up.
-    for (ns, space) in natives::NAMESPACES.iter().enumerate() {
-        let cache: RefCell<HashMap<String, Function>> = RefCell::default();
-        let table = lua.create_table()?;
-        let meta = lua.create_table()?;
-        meta.set(
-            "__index",
-            lua.create_function(move |lua, (_, key): (Table, String)| {
-                if let Some(f) = cache.borrow().get(&key) {
-                    return Ok(Value::Function(f.clone()));
-                }
-                let Some(index) = natives::find(ns, &key) else { return Ok(Value::Nil) };
-                let f = lua.create_function(move |lua, args: MultiValue| natives::call(lua, index, args))?;
-                cache.borrow_mut().insert(key, f.clone());
-                Ok(Value::Function(f))
-            })?,
-        )?;
-        table.set_metatable(Some(meta))?;
-        if *space == "task" {
-            // The scheduler shares the table with the TASK_ natives.
-            for pair in task.pairs::<Value, Value>() {
-                let (k, v) = pair?;
-                table.raw_set(k, v)?;
-            }
-        }
-        g.set(*space, table)?;
-    }
-    // The game scripts' globals, the game's version; the game's memory.
+    // The natives' tables (the scheduler shares `task` with the TASK_
+    // natives); the scripts' globals, the game's version; the game's memory.
+    natives::install(&lua, &task)?;
     crate::globals::install(&lua)?;
     crate::memory::install(&lua, sched.instance)?;
 

@@ -3,11 +3,13 @@
 //! handler runs through `glue5_game::call_native` (a trap inside comes back
 //! as an error), the results come back as Lua values.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use glue5_game::{Env, exports};
 use glue5_runtime::memory::Mem;
-use mlua::{Lua, MultiValue, Value};
+use mlua::{Function, Lua, MultiValue, Table, Value};
 
 /// A value's type, as the mods see it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -85,6 +87,10 @@ include!(concat!(env!("OUT_DIR"), "/natives.rs"));
 /// The natives' Luau definitions, for the type checker.
 pub const DEFINITIONS: &str = include_str!(concat!(env!("OUT_DIR"), "/natives.d.luau"));
 
+/// The natives under their game names (`VEHICLE.CREATE_VEHICLE`), typed as
+/// their Luau-named ones: for the checker, after [`DEFINITIONS`].
+pub const ALIASES: &str = include_str!(concat!(env!("OUT_DIR"), "/aliases.d.luau"));
+
 /// What the build found: how many natives there are, which were left out.
 pub const SUMMARY: &str = env!("GLUE5_MODS_NATIVES_SUMMARY");
 
@@ -98,6 +104,84 @@ pub fn find(ns: usize, lua: &str) -> Option<usize> {
     let ns = ns as u16;
     NATIVES.binary_search_by(|n| (n.ns, n.lua).cmp(&(ns, lua))).ok()
 }
+
+/// The native of namespace `ns` with the game's name `name` (`CREATE_VEHICLE`).
+pub fn find_name(ns: usize, name: &str) -> Option<usize> {
+    static NAMES: LazyLock<HashMap<&str, usize>> =
+        LazyLock::new(|| NATIVES.iter().enumerate().map(|(i, n)| (n.name, i)).collect());
+    NAMES.get(name).copied().filter(|&i| NATIVES[i].ns as usize == ns)
+}
+
+/// The natives' tables: one per namespace (`vehicle.createVehicle`), the
+/// same under the game's names (`VEHICLE.CREATE_VEHICLE`). `task`'s
+/// functions (the scheduler) go in the TASK_ natives' table.
+pub fn install(lua: &Lua, task: &Table) -> mlua::Result<()> {
+    let g = lua.globals();
+    for (ns, space) in NAMESPACES.iter().enumerate() {
+        let table = namespace(lua, move |key| find(ns, key))?;
+        if *space == "task" {
+            for pair in task.pairs::<Value, Value>() {
+                let (k, v) = pair?;
+                table.raw_set(k, v)?;
+            }
+        }
+        g.set(*space, table)?;
+        g.set(space.to_ascii_uppercase(), namespace(lua, move |key| find_name(ns, key))?)?;
+    }
+    Ok(())
+}
+
+/// A namespace's table: a native's function is made the first time it is
+/// looked up.
+fn namespace(lua: &Lua, find: impl Fn(&str) -> Option<usize> + 'static) -> mlua::Result<Table> {
+    let cache: RefCell<HashMap<String, Function>> = RefCell::default();
+    let table = lua.create_table()?;
+    let meta = lua.create_table()?;
+    meta.set(
+        "__index",
+        lua.create_function(move |lua, (_, key): (Table, String)| {
+            if let Some(f) = cache.borrow().get(&key) {
+                return Ok(Value::Function(f.clone()));
+            }
+            let Some(index) = find(&key) else { return Ok(Value::Nil) };
+            let f = lua.create_function(move |lua, args: MultiValue| call(lua, index, args))?;
+            cache.borrow_mut().insert(key, f.clone());
+            Ok(Value::Function(f))
+        })?,
+    )?;
+    table.set_metatable(Some(meta))?;
+    Ok(table)
+}
+
+thread_local! {
+    /// The engine thread's environment while a mod runs: natives can only
+    /// be called then.
+    static ENV: Cell<*mut Env> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+/// Runs `f` with natives callable through `env`.
+pub fn with_env<R>(env: *mut Env, f: impl FnOnce() -> R) -> R {
+    let old = ENV.replace(env);
+    let r = f();
+    ENV.set(old);
+    r
+}
+
+/// Jenkins' one-at-a-time hash of the lowercase string (`GET_HASH_KEY`).
+pub fn joaat(s: &str) -> u32 {
+    let mut h: u32 = 0;
+    for b in s.bytes() {
+        h = h.wrapping_add(b.to_ascii_lowercase() as u32);
+        h = h.wrapping_add(h << 10);
+        h ^= h >> 6;
+    }
+    h = h.wrapping_add(h << 3);
+    h ^= h >> 11;
+    h.wrapping_add(h << 15)
+}
+
+/// The script handles' pool (`rage::fwScriptGuid`), u64 at this address.
+const GUID_POOL: u64 = 12318120;
 
 thread_local! {
     /// The engine thread's environment while a mod runs: natives can only
@@ -443,4 +527,50 @@ fn read(lua: &Lua, mem: Mem, at: u64, k: Kind) -> mlua::Result<Value> {
             id => Value::Integer(id.into()),
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `VEHICLE.CREATE_VEHICLE` is `vehicle.createVehicle`, and only that.
+    #[test]
+    fn game_names() {
+        let lua = Lua::new();
+        install(&lua, &lua.create_table().unwrap()).unwrap();
+        let kind = |code: &str| lua.load(code).eval::<String>().unwrap();
+        assert_eq!(kind("return type(VEHICLE.CREATE_VEHICLE)"), "function");
+        assert_eq!(kind("return type(vehicle.createVehicle)"), "function");
+        assert_eq!(kind("return type(VEHICLE.createVehicle)"), "nil");
+        assert_eq!(kind("return type(vehicle.CREATE_VEHICLE)"), "nil");
+        // In its own namespace only, as the definitions have it.
+        assert_eq!(kind("return type(PED.CREATE_VEHICLE)"), "nil");
+        assert_eq!(kind("return type(BUILTIN.WAIT)"), "nil");
+        let e = lua
+            .load("VEHICLE.CREATE_VEHICLE('adder', vector.create(0, 0, 0), 0, false, false, false)")
+            .exec()
+            .unwrap_err();
+        assert!(e.to_string().contains("vehicle.createVehicle: natives can only run in a mod's script"), "{e}");
+    }
+
+    /// The checker knows the game names, as their Luau ones.
+    #[test]
+    fn game_names_typed() {
+        crate::checker::Checker::with(|c| {
+            let file = "shv-test/main.luau";
+            c.set(file, Some("--!strict\nlocal me = PLAYER.PLAYER_PED_ID()\nVEHICLE.SET_VEHICLE_FIXED(me)\n"));
+            let text = c.check(file).to_string();
+            assert!(text.contains("Ped") && text.contains("Vehicle"), "{text}");
+            let ok = "--!strict\nlocal car: Vehicle? = VEHICLE.CREATE_VEHICLE('adder', vector.create(0, 0, 0), 0, false, false, false)\nprint(car)\n";
+            c.set(file, Some(ok));
+            assert_eq!(c.check(file).to_string(), "[]");
+            let hover = c.hover(file, 1, 26);
+            assert!(hover["type"].as_str().unwrap().contains("Vehicle"), "{hover}");
+            c.set(file, None);
+        })
+        .unwrap();
+        assert!(
+            crate::checker::documentation("@glue5/global/VEHICLE.CREATE_VEHICLE").unwrap().contains("CREATE_VEHICLE")
+        );
+    }
 }
