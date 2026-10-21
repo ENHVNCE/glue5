@@ -927,6 +927,23 @@ impl Gpu {
             Some(p) => &tex.proxies[p].as_ref()?.tex,
             None => &**tex,
         };
+        // A slot declared with another dimension than the texture's: D3D11
+        // reads zeros there, wgpu refuses the whole bind group (its draw
+        // would lose every texture), so the slot gets the empty one.
+        let fits = match dim {
+            TextureViewDimension::D1 => t.dim == wgpu::TextureDimension::D1,
+            TextureViewDimension::D3 => t.dim == wgpu::TextureDimension::D3,
+            _ => t.dim == wgpu::TextureDimension::D2,
+        };
+        if !fits {
+            crate::log_once(&format!("srvdim{dim:?}{:?}", t.dim), || {
+                format!(
+                    "a {dim:?} texture slot was given a {:?} texture ({}x{}x{}, {:?}): it reads as empty",
+                    t.dim, t.width, t.height, t.layers, t.format
+                )
+            });
+            return None;
+        }
         let layers = t.layers;
         if matches!(dim, TextureViewDimension::Cube | TextureViewDimension::CubeArray)
             && layers.saturating_sub(srv.c) < 6
