@@ -530,7 +530,10 @@ The present step scales the back buffer with one of four upscalers (Settings
 | FSR 2 (AMD, through sp-fidelity) | GPUs with the features it needs | the same as MetalFX Temporal |
 
 Upscalers run on the submit thread, on the same queue, after the game's
-commands and before the present pass, which draws their result 1:1. MetalFX
+commands and before the present pass, which draws their result 1:1. The
+game's commands and the upscaler's are submitted before the window's next
+image is taken: waiting for one does not hold the frame back from the GPU,
+and the present pass, drawing into it, is a submission of its own. MetalFX
 has command buffers of its own because wgpu does not let raw Metal commands
 share its encoder; FSR is wgpu compute passes. Upscalers are made for one
 input and one output size; while the sizes change (a window being resized)
