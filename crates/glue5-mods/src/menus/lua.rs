@@ -43,6 +43,9 @@ pub(super) struct LocalMenu {
     enabled: bool,
     visible: bool,
     items: Vec<u32>,
+    /// Run when the first viewer opens it, the last one closes it.
+    on_open: Option<Function>,
+    on_close: Option<Function>,
 }
 
 /// What every handle of a run of a mod shares.
@@ -601,6 +604,16 @@ impl MenuRef {
         lua.create_userdata(ItemRef { id, type_name, ctx: self.ctx.clone() })
     }
 
+    /// `menu:onOpen(f)` / `menu:onClose(f)`; nil clears.
+    fn on_view(&self, open: bool, f: Value) -> Result<()> {
+        let what = if open { "menu:onOpen" } else { "menu:onClose" };
+        let f = callback(what, f)?;
+        let mut local = self.ctx.local.borrow_mut();
+        let Some(m) = local.menus.get_mut(&self.id) else { return Err(self.removed(what)) };
+        if open { m.on_open = f } else { m.on_close = f }
+        Ok(())
+    }
+
     /// `menu:submenu(label, opts)`: a menu, and its row here.
     fn submenu(&self, lua: &Lua, label: Value, opts: Value) -> Result<AnyUserData> {
         let what = "menu:submenu";
@@ -648,7 +661,7 @@ impl MenuRef {
         local.items.insert(row, LocalItem { menu: self.id, item, callback: None });
         local.menus.insert(
             id,
-            LocalMenu { parent: Some(self.id), row: Some(row), depth, title, note: opts.note, enabled: true, visible: true, items: Vec::new() },
+            LocalMenu { parent: Some(self.id), row: Some(row), depth, title, note: opts.note, enabled: true, visible: true, items: Vec::new(), on_open: None, on_close: None },
         );
         lua.create_userdata(MenuRef { id, ctx: self.ctx.clone() })
     }
@@ -881,6 +894,16 @@ impl UserData for MenuRef {
         });
         methods.add_method("submenu", |lua, this, (label, opts): (Value, Value)| this.submenu(lua, label, opts));
         methods.add_method("clear", |_, this, ()| this.clear());
+        methods.add_method("onOpen", |_, this, f: Value| this.on_view(true, f));
+        methods.add_method("onClose", |_, this, f: Value| this.on_view(false, f));
+        methods.add_method("show", |_, this, ()| {
+            if !this.ctx.local.borrow().menus.contains_key(&this.id) {
+                return Err(this.removed("menu:show"));
+            }
+            // More than once in two seconds: ignored.
+            super::request_show(&this.ctx.module, this.id);
+            Ok(())
+        });
         methods.add_method("remove", |_, this, ()| this.remove());
         methods.add_meta_method(MetaMethod::Index, |lua, this, key: String| this.get(lua, &key));
         methods.add_meta_method(MetaMethod::NewIndex, |_, this, (key, v): (String, Value)| this.assign(&key, v));
@@ -941,6 +964,8 @@ pub fn install(lua: &Lua, module: &str, instance: u64, handlers: Handlers) -> Re
                     enabled: opts.enabled.unwrap_or(true),
                     visible: opts.visible.unwrap_or(true),
                     items: Vec::new(),
+                    on_open: None,
+                    on_close: None,
                 },
             );
             lua.create_userdata(MenuRef { id, ctx: ctx.clone() })
@@ -1005,7 +1030,12 @@ pub fn take_calls(lua: &Lua, handlers: &Handlers, instance: u64) -> Result<Vec<(
                     calls.push((f, args));
                 }
             }
-            Event::Viewer(..) => {}
+            Event::Viewer(menu, open) => {
+                let f = local.menus.get(&menu).and_then(|m| if open { m.on_open.clone() } else { m.on_close.clone() });
+                if let Some(f) = f {
+                    calls.push((f, MultiValue::new()));
+                }
+            }
         }
     }
     Ok(calls)

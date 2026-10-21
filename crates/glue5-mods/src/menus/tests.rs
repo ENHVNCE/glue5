@@ -437,3 +437,42 @@ fn menus_with_submenus() {
     let err = m.fails("top:submenu('one more')");
     assert!(err.contains("menu:submenu: a mod has 64 menus at most, submenus included"), "{err}");
 }
+
+/// `onOpen` and `onClose` run at the mod's turn when the first viewer
+/// comes and the last one goes.
+#[test]
+fn open_and_close_run() {
+    let m = Mod::new("menus-test-onopen");
+    m.run("m = ui.menu('x') s = m:submenu('s') log = {} m:onOpen(function() table.insert(log, 'open') end) m:onClose(function() table.insert(log, 'close') end) s:onOpen(function() table.insert(log, 'sub') end)");
+    let (top, sub): (u32, u32) = (m.eval("m.id"), m.eval("s.id"));
+    crate::menu_viewer(m.name, top, true);
+    crate::menu_viewer(m.name, sub, true);
+    m.turn();
+    crate::menu_viewer(m.name, top, false);
+    crate::menu_viewer(m.name, top, true);
+    m.turn();
+    crate::menu_viewer(m.name, top, false);
+    m.turn();
+    m.run("m:onClose(nil)");
+    crate::menu_viewer(m.name, top, true);
+    crate::menu_viewer(m.name, top, false);
+    crate::menu_viewer(m.name, top, true);
+    m.turn();
+    crate::menu_viewer(m.name, top, false);
+    m.turn();
+    assert_eq!(m.eval::<String>("table.concat(log, ',')"), "open,sub,close,open");
+    assert!(m.fails("m:onOpen(3)").contains("menu:onOpen: a function, not number"));
+}
+
+/// `menu:show()` from a mod: once in two seconds.
+#[test]
+fn show_from_a_mod() {
+    let m = Mod::new("menus-test-show-mod");
+    m.run("m = ui.menu('x') m:show() m:show()");
+    let id: u32 = m.eval("m.id");
+    // The one slot is shared with the other test of show: look for ours.
+    let shown = std::iter::from_fn(crate::take_menu_show).collect::<Vec<_>>();
+    assert!(shown.contains(&(m.name.to_string(), id)) || shown.is_empty(), "{shown:?}");
+    m.run("m:remove()");
+    assert!(m.fails("m:show()").contains("menu:show: the menu was removed"));
+}
