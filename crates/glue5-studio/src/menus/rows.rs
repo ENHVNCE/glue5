@@ -146,8 +146,29 @@ pub(super) fn Row(s: S, module: String, menu: u32, id: u32) -> impl IntoView {
             }
             .into_any()
         }
+        Some(Kind::Text { .. }) => {
+            let get = move || match it().kind {
+                Kind::Text { value, placeholder, max } => (value, placeholder, max),
+                _ => (String::new(), None, 64),
+            };
+            let field = NodeRef::<html::Input>::new();
+            let focused = RwSignal::new(false);
+            follow(field, focused, move || get().0);
+            view! {
+                <div class=row_class(" wide")>
+                    {text}
+                    <input type="text" class="mtextin" node_ref=field aria-label=label spellcheck="false" autocomplete="off"
+                        maxlength=move || get().2 placeholder=move || get().1.unwrap_or_default() prop:disabled=off
+                        on:focus=move |_| focused.set(true)
+                        on:blur=move |_| { focused.set(false); resync.notify(); }
+                        on:keydown=move |ev| commit_keys(&ev, field, move || get().0)
+                        on:change=move |ev| input(json!(event_target_value(&ev)))/>
+                </div>
+            }
+            .into_any()
+        }
         Some(Kind::Label) => view! { <div class="mitem label"><p>{label}</p>{note}</div> }.into_any(),
-        Some(Kind::Multi { .. } | Kind::Text { .. } | Kind::Color { .. } | Kind::Separator | Kind::Progress { .. } | Kind::Submenu { .. } | Kind::Other) | None => ().into_any(),
+        Some(Kind::Multi { .. } | Kind::Color { .. } | Kind::Separator | Kind::Progress { .. } | Kind::Submenu { .. } | Kind::Other) | None => ().into_any(),
     }
 }
 
