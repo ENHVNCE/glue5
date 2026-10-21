@@ -52,7 +52,7 @@ pub fn handle(request: &Request) -> (u16, String, Vec<(&'static str, String)>) {
         "resources/read" => match p["uri"].as_str() {
             Some(uri @ "glue5://guide") => Ok(json!({ "contents": [{ "uri": uri, "mimeType": "text/markdown", "text": api::GUIDE }] })),
             Some(uri @ "glue5://natives.d.luau") => {
-                let text = [crate::natives::DEFINITIONS, crate::menus::DEFINITIONS, &crate::input::definitions(), crate::draw::DEFINITIONS, crate::db::DEFINITIONS, crate::net::DEFINITIONS, crate::stdlib::DEFINITIONS].concat();
+                let text = [crate::COMMON, crate::natives::DEFINITIONS, crate::menus::DEFINITIONS, &crate::input::definitions(), crate::draw::DEFINITIONS, crate::db::DEFINITIONS, crate::net::DEFINITIONS, crate::stdlib::DEFINITIONS].concat();
                 Ok(json!({ "contents": [{ "uri": uri, "mimeType": "text/plain", "text": text }] }))
             }
             Some(uri @ "glue5://world.d.luau") => {

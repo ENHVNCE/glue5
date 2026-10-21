@@ -826,8 +826,6 @@ fn length(v: f64) -> mlua::Result<f32> {
 
 /// The definitions of `draw`, for the type checker.
 pub const DEFINITIONS: &str = "
--- A colour: 0xRRGGBBAA (draw.rgba makes one).
-type Color = number
 -- An image a mod loaded (draw.loadImage); its size in pixels.
 export type Image = {
 \twidth: number,

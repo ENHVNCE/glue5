@@ -174,8 +174,8 @@ fn selection(what: &str, options: &[String], v: &Value) -> Result<Vec<u16>> {
     Ok(out)
 }
 
-/// `{r, g, b, a}` (0-255, `a` 255 when left out) or `"#rrggbb[aa]"`; `a`
-/// is 255 without `alpha`.
+/// A `Color`: `0xRRGGBBAA`, `{r, g, b, a}` (0-255, `a` 255 when left out)
+/// or `"#rrggbb[aa]"`; `a` is 255 without `alpha`.
 fn color(what: &str, v: &Value, alpha: bool) -> Result<Rgba> {
     let mut c = match v {
         Value::String(s) => {
@@ -196,7 +196,16 @@ fn color(what: &str, v: &Value, alpha: bool) -> Result<Rgba> {
             };
             Rgba { r: part("r")?, g: part("g")?, b: part("b")?, a: part("a")? }
         }
-        other => return Err(error(format!("{what}: {{r, g, b, a}} or \"#rrggbb\", not {}", type_of(other)))),
+        // 0xRRGGBBAA, as draw.rgba makes it.
+        Value::Integer(_) | Value::Number(_) => {
+            let n = number(what, v)?;
+            if n.fract() != 0.0 || !(0.0..=f64::from(u32::MAX)).contains(&n) {
+                return Err(error(format!("{what}: 0xRRGGBBAA is a whole number from 0 to 0xFFFFFFFF, not {n}")));
+            }
+            let [r, g, b, a] = (n as u32).to_be_bytes();
+            Rgba { r, g, b, a }
+        }
+        other => return Err(error(format!("{what}: a Color (0xRRGGBBAA, {{r, g, b, a}} or \"#rrggbb\"), not {}", type_of(other)))),
     };
     if !alpha {
         c.a = 255;

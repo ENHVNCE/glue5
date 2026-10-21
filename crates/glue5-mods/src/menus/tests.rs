@@ -275,6 +275,10 @@ fn every_kind() {
     assert_eq!(label.label.chars().count(), LABEL_TEXT);
     assert_eq!(m.eval::<String>("c.option .. n.unit .. t.placeholder .. b.action"), "b$PlateDeliver now plea");
     assert_eq!(m.eval::<String>("table.concat(mu.value, ',') .. co.value.r .. tostring(se.kind)"), "1,3255separator");
+    // draw's packed 0xRRGGBBAA too.
+    m.run("ca:set(0x11223344) co.value = 0x11223344");
+    assert_eq!(k("Ca"), MenuKind::Color { value: crate::Rgba { r: 0x11, g: 0x22, b: 0x33, a: 0x44 }, alpha: true });
+    assert_eq!(k("Co"), MenuKind::Color { value: crate::Rgba { r: 0x11, g: 0x22, b: 0x33, a: 255 }, alpha: false });
 }
 
 /// Wrong arguments and fields are errors that say where.
@@ -658,4 +662,13 @@ fn json_round_trip() {
     assert!(input("co", json!({ "r": 300, "g": 0, "b": 0 })).unwrap_err().contains("0 to 255"));
     let open = crate::studio::api::menu_open(m.name, menu["id"].as_u64().unwrap() as u32).unwrap();
     assert_eq!(open["submenus"][0]["title"], "sub");
+}
+
+/// Every module's definitions load together in the checker (a type two
+/// modules both define, `Color` once, would not).
+#[test]
+fn all_definitions_load_together() {
+    let defs = crate::definitions();
+    assert_eq!(defs.matches("export type Color =").count() + defs.matches("\ntype Color =").count(), 1);
+    crate::checker::Checker::with(|_| ()).unwrap();
 }

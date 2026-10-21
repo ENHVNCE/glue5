@@ -1,7 +1,5 @@
 
 -- Mods' menus (`ui.menu`): the app's Mods page (MENUS), the Studio and MCP show them.
--- A menu colour, 0-255 each (`a` 255 when left out); draw's `Color` is a 0xRRGGBBAA number.
-export type Rgba = { r: number, g: number, b: number, a: number? }
 
 -- What every item has. `note` is the line under the label (descriptions).
 export type ItemOpts = { note: string?, enabled: boolean?, visible: boolean? }
@@ -49,7 +47,7 @@ export type Text = Item & {
 }
 export type ColorItem = Item & {
 	value: Rgba, alpha: boolean,
-	onChange: ((color: Rgba) -> ())?, set: (self: ColorItem, value: Rgba | string) -> (),  -- or "#rrggbb[aa]"
+	onChange: ((color: Rgba) -> ())?, set: (self: ColorItem, value: Color) -> (),  -- any Color
 }
 export type Label = Item & { set: (self: Label, text: string) -> () }
 export type Separator = Item
@@ -87,7 +85,7 @@ export type Menu = {
 	text: (self: Menu, label: string, value: string?,
 		opts: (string | TextOpts | (text: string) -> ())?, onChange: ((text: string) -> ())?) -> Text,
 	-- A colour, white by default; opacity only with `alpha`.
-	color: (self: Menu, label: string, value: (Rgba | string)?,
+	color: (self: Menu, label: string, value: Color?,
 		opts: (string | ColorOpts | (color: Rgba) -> ())?, onChange: ((color: Rgba) -> ())?) -> ColorItem,
 	-- Muted text, wrapped.
 	label: (self: Menu, text: string, opts: ItemOpts?) -> Label,
