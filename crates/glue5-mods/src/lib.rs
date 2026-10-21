@@ -553,56 +553,50 @@ impl Rgba {
 }
 
 /// What a player did with a menu's item.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum MenuInput {
-    Toggle(bool),
-    Value(f64),
-    Choose(usize),
+    /// A button.
     Press,
+    Toggle(bool),
+    /// A slider or a number.
+    Number(f64),
+    /// A choice's option, 0-based.
+    Choose(usize),
+    /// A multi's options, 0-based.
+    Select(Vec<u16>),
+    Text(String),
+    Color(Rgba),
 }
 
-/// The mods' menus.
-pub fn menus() -> Vec<Menu> {
-    crate::lock(&SHARED.state).menus.clone()
+/// The menus (all, submenus included, in creation order) as a shared
+/// snapshot, rebuilt only after a change: call it every frame.
+pub fn menus() -> Arc<Vec<Menu>> {
+    menus::snapshot()
 }
 
-/// Whether a mod has a menu.
+/// Whether any mod has a menu.
 pub fn has_menus() -> bool {
-    !crate::lock(&SHARED.state).menus.is_empty()
+    menus::any()
 }
 
-/// The player changed or pressed an item: the menu shows it at once, the
-/// mod hears of it at its next turn.
-pub fn menu_input(module: &str, item: u32, input: MenuInput) {
-    let mut s = crate::lock(&SHARED.state);
-    // What the mod hears is what the menu shows: the value checked against
-    // the item, nothing for an item that is gone or of another kind.
-    let mut checked = None;
-    for m in s.menus.iter_mut().filter(|m| m.module == module) {
-        for i in m.items.iter_mut().filter(|i| i.id == item) {
-            checked = match (&mut i.kind, input) {
-                (MenuKind::Toggle(on), MenuInput::Toggle(v)) => {
-                    *on = v;
-                    Some(input)
-                }
-                (MenuKind::Slider { value, min, max, .. }, MenuInput::Value(v)) if v.is_finite() => {
-                    *value = v.clamp(*min, *max);
-                    Some(MenuInput::Value(*value))
-                }
-                (MenuKind::Choice { options, index }, MenuInput::Choose(v)) if v < options.len() => {
-                    *index = v;
-                    Some(input)
-                }
-                (MenuKind::Button, MenuInput::Press) => Some(input),
-                _ => None,
-            };
-        }
-    }
-    let Some(input) = checked else { return };
-    s.inputs.push((module.to_string(), item, input));
-    drop(s);
-    SHARED.pending.store(true, Ordering::Release);
-    SHARED.generation.fetch_add(1, Ordering::Relaxed);
+/// A player (app, Studio, MCP) changed or pressed `item` of mod `module`:
+/// checked against the item (kind, range, enabled, visible, its menus
+/// shown); on success the shared value changes at once and the mod hears
+/// it at its next turn. The error is for people (the Studio shows it).
+pub fn menu_input(module: &str, item: u32, input: MenuInput) -> Result<(), String> {
+    menus::input(module, item, input)
+}
+
+/// A viewer (the app's page, a Studio session, MCP) starts (true) or stops
+/// (false) looking at menu `menu`: the first one runs the menu's `onOpen`,
+/// the last one gone its `onClose`.
+pub fn menu_viewer(module: &str, menu: u32, open: bool) {
+    menus::viewer(module, menu, open)
+}
+
+/// A mod asked to be shown (`menu:show()`): (module, menu id), once.
+pub fn take_menu_show() -> Option<(String, u32)> {
+    menus::take_show()
 }
 
 /// What the mods notified since the last call: (mod, text).
