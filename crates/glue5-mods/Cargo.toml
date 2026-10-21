@@ -18,6 +18,8 @@ httparse = "1"
 getrandom = "0.4"
 flate2 = "1"
 png = "0.18"
+# Mods' databases (db.rs): SQLite, built in.
+rusqlite = { version = "0.40", default-features = false, features = ["bundled", "cache", "hooks", "limits"] }
 
 [build-dependencies]
 anyhow.workspace = true
