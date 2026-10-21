@@ -134,6 +134,8 @@ menu item: copy a folder into the mods folder to try it.
 | `native.invoke(hash, ...)` | A native by its ScriptHookV hash or its game name, as ScriptHookV calls it: `native.invoke("0xAF35D0D2583051B0", model, x, y, z, heading, false, false, false)`. See [Porting ScriptHookV mods](#porting-scripthookv-mods). |
 | `globals` | The game scripts' globals by ScriptHookV's index: `globals.int(i)`, `float`, `bool`, `string`, `setInt(i, v)`..., `valid(i)`. |
 | `memory` | The game's memory: `memory.entity(handle)` (an entity's address), `readFloat(address)`, `writeInt(address, v)`... (U8, U16, U32, Int, U64, Ptr, Float, Vector3, String), `read(address, bytes)` into a Luau `buffer` and `write(address, buffer)`, scratch memory for natives: `alloc(bytes)`, `free(address)`. |
+| `memory.offsets` | Where fields of the game's objects are, for this game build: `memory.readFloat(memory.entity(car) + memory.offsets.vehicle.rpm)`. What ScriptHookVDotNet reads from memory: a vehicle's gears, revs, clutch, throttle, brake, steering, fuel, oil, engine temperature and wheel speed; its wheels' tyre and suspension health, tyre temperature and wear, spin; a ped's armour, injury thresholds, money, seeing and hearing ranges; who damaged an entity. The editor's hovers say what each one holds and how (float, byte, pointer). |
+| `handling` | A vehicle's handling, every field by handling.meta's name, as the game's own parser describes it (sub-handlings too, `CCarHandlingData`'s, `CBikeHandlingData`'s...): `handling.get(car, "fInitialDriveForce")`, `handling.set("ADDER", "fBrakeForce", 1.2)`, `handling.fields(car)`. Vehicles of a model share it, so a change reaches all of them; values are in the game's units (m/s, radians), and a vehicle's gearbox is set up from them when it is made. |
 | `game.version()` | The game build the natives, globals and offsets are for (`"8b0b5899ed"`). |
 | `wait(ms)` | Back to the game for `ms` milliseconds (none: until the next frame). |
 | `ui.menu(title)` | A menu on the Mods page, with buttons, toggles, sliders, numbers, choices, text, colours and submenus: see [Menus](#menus). `ui.notify(text)` shows a notification. |
@@ -299,7 +301,10 @@ ScriptHookV's and ScriptHookVDotNet's calls have their counterparts:
 - **Addresses** are the game's own (offsets in its memory); a pointer read
   from the game's objects (`memory.readPtr`) is an address too. Field
   offsets are not PC GTA V's (another build, another layout):
-  ScriptHookVDotNet's offsets do not carry over, find them for this build.
+  ScriptHookVDotNet's offsets do not carry over. `memory.offsets` has
+  this build's for what ScriptHookVDotNet reads (`Vehicle.CurrentRPM` is
+  `memory.offsets.vehicle.rpm`), and `handling` every handling field by
+  name; they hold for this game build only.
 - **What can crash the game.** Every address is checked against the
   game's memory, so nothing outside it is touched; inside it nothing is
   protected. A wrong write with `memory` or `globals`, a native given a
