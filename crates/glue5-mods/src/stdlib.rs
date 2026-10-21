@@ -18,6 +18,7 @@ mod generated {
 /// The library's files, run in this order.
 const SOURCES: &[(&str, &str)] = &[
     ("constants", include_str!("stdlib/constants.luau")),
+    ("geo", include_str!("stdlib/geo.luau")),
 ];
 
 /// The library's types, for the checker: after every other definition (it

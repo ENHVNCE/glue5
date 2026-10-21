@@ -60,3 +60,28 @@ fn constants() {
         assert_eq!(eval::<i64>(&lua, code), value, "{code}");
     }
 }
+
+#[test]
+fn rotations() {
+    let lua = stubbed("");
+    let close = |code: &str| {
+        let ok: bool = eval(&lua, code);
+        assert!(ok, "{code}");
+    };
+    close("return vector.magnitude(geo.direction(vector.create(0, 0, 90)) - vector.create(-1, 0, 0)) < 1e-6");
+    close("return math.abs(geo.heading(geo.fromHeading(135)) - 135) < 1e-4");
+    close("local d = geo.direction(vector.create(20, 0, 30)) return vector.magnitude(geo.direction(geo.rotation(d)) - d) < 1e-5");
+    close(
+        "local r = vector.create(20, 10, 30)
+         return vector.magnitude(geo.fromQuaternion(geo.quaternion(r)) - r) < 1e-3",
+    );
+    // The quaternion turns the forward axis where the rotation points.
+    close(
+        "local r = vector.create(25, 0, -60)
+         local x, y, z, w = geo.quaternion(r)
+         -- (0, 1, 0) rotated by q: the second column of its matrix.
+         local f = vector.create(2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x))
+         return vector.magnitude(f - geo.direction(r)) < 1e-5",
+    );
+    close("return geo.distance(vector.create(0, 0, 0), vector.create(3, 4, 12), true) == 5");
+}
