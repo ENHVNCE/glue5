@@ -76,13 +76,15 @@ const JOIN_AGAIN: Duration = Duration::from_secs(30);
 const LIST_AGAIN: Duration = Duration::from_secs(10);
 
 /// The browser build has no friends: its friends menus (the pause menu's
-/// FRIENDS tab, the corona's invite list) ask a virtual method whether
-/// there is a system error, and theirs is a stub that answers yes (an
-/// identical-code-folded `return 1`), so they say "the internet connection
-/// has been lost". Their vtables get the base player list's (`return 0`):
-/// (slot's address, the stub's table index, the replacement's).
+/// FRIENDS tab, online and in the story, the corona's invite list) ask a
+/// virtual method whether there is a system error, and theirs is a stub
+/// that answers yes (an identical-code-folded `return 1`), so they say "the
+/// internet connection has been lost". Their vtables get the base player
+/// list's (`return 0`): (slot's address, the stub's table index, the
+/// replacement's).
 const MENU_PATCHES: &[(u64, u64, u64)] = &[
     (5042512, 34242, 34181), // CFriendsMenuMP
+    (5043128, 34263, 34181), // CFriendsMenuSP
     (5047456, 34242, 34181), // CCoronaFriendsInviteMenu
 ];
 
@@ -629,11 +631,12 @@ pub(crate) unsafe extern "C" fn friends_with(env: *mut Env, gamer: u32, handle: 
     unsafe { orig::friends_with(env, gamer, handle) }
 }
 
-/// The vtables of `CMPFriendPlayerCardDataManager` (the FRIENDS tab) and
-/// `CActivePlayerCardDataManager` (the ONLINE tab's Players), and a card
-/// data manager's state (0: to read the players, 6: ready, 8 and 9:
-/// failed) and when it started reading (the engine's frame time).
-const CARD_DATA: [u64; 2] = [6188416, 6187512];
+/// The vtables of `CMPFriendPlayerCardDataManager` and
+/// `CSPFriendPlayerCardDataManager` (the FRIENDS tab, online and in the
+/// story) and `CActivePlayerCardDataManager` (the ONLINE tab's Players),
+/// and a card data manager's state (0: to read the players, 6: ready, 8
+/// and 9: failed) and when it started reading (the engine's frame time).
+const CARD_DATA: [u64; 3] = [6188416, 6188096, 6187512];
 const CARD_DATA_STATE: u64 = 204;
 const CARD_DATA_STARTED: u64 = 212;
 const FRAME_TIME: u64 = 12321192;
