@@ -109,10 +109,20 @@ end)
 | `wait(ms)` | Back to the game for `ms` milliseconds (none: until the next frame). |
 | `ui.menu(title)` | A menu: `toggle`, `slider`, `choice`, `button`, `label`. `ui.notify(text)` shows a notification. |
 | `task.spawn`, `task.delay` | Coroutines on the game's clock (they stop while the game is paused). |
+| `input` | The keyboard, the mouse and the player's pad as the game gets them: `input.isDown("F5")`, `input.pressed("PadSouth")` (since the mod's last turn), `input.onKey(function(key, down, mods) ... end)`, `input.mousePosition()`. Keys are named as on a US keyboard by position: `"A"`, `"F5"`, `"LeftShift"`, `"MouseLeft"`. |
 | `world` | The vehicles, peds and objects around, and the installed game's model names. |
 | `json`, `storage` | JSON text, and values kept between sessions (1 MB a mod, for this player). |
 
 Files and the network are not available to mods.
+
+Keys reach a mod when they reach the game: not while a page of the app is
+open (the settings, the Mods page and its menus), not while the game's
+text box takes typed text, and F1, F7 and Home are the app's. The game
+sees them too: a mod that takes over one of the game's controls disables
+it each frame, as the game's scripts do
+(`pad.disableControlAction(0, control, true)`). On touch screens the touch
+controls are the player's pad, so a mod for every device puts its
+actions in a menu.
 
 **A mod cannot take the game down.** An error stops that mod with its
 message and traceback; arguments are checked before a native runs; a mod
