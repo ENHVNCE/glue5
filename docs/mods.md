@@ -117,8 +117,11 @@ end)
 | `world` | The vehicles, peds, objects and pickups around and the projectiles in flight, as handles: `world.vehicles()`, or only some, the closest first: `world.peds({ near = pos, radius = 50, model = "a_c_cat_01", max = 5 })`. And the installed game's model names. |
 | `draw` | Images from the mod's folder over the game: `local logo = draw.loadImage("images/logo.png")` (PNG, waits while it is decoded), then each frame `draw.image(logo, 0.9, 0.1, 0.1, nil, { rotation = 15, color = { 255, 255, 255, 200 }, z = 1 })`; `draw.rect` and `draw.text` too, above the images or below. Centred positions and sizes in fractions of the screen, as DRAW_SPRITE's; drawn at the window's resolution over everything the game draws. A mod holds 64 images, 32 MB of them, at most (2048×2048 each), freed when it stops or by `image:release()`. |
 | `json`, `storage` | JSON text, and values kept between sessions (1 MB a mod, for this player). |
+| `db` | The mod's SQLite database: `db.exec("CREATE TABLE spots (name TEXT, x REAL)")`, `db.exec("INSERT INTO spots VALUES (?, ?)", name, x)`, `db.query("SELECT * FROM spots WHERE x > :x", { x = 10 })` (its rows as tables), `db.transaction(function() ... end)` (undone if it fails). One file for this player, as the storage, 256 MB at most. Queries run on the mod's turn: large work goes in a transaction (300 inserts in one take under a millisecond). |
+| `net.request(url)` | HTTP and HTTPS, as [Lune](https://lune-org.github.io/docs)'s `@lune/net`: `net.request("https://...")` or `net.request({ url = ..., method = "POST", headers = {...}, body = ..., query = {...} })` gives `{ ok, statusCode, statusMessage, headers, body }`. It waits, as `wait()` does, while the request goes on away from the game. No answer (no network, a bad address, 30 s) is an error. 4 requests at once a mod, answers of 16 MB. |
 
-Files and the network are not available to mods.
+Mods reach the network through `net` and keep data in `storage` and `db`;
+other files are out of their reach.
 
 Keys reach a mod when they reach the game: not while a page of the app is
 open (the settings, the Mods page and its menus), not while the game's
