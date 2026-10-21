@@ -14,6 +14,7 @@ mod engine;
 pub mod files;
 mod folder;
 mod globals;
+mod handling;
 mod memory;
 pub mod input;
 mod json;
@@ -385,7 +386,7 @@ fn natural(a: &str, b: &str) -> std::cmp::Ordering {
 /// installed game's names, the natives and the globals, the globals the
 /// modules add.
 pub(crate) fn definitions() -> String {
-    [world::definitions().as_str(), natives::DEFINITIONS, menus::DEFINITIONS, structs::DEFINITIONS, &input::definitions(), draw::DEFINITIONS, db::DEFINITIONS, net::DEFINITIONS, stdlib::DEFINITIONS].concat()
+    [world::definitions().as_str(), natives::DEFINITIONS, menus::DEFINITIONS, structs::DEFINITIONS, &input::definitions(), draw::DEFINITIONS, db::DEFINITIONS, net::DEFINITIONS, handling::DEFINITIONS, stdlib::DEFINITIONS].concat()
 }
 
 /// The mods and their state.
