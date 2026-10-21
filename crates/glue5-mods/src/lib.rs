@@ -21,6 +21,7 @@ mod json;
 mod menus;
 pub mod natives;
 mod net;
+mod socket;
 mod offsets;
 mod stdlib;
 mod storage;

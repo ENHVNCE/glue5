@@ -20,6 +20,9 @@ flate2 = "1"
 png = "0.18"
 # Mods' network requests (net.rs): rustls with ring, webpki's roots, gzip.
 ureq = "3.5"
+# net.socket's TLS (socket.rs): ureq's rustls, ring and roots.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = { version = "1", default-features = false }
 # Mods' databases (db.rs): SQLite, built in.
 rusqlite = { version = "0.40", default-features = false, features = ["bundled", "cache", "hooks", "limits"] }
 

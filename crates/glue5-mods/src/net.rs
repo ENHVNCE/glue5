@@ -241,6 +241,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
         .call((start, poll, lua.globals().get::<Table>("coroutine")?.get::<Function>("yield")?))?;
     let net = lua.create_table()?;
     net.set("request", request)?;
+    crate::socket::install(lua, &net)?;
     lua.globals().set("net", net)
 }
 
@@ -257,6 +258,16 @@ export type FetchParams = {
 \theaders: { [string]: string }?,
 \t-- Seconds until it gives up (30 by default, 300 at most); GLUE 5's, not Lune's.
 \ttimeout: number?,
+}
+export type WebSocket = {
+\t-- How it was closed (1000: normally), once it is; nil while open.
+\tcloseCode: number?,
+\t-- Closes it (1000 by default); next() returns nil once the other end agrees.
+\tclose: (self: WebSocket, code: number?) -> (),
+\t-- A text message (UTF-8), or binary with asBinaryMessage.
+\tsend: (self: WebSocket, message: (string | buffer)?, asBinaryMessage: boolean?) -> (),
+\t-- The next message; waits for it as wait() does; nil once the socket is closed.
+\tnext: (self: WebSocket) -> string?,
 }
 export type FetchResponse = {
 \t-- A 2xx status.
@@ -275,6 +286,8 @@ export type FetchResponse = {
 declare net: {
 \t-- An HTTP or HTTPS request: a URL (GET), or what FetchParams says.
 \trequest: (config: string | FetchParams) -> FetchResponse,
+\t-- A WebSocket, ws:// or wss://; waits while it connects. A mod has 4 open at once, messages of 16 MB.
+\tsocket: (url: string) -> WebSocket,
 }
 ";
 

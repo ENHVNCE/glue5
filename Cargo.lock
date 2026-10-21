@@ -1040,12 +1040,14 @@ dependencies = [
  "mlua",
  "png",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
  "tungstenite",
  "ureq",
  "wasm-bindgen-cli-support",
+ "webpki-roots",
 ]
 
 [[package]]
