@@ -69,19 +69,39 @@ files with `--!strict` to have every type checked.
   and the mod goes on.
 
 ## Menus
-- `local m = ui.menu("Trainer")` makes a menu the app shows with its own
-  widgets (touch and controllers too): the Mods page's MENUS, opened
-  with F7 or, on touch screens, the button beside the settings button;
-  the Studio's MENUS panel shows them too.
-- Items: `m:toggle(label, on, [note], [onChange])`, `m:slider(label,
-  value, min, max, [step], [onChange])`, `m:choice(label, {options},
-  [index], [onChange])`, `m:button(label, [note], [onPress])`,
-  `m:label(text)`. Each returns an object whose `value` follows the player
-  (`:set(v)` changes it). Callbacks run as tasks: they may call natives
-  and wait.
+- `local m = ui.menu("Trainer", [note])` makes a menu the app shows with
+  its own widgets (touch, keyboard and controllers): the Mods page's MENUS
+  (F7, or on touch screens the button beside the settings button) lists
+  each mod's menus; the Studio's MENUS panel shows them too. A mod with a
+  menu keeps running after its main code returns, until it is stopped.
+- Builders, all `(label, value..., [opts], [callback])`; `opts` is a table
+  (`note`, `enabled`, `visible` and the kind's own) or a string (the note);
+  a function in its place is the callback:
+  `m:button(label, {action = "Go"}, onPress)`,
+  `m:toggle(label, on, opts, onChange)`,
+  `m:slider(label, value, min, max, {step, unit}, onChange)` (a number in
+  the opts' place is the step; unit "%" shows value x 100),
+  `m:number(label, value, {min, max, step, unit}, onChange)`,
+  `m:choice(label, {options}, index or text, opts, onChange(index, option))`,
+  `m:multi(label, {options}, {indices or texts}, opts, onChange(indices, options))`,
+  `m:text(label, value, {placeholder, max}, onChange)` (on commit),
+  `m:color(label, color, {alpha}, onChange)` (a Color: 0xRRGGBBAA,
+  {r, g, b, a} or '#rrggbb'; `value` is {r, g, b, a}),
+  `m:label(text)`, `m:separator([title])`, `m:progress(label, 0..1)`,
+  `m:submenu(label, opts)` (a menu inside, at any depth).
+- Each returns a handle with properties: `value`, `label`, `note`,
+  `enabled`, `visible`, `options`, `onChange`/`onPress`, `min`/`max`/
+  `step`/`unit`...; assigning checks like the builder, a misspelt field is
+  an error; `:set(v)`, `:remove()`. Indices are from 1. `m:clear()`,
+  `m:remove()`, `m:show()` (opens the Mods page at it, once in 2 s),
+  `m:onOpen(f)`/`m:onClose(f)` (a player starts/stops looking at it).
+- `value` follows the player at the mod's next turn, when the callback
+  runs (as a task: it may call natives and wait); the mod's own
+  assignments never call back, and win over a player's value not yet
+  heard.
+- Limits: 4096 menus and items and 65536 options a mod, all together;
+  titles 40, labels 60, notes 200, options 40 characters (cut).
 - `ui.notify(text)` shows a notification over the game.
-- A mod with a menu keeps running after its main code returns, until it is
-  stopped.
 
 ## Input
 - `input.isDown(key)`; `input.pressed(key)` and `input.released(key)`:
