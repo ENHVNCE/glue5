@@ -1,19 +1,19 @@
 //! The lobby's jobs: each player's go over to the others by themselves.
 //!
 //! Every few seconds a player announces the jobs it made or got (an id, a
-//! fingerprint of the file, its size) on a port of the lobby's virtual LAN
-//! that the engine does not use; a player without one (or with another
-//! version) asks the announcer for its pieces, a few at a time, again when
-//! a piece does not come. Received whole and matching its fingerprint, the
-//! file goes to `jobs/shared/` and into the library: when someone hosts a
-//! job, the others have it already, as the scripts expect (they find a
-//! job's header and its file at once).
+//! fingerprint of the file, its size, its version: when its author saved
+//! it) on a port of the lobby's virtual LAN that the engine does not use; a
+//! player without one (or with an older version) asks the announcer for
+//! its pieces, a few at a time, again when a piece does not come. Received
+//! whole and matching its fingerprint, the file goes to `jobs/shared/` and
+//! into the library: when someone hosts a job, the others have it already,
+//! as the scripts expect (they find a job's header and its file at once).
 
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::{Job, Kind, MAX_FILE, add, fingerprint, is_content_id, library, modified, parse_job, read_job, shared_dir};
 
@@ -27,15 +27,20 @@ const GET: u8 = b'G';
 const PIECE: u8 = b'P';
 /// A piece's size, inside a datagram.
 const PIECE_SIZE: usize = 1024;
-/// Jobs in one announcement: (22 + 8 + 4) bytes each.
-const PER_ANNOUNCEMENT: usize = 32;
+/// A job in an announcement (its id, fingerprint, size and version), and
+/// jobs in one.
+const ENTRY: usize = 22 + 8 + 4 + 8;
+const PER_ANNOUNCEMENT: usize = 28;
 const ANNOUNCE_EVERY: Duration = Duration::from_secs(5);
 const TICK: Duration = Duration::from_millis(100);
 /// Pieces asked for at a time, and when one is asked for again.
 const WINDOW: usize = 16;
 const RETRY: Duration = Duration::from_millis(600);
-/// A download whose announcer says nothing for this long is dropped.
+/// A download no piece came for in this long is dropped (its announcer
+/// may well go on announcing it).
 const GIVE_UP: Duration = Duration::from_secs(30);
+/// A version from later than this is a wrong clock's, or a lie.
+const AHEAD: Duration = Duration::from_secs(24 * 3600);
 /// Jobs downloaded at once, and at once from one player (the others wait
 /// for a later announcement).
 const DOWNLOADS_AT_ONCE: usize = 8;
@@ -43,10 +48,12 @@ const DOWNLOADS_PER_PLAYER: usize = 2;
 
 struct Download {
     hash: [u8; 8],
+    version: u64,
     from: u32,
     pieces: Vec<Option<Vec<u8>>>,
     asked: Vec<Option<Instant>>,
-    heard: Instant,
+    /// When it started, or its last piece came.
+    progress: Instant,
 }
 
 static DOWNLOADS: Mutex<Option<HashMap<String, Download>>> = Mutex::new(None);
@@ -82,16 +89,36 @@ fn shareable(job: &Job) -> bool {
     job.kind != Kind::Game && job.size as usize <= MAX_FILE
 }
 
+/// A job's version: when its file was written (seconds since 1970), by its
+/// author, or by this player as its author's (`on_piece`).
+fn version(modified: SystemTime) -> u64 {
+    modified.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Whether an announced job is wanted, given the one here (its kind,
+/// fingerprint and version): the player's own and the game's stay as they
+/// are, one shared before only for a newer version (two versions in the
+/// lobby went back and forth for ever).
+fn wanted(have: Option<(Kind, [u8; 8], u64)>, hash: &[u8; 8], version: u64) -> bool {
+    have.is_none_or(|(kind, h, v)| kind == Kind::Shared && h != *hash && version > v)
+}
+
 fn announce() {
     // Ids, fingerprints and sizes only (the headers are up to MBs each).
-    let jobs: Vec<(String, [u8; 8], u32)> =
-        library().as_ref().unwrap().iter().filter(|j| shareable(j)).map(|j| (j.id.clone(), j.hash, j.size)).collect();
+    let jobs: Vec<(String, [u8; 8], u32, u64)> = library()
+        .as_ref()
+        .unwrap()
+        .iter()
+        .filter(|j| shareable(j))
+        .map(|j| (j.id.clone(), j.hash, j.size, version(j.modified)))
+        .collect();
     for chunk in jobs.chunks(PER_ANNOUNCEMENT) {
         let mut d = vec![ANNOUNCE];
-        for (id, hash, size) in chunk {
+        for (id, hash, size, version) in chunk {
             d.extend_from_slice(id.as_bytes());
             d.extend_from_slice(hash);
             d.extend_from_slice(&size.to_be_bytes());
+            d.extend_from_slice(&version.to_be_bytes());
         }
         send(BROADCAST, &d);
     }
@@ -103,7 +130,7 @@ fn ask() {
     let mut downloads = DOWNLOADS.locked();
     let Some(downloads) = downloads.as_mut() else { return };
     downloads.retain(|id, d| {
-        if now.duration_since(d.heard) > GIVE_UP {
+        if now.duration_since(d.progress) > GIVE_UP {
             log::info!("jobs: {id} from {}: gave up", std::net::Ipv4Addr::from(d.from));
             return false;
         }
@@ -150,36 +177,39 @@ pub(crate) fn receive(from: u32, d: &[u8]) {
 }
 
 fn on_announce(from: u32, d: &[u8]) {
-    let have: Vec<(String, Kind, [u8; 8])> =
-        library().as_ref().unwrap().iter().map(|j| (j.id.clone(), j.kind, j.hash)).collect();
+    // (The player's own or the game's first, when a shared one has its id.)
+    let mut have: HashMap<String, (Kind, [u8; 8], u64)> = HashMap::new();
+    for j in library().as_ref().unwrap() {
+        let this = (j.kind, j.hash, version(j.modified));
+        have.entry(j.id.clone()).and_modify(|h| if j.kind != Kind::Shared { *h = this }).or_insert(this);
+    }
+    let latest = version(SystemTime::now() + AHEAD);
     let mut downloads = DOWNLOADS.locked();
     let downloads = downloads.get_or_insert_default();
-    for e in d.as_chunks::<34>().0 {
+    for e in d.as_chunks::<ENTRY>().0 {
         let Ok(id) = std::str::from_utf8(&e[..22]) else { continue };
         let hash: [u8; 8] = e[22..30].try_into().unwrap();
         let size = u32::from_be_bytes(e[30..34].try_into().unwrap()) as usize;
-        if !is_content_id(id) || size == 0 || size > MAX_FILE {
+        let version = u64::from_be_bytes(e[34..42].try_into().unwrap());
+        if !is_content_id(id) || size == 0 || size > MAX_FILE || version > latest {
             continue;
         }
-        // The player's own jobs and the game's stay as they are; another
-        // version only of one shared before (a version already here stays).
-        if have.iter().any(|(i, kind, h)| i == id && (*kind != Kind::Shared || *h == hash)) {
+        if !wanted(have.get(id).copied(), &hash, version) {
             continue;
         }
         // A few at a time, from each player and in all: each takes room
         // for its pieces (MBs from announcements alone otherwise).
         let full = downloads.len() >= DOWNLOADS_AT_ONCE
             || downloads.values().filter(|d| d.from == from).count() >= DOWNLOADS_PER_PLAYER;
-        match downloads.get_mut(id) {
-            Some(d) if d.hash == hash => d.heard = Instant::now(),
+        match downloads.get(id) {
+            // The one coming, or a newer one.
+            Some(d) if d.hash == hash || d.version >= version => {}
             None if full => {}
             _ => {
                 let count = size.div_ceil(PIECE_SIZE);
                 log::info!("jobs: {id} ({size} bytes) from {}", std::net::Ipv4Addr::from(from));
-                downloads.insert(
-                    id.to_owned(),
-                    Download { hash, from, pieces: vec![None; count], asked: vec![None; count], heard: Instant::now() },
-                );
+                let (pieces, asked) = (vec![None; count], vec![None; count]);
+                downloads.insert(id.to_owned(), Download { hash, version, from, pieces, asked, progress: Instant::now() });
             }
         }
     }
@@ -254,7 +284,7 @@ fn on_piece(from: u32, id: &[u8], hash: &[u8], index: usize, count: usize, piece
     if d.hash != hash || d.from != from || count != d.pieces.len() || index >= count {
         return;
     }
-    d.heard = Instant::now();
+    d.progress = Instant::now();
     d.pieces[index] = Some(piece.to_vec());
     if d.pieces.iter().any(Option::is_none) {
         return;
@@ -272,6 +302,11 @@ fn on_piece(from: u32, id: &[u8], hash: &[u8], index: usize, count: usize, piece
     if let Err(e) = crate::write_file(&path, &data) {
         log::warn!("jobs: saving {}: {e}", path.display());
         return;
+    }
+    // Its author's version, which this player announces in turn.
+    let written = std::fs::File::options().write(true).open(&path).and_then(|f| f.set_modified(UNIX_EPOCH + Duration::from_secs(d.version)));
+    if let Err(e) = written {
+        log::warn!("jobs: {}'s version: {e}", path.display());
     }
     add(Job { modified: modified(&path), ..job });
     make_room();
@@ -305,11 +340,25 @@ fn make_room() {
 }
 
 // An announcement and a piece fit a datagram the Internet carries whole.
-const _: () = assert!(1 + PER_ANNOUNCEMENT * 34 < 1200 && 1 + 22 + 8 + 8 + PIECE_SIZE < 1200);
+const _: () = assert!(1 + PER_ANNOUNCEMENT * ENTRY < 1200 && 1 + 22 + 8 + 8 + PIECE_SIZE < 1200);
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shared_job_is_replaced_by_a_newer_version_only() {
+        let (v1, v2) = ([1; 8], [2; 8]);
+        assert!(wanted(None, &v1, 100));
+        // Two versions in the lobby: the newer stays with everyone.
+        assert!(wanted(Some((Kind::Shared, v1, 100)), &v2, 200));
+        assert!(!wanted(Some((Kind::Shared, v2, 200)), &v1, 100));
+        assert!(!wanted(Some((Kind::Shared, v2, 200)), &v1, 200));
+        assert!(!wanted(Some((Kind::Shared, v2, 200)), &v2, 300));
+        // The player's own and the game's: never.
+        assert!(!wanted(Some((Kind::Own, v1, 100)), &v2, 200));
+        assert!(!wanted(Some((Kind::Game, v1, 0)), &v2, 200));
+    }
 
     #[test]
     fn pieces_are_read_while_the_file_is_as_it_was() {
