@@ -501,8 +501,8 @@ pub fn error_text(e: &mlua::Error) -> String {
     }
 }
 
-/// What `print` and the console show at most, tables' contents included:
-/// past it, `…`.
+/// What `print` and the console show at most, tables' contents included,
+/// a log line: past it, `…`.
 const DESCRIBE_TEXT: usize = 8 << 10;
 /// Tables nested deeper show as `{…}`.
 const DESCRIBE_DEPTH: usize = 8;
@@ -542,12 +542,12 @@ struct Describe {
 }
 
 impl Describe {
-    /// Adds `text`, or what fits of it.
+    /// Adds `text`, or what fits of it with the `…` that says it was cut.
     fn push(&mut self, text: &str) {
         if self.full {
             return;
         }
-        let room = DESCRIBE_TEXT.saturating_sub(self.out.len());
+        let room = (DESCRIBE_TEXT - '…'.len_utf8()).saturating_sub(self.out.len());
         if text.len() <= room {
             self.out.push_str(text);
         } else {
@@ -702,16 +702,16 @@ mod tests {
             &lua,
             "local t = {} for _ = 1, 12 do local u = {} for i = 1, 16 do u[i] = t end t = u end return t",
         ));
-        assert!(dag.len() <= DESCRIBE_TEXT + 4, "{}", dag.len());
+        assert!(dag.len() <= DESCRIBE_TEXT, "{}", dag.len());
         let deep = describe(&value(&lua, "local t = {} for _ = 1, 100000 do t = {t} end return t"));
         assert!(deep.contains("{…}") && deep.len() < 64, "{deep}");
         let long = describe_plain(&value(&lua, "string.rep('é', 1000000)"));
-        assert!(long.len() <= DESCRIBE_TEXT + 4 && long.ends_with('…'));
+        assert!(long.len() <= DESCRIBE_TEXT && long.ends_with('…'));
         let quoted = describe(&value(&lua, "{string.rep('x', 100000)}"));
-        assert!(quoted.len() <= DESCRIBE_TEXT + 4 && quoted.ends_with('…'));
+        assert!(quoted.len() <= DESCRIBE_TEXT && quoted.ends_with('…'));
         let many: mlua::MultiValue = lua.load("local t = {} for i = 1, 5000 do t[i] = string.rep('x', 100) end return unpack(t)").eval().unwrap();
         let many = describe_list(many.iter(), ", ", true);
-        assert!(many.len() <= DESCRIBE_TEXT + 4 && many.ends_with('…'));
+        assert!(many.len() <= DESCRIBE_TEXT && many.ends_with('…'));
         assert!(start.elapsed().as_secs() < 2, "took {:?}", start.elapsed());
     }
 }

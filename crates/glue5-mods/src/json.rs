@@ -13,10 +13,11 @@ use serde_json::Value as Json;
 
 /// Tables nested deeper are refused (a table that holds itself).
 const DEPTH: usize = 64;
-/// The longest text `json.encode` makes: a table that holds another many
-/// times over (or itself) would otherwise make text without end, outside
-/// the mod's memory and time limits.
-const MAX_TEXT: usize = 4 << 20;
+/// The longest text `json.encode` makes, what `storage` keeps: a table that
+/// holds another many times over would otherwise make text without end,
+/// outside the mod's memory and time limits (this much takes some 60 ms
+/// on an M1 Pro, in Rust, where the interrupt cannot stop it).
+const MAX_TEXT: usize = 1 << 20;
 
 /// Why a value has no JSON text.
 #[derive(Debug)]
@@ -244,9 +245,9 @@ mod tests {
             local t = { "leaf" }
             for _ = 1, 40 do t = { t, t } end
             local ok, err = pcall(json.encode, t)
-            assert(not ok and string.find(tostring(err), "over 4096 KB"), tostring(err))
+            assert(not ok and string.find(tostring(err), "over 1024 KB"), tostring(err))
             ok, err = pcall(json.encode, t, true)
-            assert(not ok and string.find(tostring(err), "over 4096 KB"), tostring(err))
+            assert(not ok and string.find(tostring(err), "over 1024 KB"), tostring(err))
             -- A cycle through two tables.
             local a, b = {}, {}
             a.b, b.a = b, a
@@ -256,7 +257,7 @@ mod tests {
             local shared = { 1, 2 }
             assert(json.encode({ x = shared, y = shared }) == '{"x":[1,2],"y":[1,2]}')
             -- One long string.
-            ok, err = pcall(json.encode, string.rep("x", 5 * 1024 * 1024))
+            ok, err = pcall(json.encode, string.rep("x", 2 * 1024 * 1024))
             assert(not ok and string.find(tostring(err), "over"), tostring(err))
             -- Keys in order; NaN refused.
             assert(json.encode({ b = 1, a = 2, [3] = 3 }) == '{"3":3,"a":2,"b":1}')

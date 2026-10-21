@@ -803,7 +803,7 @@ declare world: {
 declare json: {
 	-- The value as JSON text: a table with keys 1..n (or none) is an array, another an object
 	-- (string keys; number keys written as strings); a vector is [x, y, z]. `pretty` indents it.
-	-- Text over 4 MB, or tables nested over 64 deep (a table that holds itself), is an error.
+	-- Text over 1 MB (what storage keeps), or tables nested over 64 deep (a table that holds itself), is an error.
 	encode: (value: any, pretty: boolean?) -> string,
 	-- JSON text as Luau values; null is nil.
 	decode: (text: string) -> any,
