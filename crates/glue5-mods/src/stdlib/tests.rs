@@ -80,6 +80,49 @@ fn streaming() {
     fails(&lua, "streaming.load('adder', 'sound')", "no kind of asset \"sound\"");
 }
 
+/// Text past a component's 99 bytes goes in pieces, cut between
+/// characters, under a label of many components.
+#[test]
+fn long_text() {
+    let lua = stubbed("");
+    let text = "é".repeat(150);
+    lua.globals().set("text", text.as_str()).unwrap();
+    let (label, parts): (String, Vec<String>) = eval(
+        &lua,
+        r#"
+        ui.subtitle(text)
+        local parts = {}
+        for _, c in calls do
+            if c[1] == "hud.addTextComponentSubstringPlayerName" then table.insert(parts, c[2]) end
+        end
+        return calls[1][2], parts
+        "#,
+    );
+    assert_eq!(label, "CELL_EMAIL_BCON");
+    assert!(parts.iter().all(|p| p.len() <= 99), "{parts:?}");
+    assert_eq!(parts.concat(), text);
+    let short: String = eval(&lua, "calls = {} ui.help('Press ~INPUT_CONTEXT~') return calls[1][2]");
+    assert_eq!(short, "STRING");
+    fails(&lua, "ui.subtitle(12)", "the text is a string");
+    fails(&lua, "ui.buttons({ { 'x', 'Jump' } })", "ui.buttons: button 1");
+}
+
+/// `ui.notify(text)` is the app's notification still; with options, the
+/// game's feed.
+#[test]
+fn notify() {
+    let lua = stubbed("");
+    let first: String = eval(&lua, "ui.notify('hi') return calls[1][1]");
+    assert_eq!(first, "app.notify");
+    let feed: Vec<String> = eval(
+        &lua,
+        "calls = {} ui.notify('hi', { title = 'Lester' })
+         local names = {} for _, c in calls do table.insert(names, c[1]) end return names",
+    );
+    assert!(feed.contains(&"hud.endTextCommandThefeedPostMessagetext".to_string()), "{feed:?}");
+    assert!(feed.contains(&"hud.endTextCommandThefeedPostTicker".to_string()), "{feed:?}");
+}
+
 #[test]
 fn rotations() {
     let lua = stubbed("");
@@ -132,4 +175,43 @@ fn nearby() {
     let none: Option<i64> = eval(&lua, "return world.closest('peds', vector.create(100, 100, 0), 5)");
     assert!(none.is_none());
     fails(&lua, "world.nearby('cars', 4, 1)", "no kind \"cars\"");
+}
+
+/// The types: a mod using the library checks clean, and the Studio
+/// completes its names.
+#[test]
+fn types() {
+    const SOURCE: &str = r#"--!strict
+local me = player.playerPedId()
+local car = spawn.vehicle("adder", nil, nil, { warpIn = true })
+local hit = world.raycast(entity.getEntityCoords(me, false), vector.create(0, 0, 0), { ignore = me })
+if hit then print(hit.pos, hit.entity) end
+local peds: { Ped } = world.nearby("peds", me, 30)
+local nearest: Vehicle? = world.closest("vehicles", me)
+local ok: boolean = streaming.load("prop_bench_01a", "model", 2000)
+ui.notify("plain")
+ui.notify("feed", { icon = "CHAR_LESTER", title = "Lester" })
+ui.help("Press ~INPUT_CONTEXT~")
+ui.buttons({ { Control.JUMP, "Jump" } })
+local sf = scaleform.load("mp_big_message_freemode")
+if sf then sf:call("SHOW_SHARD_WASTED_MP_MESSAGE", "Hi", "there", 5) sf:draw() end
+local stop = task.every(1000, function() end)
+mod.onStop(function() stop() end)
+local x, y, z, w = geo.quaternion(vector.create(0, 0, 90))
+local typed: string? = ui.prompt("FMMC_KEY_TIP8", "", 30)
+local flag: number = PedConfigFlag.NoCriticalHits + ExplosionType.GRENADE + Bone.R_HAND + HudComponent.WANTED_STARS
+world.raycas
+"#;
+    crate::checker::Checker::with(|c| {
+        c.set("std/main.luau", Some(SOURCE));
+        let diagnostics = c.check("std/main.luau");
+        // Only the unfinished last line's.
+        let errors: Vec<&serde_json::Value> =
+            diagnostics.as_array().unwrap().iter().filter(|d| d["severity"] == "error").collect();
+        assert!(!errors.is_empty() && errors.iter().all(|d| d["range"][0] == 19), "{diagnostics}");
+        let items = c.complete("std/main.luau", 19, 12);
+        let labels: Vec<&str> = items.as_array().unwrap().iter().filter_map(|i| i["label"].as_str()).collect();
+        assert!(labels.contains(&"raycast") && labels.contains(&"vehicles"), "{labels:?}");
+    })
+    .unwrap();
 }

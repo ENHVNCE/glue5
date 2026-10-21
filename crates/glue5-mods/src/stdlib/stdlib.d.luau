@@ -100,3 +100,22 @@ declare scaleform: {
 	-- The movie, once loaded (waits; nil if it does not load in `timeoutMs`, 10 s).
 	load: (name: string, timeoutMs: number?) -> Scaleform?,
 }
+
+declare ui: typeof(ui) & {
+	-- With options, a message in the game's feed: `icon` a picture's texture dictionary ("CHAR_LESTER"),
+	-- `title` and `subtitle` beside it, `blink`.
+	notify: (text: string, options: { icon: string?, title: string?, subtitle: string?, blink: boolean? }?) -> (),
+	-- A subtitle at the bottom, for `ms` milliseconds (2.5 s).
+	subtitle: (text: string, ms: number?) -> (),
+	-- The help box (`~INPUT_CONTEXT~` shows a button); called each frame it stays; nil clears it.
+	help: (text: string?, beep: boolean?) -> (),
+	-- The spinner at the bottom right, with `text`; nil or false stops it.
+	loading: (text: (string | false)?) -> (),
+	-- Hides a HUD component (HudComponent) this frame; nil: the HUD and the radar.
+	hideHud: (component: number?) -> (),
+	-- The game's keyboard: what the player typed, nil if cancelled (waits). `title` is a text label
+	-- of the game's ("FMMC_KEY_TIP8"), `max` bytes (60).
+	prompt: (title: string?, default: string?, max: number?) -> string?,
+	-- Instructional buttons at the bottom right until changed: { { Control.JUMP, "Jump" }, ... }; nil hides them.
+	buttons: (buttons: { { any } }?) -> (),
+}

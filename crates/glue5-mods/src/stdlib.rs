@@ -23,6 +23,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("streaming", include_str!("stdlib/streaming.luau")),
     ("world", include_str!("stdlib/world.luau")),
     ("scaleform", include_str!("stdlib/scaleform.luau")),
+    ("ui", include_str!("stdlib/ui.luau")),
 ];
 
 /// The library's types, for the checker: after every other definition (it
