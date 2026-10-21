@@ -592,3 +592,70 @@ print(option, r)
     })
     .unwrap();
 }
+
+/// What the Studio and MCP read of every kind, and their inputs going
+/// back through the same JSON (indices from 1, colours as hex).
+#[test]
+fn json_round_trip() {
+    use serde_json::json;
+    let m = Mod::new("menus-test-json");
+    m.run(
+        r##"
+        m = ui.menu("J", "top note")
+        m:button("b", { action = "Go" })
+        m:toggle("t", true)
+        m:slider("s", 19, 0, 23, 1)
+        m:number("n", 1000, { min = 0, step = 100, unit = "$" })
+        m:choice("c", { "adder", "t20" }, 2)
+        m:multi("mu", { "a", "b", "c" }, { 1, 3 })
+        m:text("tx", "", { placeholder = "Plate", max = 8 })
+        m:color("co", "#ff8800")
+        m:label("l")
+        m:separator("sep")
+        m:progress("p", 0.5)
+        sub = m:submenu("sub")
+        "##,
+    );
+    let all = crate::studio::api::menus();
+    let menu = all.as_array().unwrap().iter().find(|x| x["mod"] == m.name && x["parent"].is_null()).unwrap().clone();
+    assert_eq!((menu["title"].clone(), menu["note"].clone()), (json!("J"), json!("top note")));
+    let item = |label: &str| menu["items"].as_array().unwrap().iter().find(|i| i["label"] == label).unwrap().clone();
+    assert_eq!(item("b")["action"], "Go");
+    assert_eq!((item("b")["kind"].clone(), item("b")["enabled"].clone(), item("b")["visible"].clone()), (json!("button"), json!(true), json!(true)));
+    assert_eq!(item("t")["value"], true);
+    assert_eq!((item("s")["value"].clone(), item("s")["max"].clone(), item("s")["unit"].clone()), (json!(19.0), json!(23.0), json!(null)));
+    assert_eq!((item("n")["max"].clone(), item("n")["unit"].clone()), (json!(null), json!("$")));
+    assert_eq!((item("c")["value"].clone(), item("c")["options"].clone()), (json!(2), json!(["adder", "t20"])));
+    assert_eq!(item("mu")["value"], json!([1, 3]));
+    assert_eq!((item("tx")["placeholder"].clone(), item("tx")["max"].clone()), (json!("Plate"), json!(8)));
+    assert_eq!((item("co")["value"].clone(), item("co")["alpha"].clone()), (json!("#ff8800"), json!(false)));
+    assert_eq!((item("l")["kind"].clone(), item("sep")["kind"].clone(), item("p")["value"].clone()), (json!("label"), json!("separator"), json!(0.5)));
+    assert_eq!(item("sub")["menu"], json!(m.eval::<u32>("sub.id")));
+    // Inputs, as the Studio and MCP send them.
+    let input = |label: &str, v: serde_json::Value| crate::studio::api::menu_input(m.name, item(label)["id"].as_u64().unwrap() as u32, &v);
+    input("b", json!(null)).unwrap();
+    input("t", json!(null)).unwrap();
+    assert_eq!(m.item("t").kind, MenuKind::Toggle(false));
+    input("s", json!(7.4)).unwrap();
+    input("n", json!(1260)).unwrap();
+    input("c", json!("adder")).unwrap();
+    input("mu", json!([2, "c"])).unwrap();
+    input("tx", json!("ABC123456")).unwrap();
+    input("co", json!({ "r": 1, "g": 2, "b": 3 })).unwrap();
+    assert_eq!(m.item("s").kind, MenuKind::Slider { value: 7.0, min: 0.0, max: 23.0, step: 1.0, unit: None });
+    assert!(matches!(m.item("n").kind, MenuKind::Number { value, .. } if value == 1300.0));
+    assert!(matches!(m.item("c").kind, MenuKind::Choice { index: 0, .. }));
+    assert!(matches!(m.item("mu").kind, MenuKind::Multi { selected, .. } if selected == vec![1, 2]));
+    assert!(matches!(m.item("tx").kind, MenuKind::Text { value, .. } if value == "ABC12345"));
+    assert!(matches!(m.item("co").kind, MenuKind::Color { value: crate::Rgba { r: 1, g: 2, b: 3, a: 255 }, .. }));
+    input("co", json!("#0a0b0c")).unwrap();
+    assert_eq!(input("c", json!(3)).unwrap_err(), "no option 3: there are 2");
+    assert_eq!(input("c", json!("zz")).unwrap_err(), "no option \"zz\"");
+    assert_eq!(input("l", json!(null)).unwrap_err(), "a label takes no input");
+    assert_eq!(input("sub", json!(null)).unwrap_err(), "a submenu takes no input");
+    assert!(input("t", json!(3)).unwrap_err().starts_with("a toggle takes true or false"));
+    assert!(input("co", json!("#zz")).unwrap_err().contains("is not a colour"));
+    assert!(input("co", json!({ "r": 300, "g": 0, "b": 0 })).unwrap_err().contains("0 to 255"));
+    let open = crate::studio::api::menu_open(m.name, menu["id"].as_u64().unwrap() as u32).unwrap();
+    assert_eq!(open["submenus"][0]["title"], "sub");
+}
