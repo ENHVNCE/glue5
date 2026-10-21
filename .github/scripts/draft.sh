@@ -39,6 +39,32 @@ releases() {
 
 sha256() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | cut -d' ' -f1; }
 
+# The size of each supported build (BUILDS in crates/glue5-game/build/main.rs
+# lists their sha256), only to say why another file is not one.
+sizes='8b0b5899ed 63201802'
+
+# 63201802 as 63,201,802 bytes.
+bytes() {
+    local n=$1 s=
+    while [ ${#n} -gt 3 ]; do
+        s=,${n: -3}$s
+        n=${n:0:${#n}-3}
+    done
+    echo "$n$s bytes"
+}
+
+# Why game.wasm (FILE, its sha256 SUM) is not a supported build.
+unsupported() {
+    local size want supported
+    size=$(wc -c <"$1" | tr -d ' ')
+    supported=$(while read -r _ want; do bytes "$want"; done <<<"$sizes" | awk 'NR > 1 { printf " or " } { printf "%s", $0 }')
+    while read -r _ want; do
+        [ "$size" != "$want" ] ||
+            die "game.wasm ($(bytes "$size"), sha256 $2) has the size of the supported game.wasm but not its contents: a changed or damaged copy. Upload the game's own game.wasm."
+    done <<<"$sizes"
+    die "game.wasm is $(bytes "$size") (sha256 $2); the supported one is $supported: an incomplete copy, the wrong file or another version of the game. Upload the game.wasm of the supported version."
+}
+
 guard() {
     local ids id release name failed=0
     if [ -n "${1:-}" ]; then
@@ -144,7 +170,7 @@ fetch() {
     # The supported builds, as the game's build script lists them.
     build=$(grep -o '("[0-9a-z]*", "[0-9a-f]\{64\}")' "$root/crates/glue5-game/build/main.rs" |
         tr -d '(",)' | awk -v sum="$sum" '$2 == sum { print $1 }')
-    [ -n "$build" ] || die "game.wasm (sha256 $sum) is not a supported build of the game."
+    [ -n "$build" ] || unsupported "$dir/game.wasm" "$sum"
     mkdir -p "$dir/b/$build"
     mv "$dir/game.wasm" "$dir/b/$build/game.wasm"
     echo "game.wasm: build $build, from $name in the draft \"$(jq -r .name <<<"$release")\""
