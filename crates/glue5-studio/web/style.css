@@ -314,6 +314,7 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
 .mpush { width: 100%; text-align: left; }
 .mpush .mtext { flex: 1; }
 .mpush:disabled { cursor: default; }
+.mvalue { color: var(--muted); font-size: 12.5px; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mchev { color: var(--muted); font-size: 18px; line-height: 1; margin-left: -4px; }
 .mpush:hover:not(:disabled) .mchev { color: var(--text); }
 .mslider { display: flex; align-items: center; gap: 8px; flex: 0 1 190px; min-width: 120px; }
@@ -329,7 +330,7 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
 .mtextin, .mhex { height: 30px; padding: 0 9px; border-radius: 7px; background: rgba(36,36,36,.9); border: 1px solid var(--line); color: var(--text); outline: none; }
 .mtextin { flex: 0 1 60%; min-width: 0; }
 .mtextin::placeholder { color: #646464; }
-.mnumber input:focus, .mtextin:focus, .mhex:focus { border-color: rgba(255,255,255,.3); }
+.mnumber input:focus, .mtextin:focus, .mhex:focus, .msearch:focus { border-color: rgba(255,255,255,.3); }
 .mcolor { display: flex; align-items: center; gap: 8px; flex: none; }
 .mhex { width: 92px; font: 400 12.5px/1 var(--mono); text-transform: lowercase; }
 .malpha { width: 70px; accent-color: #fff; }
@@ -342,7 +343,20 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
 .mrail { flex: 1; height: 4px; border-radius: 2px; background: var(--line-strong); overflow: hidden; }
 .mrail i { display: block; height: 100%; border-radius: 2px; background: #fff; transition: width .15s; }
 .mprogress span { min-width: 40px; text-align: right; font: 400 12px/1 var(--mono); color: var(--text-2); }
-.mitem :focus-visible, .mpush:focus-visible, .mback:focus-visible, .mcrumbs button:focus-visible { outline: 2px solid rgba(255,255,255,.6); outline-offset: -2px; }
+/* A long list's own level of the card. */
+.mpick-bar { display: flex; align-items: center; gap: 6px; padding: 2px 14px 6px; }
+.mpick-bar:empty { display: none; }
+.msearch { flex: 1; min-width: 0; height: 30px; padding: 0 10px; border-radius: 7px; background: rgba(36,36,36,.9); border: 1px solid var(--line); color: var(--text); outline: none; }
+.mcount { color: var(--muted); font-size: 12px; white-space: nowrap; margin-right: auto; padding-left: 2px; }
+.msearch + .mcount { margin-left: 4px; margin-right: 0; }
+.mopts { max-height: 420px; overflow: auto; }
+.mopt { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; padding: 4px 14px; text-align: left; color: var(--text-2); cursor: pointer; }
+.mopt:hover { background: var(--hover); }
+.mopt span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.mopt.on { color: var(--text); }
+.mopt i { font-style: normal; color: var(--text); }
+.mopt input { margin: 0; accent-color: #fff; }
+.mitem :focus-visible, .mpush:focus-visible, .mopt:focus-visible, .mback:focus-visible, .mcrumbs button:focus-visible { outline: 2px solid rgba(255,255,255,.6); outline-offset: -2px; }
 .cnt.n { background: rgba(255,255,255,.18); color: var(--text); }
 .prompt { display: flex; align-items: center; gap: 10px; margin: 0 10px 8px; padding: 0 5px 0 12px; min-height: 40px; border-radius: 9px; background: rgba(36,36,36,.85); border: 1px solid var(--line); font: 400 12.5px/1 var(--mono); color: var(--text); }
 .prompt:focus-within { border-color: rgba(255,255,255,.3); }
@@ -404,11 +418,15 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
   .app.screen-problems .panel, .app.screen-menus .panel { grid-template-rows: minmax(0, 1fr); }
   .menus { padding: 10px; }
   .mcard { flex-basis: 100%; }
-  .mitem { min-height: 48px; }
+  .mitem, .mopt { min-height: 48px; }
   .mitem.wide { flex-wrap: wrap; }
   .mitem.wide .mtextin { flex-basis: 100%; height: 38px; }
   .mstep, .mback { width: 38px; height: 38px; }
-  .mnumber input, .mchoice, .mhex { height: 38px; }
+  .mnumber input, .mchoice, .mhex, .msearch { height: 38px; }
+  /* A long list scrolls with the page; the way back and the search stay. */
+  .mopts { max-height: none; }
+  .mcard header.nav { position: sticky; top: 0; z-index: 1; height: 48px; background: #1c1d20; }
+  .mpick-bar { position: sticky; top: 48px; z-index: 1; background: #1c1d20; }
   .row { display: block; padding: 5px 14px; border-bottom: 1px solid rgba(255,255,255,.04); }
   .row .time, .row .src { display: inline; font: 600 11.5px/1.3 var(--ui); margin-right: 8px; }
   .row .msg { display: block; }

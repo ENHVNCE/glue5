@@ -1,7 +1,7 @@
 //! The mods' menus (`ui.menu` in Luau), usable from the browser as in the
 //! game: what is done here goes to the mod, which hears it at its next turn.
-//! One card per top-level menu; a submenu opens inside its card, with a way
-//! back.
+//! One card per top-level menu; a submenu, or a long list's picker, opens
+//! inside its card, with a way back.
 
 mod model;
 mod rows;
@@ -15,10 +15,11 @@ use model::{Item, Kind};
 use crate::net::request;
 use crate::state::*;
 
-/// What a card shows over its menu: a submenu.
+/// What a card shows over its menu: a submenu, or an item's picker.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Level {
     Menu(u32),
+    Pick(u32),
 }
 
 /// Sends a player's input to item `item` of `module`; when the game refuses
@@ -85,12 +86,21 @@ fn MenuCard(s: S, root: u32, module: String) -> impl IntoView {
             let mut kept = 0;
             for level in &levels {
                 let parent = menus.iter().find(|m| m.id == under);
-                let Level::Menu(id) = *level;
-                let row = parent.and_then(|p| p.items.iter().find(|i| i.kind == Kind::Submenu { menu: id }));
-                if !(row.is_some_and(|i| i.visible) && menus.iter().any(|m| m.id == id)) {
+                let ok = match *level {
+                    Level::Menu(id) => {
+                        let row = parent.and_then(|p| p.items.iter().find(|i| i.kind == Kind::Submenu { menu: id }));
+                        row.is_some_and(|i| i.visible) && menus.iter().any(|m| m.id == id)
+                    }
+                    Level::Pick(item) => parent
+                        .and_then(|p| p.items.iter().find(|i| i.id == item))
+                        .is_some_and(|i| i.visible && i.enabled && matches!(i.kind, Kind::Choice { .. } | Kind::Multi { .. })),
+                };
+                if !ok {
                     break;
                 }
-                under = id;
+                if let Level::Menu(id) = *level {
+                    under = id;
+                }
                 kept += 1;
             }
             kept
@@ -100,8 +110,15 @@ fn MenuCard(s: S, root: u32, module: String) -> impl IntoView {
         }
     });
 
-    // The level shown: the card's menu or a submenu.
-    let shown_menu = Memo::new(move |_| stack.get().last().map_or(root, |&Level::Menu(id)| id));
+    // The level shown: the card's menu, a submenu or a picker.
+    let top = Memo::new(move |_| stack.get().last().copied());
+    let shown_menu = Memo::new(move |_| {
+        stack.get().iter().rev().find_map(|l| match l {
+            Level::Menu(id) => Some(*id),
+            Level::Pick(_) => None,
+        })
+        .unwrap_or(root)
+    });
     let title = move |id: u32| find_menu(s, id).map(|m| m.title).unwrap_or_default();
     let header = {
         let module = module.clone();
@@ -114,8 +131,17 @@ fn MenuCard(s: S, root: u32, module: String) -> impl IntoView {
                 return view! { <b>{t}</b>{by}<Note s=s menu=root/> }.into_any();
             }
             // ‹ Trainer › Vehicles: each crumb but the last goes back to it.
+            let mut under = root;
             let mut names = vec![title(root)];
-            names.extend(levels.iter().map(|&Level::Menu(id)| title(id)));
+            for l in &levels {
+                names.push(match *l {
+                    Level::Menu(id) => {
+                        under = id;
+                        title(id)
+                    }
+                    Level::Pick(item) => find_item(s, under, item).map(|i| i.label).unwrap_or_default(),
+                });
+            }
             let last = names.len() - 1;
             view! {
                 <button class="mback" title="Back" aria-label="Back" on:click=move |_| pop.run(())>"‹"</button>
@@ -137,7 +163,10 @@ fn MenuCard(s: S, root: u32, module: String) -> impl IntoView {
     view! {
         <section class="mcard">
             <header class=move || if stack.with(Vec::is_empty) { "" } else { "nav" }>{header}</header>
-            {move || view! { <MenuBody s=s module=module.clone() menu=shown_menu.get() push=push/> }}
+            {move || match top.get() {
+                Some(Level::Pick(item)) => view! { <rows::Picker s=s module=module.clone() menu=shown_menu.get_untracked() item=item pop=pop/> }.into_any(),
+                _ => view! { <MenuBody s=s module=module.clone() menu=shown_menu.get() push=push/> }.into_any(),
+            }}
         </section>
     }
 }

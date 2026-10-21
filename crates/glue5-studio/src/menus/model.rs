@@ -154,6 +154,16 @@ pub(crate) fn shown(value: f64, step: f64, unit: Option<&str>) -> String {
     format!("{:.*}{}", decimals(step * k), value * k, unit.unwrap_or(""))
 }
 
+/// A multi's chosen options in a few words: "adder, t20 +3", or "None".
+pub(crate) fn summary(chosen: &[usize], options: &[String]) -> String {
+    let names: Vec<&str> = chosen.iter().filter_map(|&i| options.get(i.wrapping_sub(1)).map(String::as_str)).collect();
+    match names.len() {
+        0 => "None".into(),
+        1 | 2 => names.join(", "),
+        n => format!("{} +{}", names[..2].join(", "), n - 2),
+    }
+}
+
 /// `#rrggbb` or `#rrggbbaa` split into the colour (`#rrggbb`, what a colour
 /// input takes) and its opacity (0 to 255).
 pub(crate) fn split_color(hex: &str) -> (String, u8) {

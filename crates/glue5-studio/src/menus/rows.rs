@@ -1,4 +1,4 @@
-//! A menu's rows, one per item. Each row's
+//! A menu's rows, one per item, and the picker of a long list. Each row's
 //! control follows the game's value in place; what the player does is sent
 //! at once (a text or a typed number when it is committed: Enter or
 //! leaving the field; Esc puts back the game's value).
@@ -7,9 +7,16 @@ use leptos::html;
 use leptos::prelude::*;
 use serde_json::{Value, json};
 
-use super::model::{Item, Kind, decimals, parse_hex, shown, split_color};
+use super::model::{Item, Kind, decimals, parse_hex, shown, split_color, summary};
 use super::{Level, find_item, send};
 use crate::state::*;
+
+/// More options than this: a picker (with a search box) instead of a `<select>`.
+const SELECT_MAX: usize = 30;
+/// A picker has a search box above this many options...
+const SEARCH_FROM: usize = 12;
+/// ...and a multi's picker All and None above this many.
+const BULK_FROM: usize = 6;
 
 #[component]
 pub(super) fn Row(s: S, module: String, menu: u32, id: u32, push: Callback<Level>) -> impl IntoView {
@@ -127,7 +134,7 @@ pub(super) fn Row(s: S, module: String, menu: u32, id: u32, push: Callback<Level
             }
             .into_any()
         }
-        Some(Kind::Choice { .. }) => {
+        Some(Kind::Choice { options, .. }) if options.len() <= SELECT_MAX => {
             let get = move || match it().kind {
                 Kind::Choice { value, options } => (value, options),
                 _ => (1, Vec::new()),
@@ -143,6 +150,21 @@ pub(super) fn Row(s: S, module: String, menu: u32, id: u32, push: Callback<Level
                         }}
                     </select>
                 </div>
+            }
+            .into_any()
+        }
+        Some(Kind::Choice { .. } | Kind::Multi { .. }) => {
+            let chosen = move || match it().kind {
+                Kind::Choice { value, options } => options.get(value.wrapping_sub(1)).cloned().unwrap_or_default(),
+                Kind::Multi { value, options } => summary(&value, &options),
+                _ => String::new(),
+            };
+            view! {
+                <button class=row_class(" mpush") prop:disabled=off on:click=move |_| push.run(Level::Pick(id))>
+                    {text}
+                    <span class="mvalue">{chosen}</span>
+                    <span class="mchev" aria-hidden="true">"›"</span>
+                </button>
             }
             .into_any()
         }
@@ -235,7 +257,7 @@ pub(super) fn Row(s: S, module: String, menu: u32, id: u32, push: Callback<Level
             </button>
         }
         .into_any(),
-        Some(Kind::Multi { .. } | Kind::Other) | None => ().into_any(),
+        Some(Kind::Other) | None => ().into_any(),
     }
 }
 
@@ -266,5 +288,105 @@ fn commit_keys(ev: &web_sys::KeyboardEvent, field: NodeRef<html::Input>, value: 
             let _ = el.blur();
         }
         _ => {}
+    }
+}
+
+/// A choice's or multi's options on their own level of the card: a search
+/// box for long lists; a choice goes back once chosen, a multi takes each
+/// tick at once.
+#[component]
+pub(super) fn Picker(s: S, module: String, menu: u32, item: u32, pop: Callback<()>) -> impl IntoView {
+    let found = Memo::new(move |prev: Option<&Option<Item>>| find_item(s, menu, item).or_else(|| prev.cloned().flatten()));
+    let resync = Trigger::new();
+    let get = move || {
+        resync.track();
+        match found.get().map(|i| i.kind) {
+            Some(Kind::Choice { value, options }) => (false, vec![value], options),
+            Some(Kind::Multi { value, options }) => (true, value, options),
+            _ => (false, Vec::new(), Vec::new()),
+        }
+    };
+    let multi = get().0;
+    // Ticks as the player made them, ahead of the game's answer.
+    let chosen = RwSignal::new(Vec::<usize>::new());
+    Effect::new(move |_| chosen.set(get().1));
+    let search = RwSignal::new(String::new());
+    let shown_options = Memo::new(move |_| {
+        let q = search.get().to_lowercase();
+        get().2.into_iter().enumerate().map(|(n, o)| (n + 1, o)).filter(|(_, o)| q.is_empty() || o.to_lowercase().contains(&q)).collect::<Vec<_>>()
+    });
+    let count = move || get().2.len();
+    let module = StoredValue::new(module);
+    let choose = move |values: Vec<usize>| {
+        let mut v = values;
+        v.sort_unstable();
+        v.dedup();
+        chosen.set(v.clone());
+        send(s, &module.read_value(), item, json!(v), resync);
+    };
+    let tick = move |n: usize, on: bool| {
+        let mut v = chosen.get_untracked();
+        v.retain(|&x| x != n);
+        if on {
+            v.push(n);
+        }
+        choose(v);
+    };
+    let bulk = move |all: bool| {
+        let shown: Vec<usize> = shown_options.with_untracked(|o| o.iter().map(|(n, _)| *n).collect());
+        let mut v = chosen.get_untracked();
+        v.retain(|x| !shown.contains(x));
+        if all {
+            v.extend(shown);
+        }
+        choose(v);
+    };
+    view! {
+        <div class="mpicker">
+            <div class="mpick-bar">
+                <Show when=move || { count() > SEARCH_FROM }>
+                    <input type="search" class="msearch" placeholder="Search" aria-label="Search the options" spellcheck="false"
+                        prop:value=move || search.get() on:input=move |ev| search.set(event_target_value(&ev))/>
+                </Show>
+                <Show when=move || multi>
+                    <span class="mcount">{move || format!("{} of {}", chosen.with(Vec::len), count())}</span>
+                    <Show when=move || { count() > BULK_FROM }>
+                        <button class="btn small ghost" on:click=move |_| bulk(true)>"All"</button>
+                        <button class="btn small ghost" on:click=move |_| bulk(false)>"None"</button>
+                    </Show>
+                </Show>
+            </div>
+            <div class="mopts" role=if multi { "group" } else { "listbox" }>
+                <For each=move || shown_options.get() key=|o| o.clone() let((n, text))>
+                    {if multi {
+                        view! {
+                            <label class="mopt">
+                                <input type="checkbox" prop:checked=move || chosen.with(|c| c.contains(&n))
+                                    on:change=move |ev| tick(n, event_target_checked(&ev))/>
+                                <span>{text}</span>
+                            </label>
+                        }
+                        .into_any()
+                    } else {
+                        let on = move || chosen.with(|c| c.contains(&n));
+                        view! {
+                            <button class=move || if on() { "mopt on" } else { "mopt" } role="option" aria-selected=move || on().to_string()
+                                on:click=move |_| {
+                                    chosen.set(vec![n]);
+                                    send(s, &module.read_value(), item, json!(n), resync);
+                                    pop.run(());
+                                }>
+                                <span>{text}</span>
+                                <i aria-hidden="true">{move || if on() { "✓" } else { "" }}</i>
+                            </button>
+                        }
+                        .into_any()
+                    }}
+                </For>
+                <Show when=move || shown_options.with(Vec::is_empty)>
+                    <p class="mempty">"Nothing matches"</p>
+                </Show>
+            </div>
+        </div>
     }
 }
