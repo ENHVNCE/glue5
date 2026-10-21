@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use glue5_runtime::gpu::{OCCLUSION_VISIBLE_COUNT, store_query};
 use glue5_runtime::memory::Mem;
@@ -207,17 +208,46 @@ fn run(device: wgpu::Device, mem: Mem, pool: Arc<StagingPool>, rx: Receiver<(wgp
     // The engine paces its frames on what this thread completes.
     glue5_runtime::qos::set(glue5_runtime::qos::Qos::Interactive);
     while let Ok((submission, works)) = rx.recv() {
-        let done = match device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: None }) {
-            Ok(_) => true,
-            Err(e) => {
-                log::error!("gpu: waiting for a submission: {e}");
-                false
-            }
-        };
+        let done = wait(&device, submission);
         for work in works {
             finish(mem, &pool, work, done);
         }
     }
+}
+
+/// One wait for the GPU, and how many in a row may end without the
+/// submission done before the GPU counts as hung: 20 s at least. Drivers
+/// end a GPU's work that runs for seconds themselves (Windows after 2 s,
+/// Linux's after up to 10, Apple's and phones' likewise), reporting the
+/// device lost; a submission is one frame's work or its uploads, behind a
+/// couple of frames at most, and what takes long before the game (making
+/// pipelines, loading) is the CPU's. Counted in waits, not in time: a
+/// process stopped meanwhile (a debugger, iOS suspending the app) ends one
+/// wait late, and the next finds the GPU done.
+const WAIT: Duration = Duration::from_secs(1);
+const HUNG_AFTER: u32 = 20;
+
+/// Waits until the GPU has finished `submission`: false if it never will.
+/// A GPU that stops working without the driver saying so (no device lost)
+/// would otherwise hold the game still for good: it ends with the reason.
+pub(crate) fn wait(device: &wgpu::Device, submission: wgpu::SubmissionIndex) -> bool {
+    let start = Instant::now();
+    for _ in 0..HUNG_AFTER {
+        let poll = wgpu::PollType::Wait { submission_index: Some(submission.clone()), timeout: Some(WAIT) };
+        match device.poll(poll) {
+            Ok(_) => return true,
+            Err(wgpu::PollError::Timeout) => {}
+            Err(e) => {
+                log::error!("gpu: waiting for a submission: {e}");
+                return false;
+            }
+        }
+    }
+    glue5_runtime::exit::fail(format!(
+        "the GPU has not finished the game's work in {} s: it no longer runs it, and the driver says nothing",
+        start.elapsed().as_secs()
+    ));
+    false
 }
 
 /// The mapped contents of a staging buffer, or `None` if mapping failed.

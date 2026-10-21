@@ -292,10 +292,7 @@ fn run(
             if in_flight.len() > FRAMES_IN_FLIGHT {
                 let oldest = in_flight.pop_front().unwrap();
                 let t = Instant::now();
-                let _ = device.poll(wgpu::PollType::Wait {
-                    submission_index: Some(oldest),
-                    timeout: Some(Duration::from_secs(5)),
-                });
+                crate::done::wait(&device, oldest);
                 stats.gpu_wait_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
             }
         }
