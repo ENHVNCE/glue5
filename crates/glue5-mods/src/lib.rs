@@ -26,7 +26,7 @@ mod offsets;
 mod stdlib;
 mod storage;
 mod structs;
-mod zip;
+pub mod zip;
 pub mod studio;
 mod vm;
 pub mod world;
