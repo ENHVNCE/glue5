@@ -9,6 +9,8 @@
 mod color;
 mod pick;
 mod rows;
+#[cfg(test)]
+mod tests;
 
 use egui::{Align, Id, Layout, Rect, Response, RichText, Sense, Ui, UiBuilder, pos2, vec2};
 use glue5_mods::{Menu, MenuInput, MenuItem, MenuKind, Rgba};
