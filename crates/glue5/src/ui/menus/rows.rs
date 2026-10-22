@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use egui::text::{LayoutJob, TextWrapping};
 use egui::*;
-use glue5_mods::{MenuInput, MenuItem, MenuKind};
+use glue5_mods::{MenuInput, MenuItem, MenuKind, Rgba};
 
 use super::super::TextKind;
 use super::super::theme::{INK, MUTED, density};
@@ -210,6 +210,21 @@ pub(super) fn row(ui: &mut Ui, item: &MenuItem, draft: &mut Option<Draft>, landi
                 }
             }
         }
+        MenuKind::Color { value, alpha } => {
+            let hex = value.hex(*alpha);
+            let text = ui.painter().layout_no_wrap(hex, FontId::proportional(13.0 * s), MUTED);
+            let width = 28.0 * s + 10.0 * s + text.size().x + 22.0 * s;
+            let row = frame(ui, id, &item.label, note, width, Sense::click(), landing);
+            let at = row.control.right_center() - vec2(4.0 * s, 0.0);
+            chevron(ui, at, vec2(1.0, 0.0), MUTED);
+            let text_left = at.x - 14.0 * s - text.size().x;
+            let y = at.y - text.size().y * 0.5;
+            ui.painter().galley(pos2(text_left, y), text, MUTED);
+            let swatch = Rect::from_center_size(pos2(text_left - 10.0 * s - 14.0 * s, at.y), vec2(28.0 * s, 28.0 * s));
+            paint_swatch(ui, swatch, *value, 8.0 * s);
+            let keys = row.response.has_focus();
+            row.response.clicked().then_some(RowAction::Push { level: Level::Color(item.id), keys })
+        }
         MenuKind::Submenu(menu) => {
             let row = frame(ui, id, &item.label, note, 16.0 * s, Sense::click(), landing);
             chevron(ui, row.control.right_center() - vec2(4.0 * s, 0.0), vec2(1.0, 0.0), MUTED);
@@ -252,11 +267,6 @@ pub(super) fn row(ui: &mut Ui, item: &MenuItem, draft: &mut Option<Draft>, landi
             ui.painter().rect_filled(filled, 2.0 * s, Color32::WHITE);
             None
         }
-        // Kinds this page does not show yet: their label.
-        _ => {
-            frame(ui, id, &item.label, note, 0.0, Sense::hover(), landing);
-            None
-        }
     }
 }
 
@@ -267,6 +277,14 @@ pub(super) fn edit_text(item: &MenuItem) -> String {
         MenuKind::Number { value, step, .. } => format!("{:.*}", decimals(*step), value),
         _ => String::new(),
     }
+}
+
+/// A colour in a rounded square, with a faint edge (black shows on the
+/// dark sheet).
+pub(super) fn paint_swatch(ui: &Ui, rect: Rect, color: Rgba, radius: f32) {
+    let fill = Color32::from_rgba_unmultiplied(color.r, color.g, color.b, color.a);
+    ui.painter().rect_filled(rect, radius, fill);
+    ui.painter().rect_stroke(rect, radius, Stroke::new(1.0, Color32::from_white_alpha(77)), StrokeKind::Inside);
 }
 
 /// The toggle's switch (as `widgets::toggle`), drawn in `rect`.

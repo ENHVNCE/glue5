@@ -1,16 +1,17 @@
 //! The mods' menus in the Mods page: one entry per menu, each opening what
-//! its mod defines (submenus, a list's options) as a stack of
+//! its mod defines (submenus, a list's options, a colour) as a stack of
 //! levels with a back button. Drawn every frame from the runtime's
 //! snapshot with the app's own rows; touch, mouse, keyboard and controllers
 //! alike (a controller arrives as arrows and Enter, see `Ui::nav`). The
 //! view only reads the menus it is given and says what the player did
 //! ([`Out`]): the Mods page sends it, tests read it.
 
+mod color;
 mod pick;
 mod rows;
 
 use egui::{Align, Id, Layout, Rect, Response, RichText, Sense, Ui, UiBuilder, pos2, vec2};
-use glue5_mods::{Menu, MenuInput, MenuItem, MenuKind};
+use glue5_mods::{Menu, MenuInput, MenuItem, MenuKind, Rgba};
 
 use super::theme::{self, MUTED, density};
 use super::widgets::focus;
@@ -22,6 +23,8 @@ pub enum Level {
     Menu(u32),
     /// A choice's or a multi's options, by the item's id.
     Pick(u32),
+    /// A colour item's page.
+    Color(u32),
 }
 
 /// What the player did, for the runtime.
@@ -78,13 +81,16 @@ struct Open {
 }
 
 /// What the page keeps between frames: the stack, the focus to give, the
-/// text being typed, a picker's search.
+/// text being typed, a picker's search, the colour page's hue.
 #[derive(Default)]
 pub struct MenusView {
     stack: Vec<Open>,
     pending: Option<Pending>,
     draft: Option<Draft>,
     search: String,
+    /// The colour page's item, the colour last sent and the HSV it came
+    /// from (grey loses the hue: the sliders keep it).
+    hsv: Option<(u32, Rgba, [f32; 3])>,
     /// The menus the runtime was told are shown.
     viewing: Vec<(String, u32)>,
 }
@@ -127,6 +133,8 @@ impl MenusView {
             Level::Pick(id) => find_item(menus, id).is_some_and(|(_, i)| {
                 i.enabled && i.visible && matches!(i.kind, MenuKind::Choice { .. } | MenuKind::Multi { .. })
             }),
+            Level::Color(id) => find_item(menus, id)
+                .is_some_and(|(_, i)| i.enabled && i.visible && matches!(i.kind, MenuKind::Color { .. })),
         };
         if let Some(n) = self.stack.iter().position(|o| !usable(o.level)) {
             self.stack.truncate(n);
@@ -231,6 +239,14 @@ impl MenusView {
                         }
                         None => {}
                     }
+                }
+            }
+            Some(Level::Color(id)) => {
+                let (menu, item) = find_item(menus, id).expect("pruned");
+                if self.nav_bar(ui, &item.label, &title(&menu.module), |_| {}) {
+                    self.pop(ui.ctx().memory(|m| m.focused() == Some(back_id())));
+                } else if let Some(input) = color::page(ui, item, &mut self.hsv, &mut self.draft, &mut landing) {
+                    out.push(Out::Input { module: menu.module.clone(), item: item.id, input });
                 }
             }
         }
