@@ -27,7 +27,7 @@ use crate::paths::{self, MOBILE, TOUCH, TV};
 use crate::settings::{self, PerfOverlay, Settings, Source, TouchMode, Upscaling};
 use crate::touch::{self, Touch};
 use crate::ui::{self, Action, Mode, Page, Started, Status, Ui};
-use crate::{audio, benchmark, keymap, pads};
+use crate::{audio, benchmark, drivers, keymap, pads};
 
 /// The settings button's opacity over the game while the touch controls
 /// are hidden (a controller in use, or touch off): there, but faint.
@@ -99,7 +99,11 @@ pub fn run() -> Result<()> {
     let presentation = Presentation::new(pixels, settings.vsync, upscaler(&settings));
     presentation.set_metal_hud(settings.overlay == PerfOverlay::MetalHud);
     let overlay = glue5_gpu::Overlay::default();
-    let instance = glue5_gpu::instance();
+    // On the GPU driver the user chose (Android), if it opens.
+    #[cfg(target_os = "android")]
+    let (instance, driver_note) = drivers::instance(&user_dir, &mut settings.gpu_driver);
+    #[cfg(not(target_os = "android"))]
+    let (instance, driver_note) = (glue5_gpu::instance(), None::<String>);
     #[cfg(target_os = "android")]
     let surfaces = instance.clone();
     // The window outlives the renderer: the process exits with it.
@@ -123,6 +127,7 @@ pub fn run() -> Result<()> {
         presentation: presentation.clone(),
         overlay: overlay.clone(),
     })?;
+    let drivers = gpu_drivers(&user_dir, &settings, &screen.adapter_info());
     // While the system resizes the window in a loop of its own (macOS,
     // Windows), events wait for it to end, and so does this loop; SDL still
     // calls watches, and from there the renderer follows the window. The
@@ -204,6 +209,10 @@ pub fn run() -> Result<()> {
         touch_mouse: Default::default(),
         lifecycle,
         folder: None,
+        driver_mark: drivers.as_ref().is_some_and(|d| d.in_use.is_some()),
+        drivers,
+        driver_pick: None,
+        driver_adding: None,
         game_dir: None,
         problem: None,
         stream: None,
@@ -231,6 +240,11 @@ pub fn run() -> Result<()> {
         game: None,
     };
     app.last_failure = std::fs::read_to_string(app.user_dir.join(FAILURE_FILE)).ok();
+    if let Some(note) = driver_note {
+        // The setting went back to the phone's driver.
+        app.settings.save(&app.user_dir);
+        app.ui.note(note);
+    }
     app.find_game(args.game_dir.as_deref());
     if args.play {
         match app.settings.source {
@@ -390,7 +404,14 @@ struct App {
     /// menu's).
     touch_mouse: touch::Mouse,
     lifecycle: Arc<Lifecycle>,
-    folder: Option<FolderPick>,
+    folder: Option<Pick>,
+    /// The GPU drivers the user can add, where the settings show them.
+    drivers: Option<drivers::Drivers>,
+    /// The launch's driver mark is still there (see drivers.rs).
+    driver_mark: bool,
+    /// The file picker for a driver package, then its unpacking.
+    driver_pick: Option<Pick>,
+    driver_adding: Option<std::thread::JoinHandle<Result<drivers::Package, String>>>,
     /// The game's folder, once found.
     game_dir: Option<PathBuf>,
     /// Why it was not, or a folder chosen that is not one.
@@ -785,17 +806,21 @@ impl App {
                 servers: &servers.1,
                 searching: servers.0,
                 stream_alert,
+                drivers: self.drivers.as_ref(),
             };
             // The settings button: on touch screens always, so that it stays
             // with a controller in use or the touch controls off.
             let gear =
                 (in_game && (TOUCH || show)).then_some(if show { self.settings.touch_opacity } else { GEAR_ALONE });
             actions = self.ui.frame(&self.window, &mut self.settings, &status, show.then_some(&self.touch), gear);
-            if let Some(screen) = &mut self.screen
-                && !screen.show_ui()
-            {
-                // Not shown (the window not visible yet, ...): again soon.
-                self.ui.repaint_in(Duration::from_millis(100));
+            if let Some(screen) = &mut self.screen {
+                if !screen.show_ui() {
+                    // Not shown (the window not visible yet, ...): again soon.
+                    self.ui.repaint_in(Duration::from_millis(100));
+                } else if self.driver_mark {
+                    self.driver_mark = false;
+                    drivers::shown(&self.user_dir);
+                }
             }
         }
         for action in actions {
@@ -809,7 +834,7 @@ impl App {
                     }
                     self.play()?;
                 }
-                Action::ChooseGame => self.folder = Some(FolderPick::start(&self.window)),
+                Action::ChooseGame => self.folder = Some(Pick::folder(&self.window)),
                 Action::FindGame => self.find_game(None),
                 Action::ResetGraphics => self.reset_graphics(),
                 Action::JoinFriend { key, lobby } => {
@@ -836,12 +861,24 @@ impl App {
                     self.settings.source = Source::Server;
                     self.settings.save(&self.user_dir);
                 }
+                Action::AddDriver => self.driver_pick = Some(Pick::zip(&self.window)),
+                Action::RemoveDriver(id) => {
+                    drivers::remove(&self.user_dir, &id);
+                    if self.settings.gpu_driver.as_deref() == Some(id.as_str()) {
+                        self.settings.gpu_driver = None;
+                    }
+                    self.settings.save(&self.user_dir);
+                    if let Some(d) = &mut self.drivers {
+                        d.packages = drivers::list(&self.user_dir);
+                    }
+                }
             }
         }
+        self.add_driver();
         if self.play_requested {
             self.play()?;
         }
-        if let Some(choice) = self.folder.as_ref().and_then(FolderPick::poll) {
+        if let Some(choice) = self.folder.as_ref().and_then(Pick::poll) {
             self.folder = None;
             self.chosen(choice);
         }
@@ -1104,6 +1141,46 @@ impl App {
             sdl3::messagebox::show_message_box(MessageBoxFlag::ERROR, buttons, "Glue 5", &text, &self.window, None);
         if let Ok(ClickedButton::CustomButton(ButtonData { button_id: 1, .. })) = shown {
             relaunch(false);
+        }
+    }
+
+    /// The driver package picked (Settings › Video), unpacked by a thread of
+    /// its own: a zip of tens of megabytes, from wherever the picker found it.
+    fn add_driver(&mut self) {
+        if let Some(choice) = self.driver_pick.as_ref().and_then(Pick::poll) {
+            self.driver_pick = None;
+            if let Some(path) = choice {
+                let user_dir = self.user_dir.clone();
+                self.driver_adding = Some(std::thread::spawn(move || {
+                    use std::io::Read;
+                    let mut zip = Vec::new();
+                    let mut file = sdl3::iostream::IOStream::from_file(&path, "r").map_err(|e| e.to_string())?;
+                    file.read_to_end(&mut zip).map_err(|e| e.to_string())?;
+                    drivers::add(&user_dir, &zip)
+                }));
+                if let Some(d) = &mut self.drivers {
+                    d.adding = true;
+                }
+            }
+        }
+        if !self.driver_adding.as_ref().is_some_and(std::thread::JoinHandle::is_finished) {
+            if self.driver_adding.is_some() {
+                self.ui.repaint_in(Duration::from_millis(200));
+            }
+            return;
+        }
+        let added = self.driver_adding.take().and_then(|t| t.join().ok()).unwrap_or(Err("it failed".into()));
+        match added {
+            Ok(p) => {
+                self.ui.note(format!("{} added: Glue 5 runs on it from the next launch.", p.name));
+                self.settings.gpu_driver = Some(p.id);
+                self.settings.save(&self.user_dir);
+            }
+            Err(e) => self.ui.note(format!("Cannot add the GPU driver: {e}")),
+        }
+        if let Some(d) = &mut self.drivers {
+            d.adding = false;
+            d.packages = drivers::list(&self.user_dir);
         }
     }
 
@@ -1734,21 +1811,48 @@ fn mouse_bit(b: MouseButton) -> u32 {
     }
 }
 
-/// The system's folder picker, answered asynchronously (SDL calls back on
-/// the main thread while events are pumped).
-struct FolderPick(Arc<Mutex<Option<Option<PathBuf>>>>);
+/// What the settings show of the GPU drivers the user can add: on Android
+/// with an Adreno GPU (Qualcomm's), or once some were added.
+fn gpu_drivers(user_dir: &Path, settings: &Settings, info: &wgpu::AdapterInfo) -> Option<drivers::Drivers> {
+    const QUALCOMM: u32 = 0x5143;
+    let packages = drivers::list(user_dir);
+    if !cfg!(target_os = "android") || (info.vendor != QUALCOMM && packages.is_empty()) {
+        return None;
+    }
+    // Its version, as the driver gives it (Qualcomm's: its build, date,
+    // compiler...).
+    let version = info.driver_info.split(',').next().map(str::trim).filter(|v| !v.is_empty());
+    let running = version.unwrap_or(&info.driver).chars().take(60).collect();
+    Some(drivers::Drivers { packages, in_use: settings.gpu_driver.clone(), running, adding: false })
+}
 
-impl FolderPick {
-    fn start(window: &sdl3::video::Window) -> FolderPick {
-        let picked: Arc<Mutex<Option<Option<PathBuf>>>> = Default::default();
+/// The system's folder or file picker, answered asynchronously (SDL calls
+/// back on the main thread while events are pumped).
+struct Pick(Picked);
+
+type Picked = Arc<Mutex<Option<Option<PathBuf>>>>;
+
+impl Pick {
+    fn folder(window: &sdl3::video::Window) -> Pick {
+        let picked = Picked::default();
+        sdl3::dialog::show_open_folder_dialog(None::<&str>, false, window, Pick::answer(&picked));
+        Pick(picked)
+    }
+
+    /// A zip file (Android: a content:// URI, which SDL opens too).
+    fn zip(window: &sdl3::video::Window) -> Pick {
+        let picked = Picked::default();
+        let filters = [sdl3::dialog::DialogFileFilter { name: "Zip archives", pattern: "zip" }];
+        if let Err(e) = sdl3::dialog::show_open_file_dialog(&filters, None::<&str>, false, window, Pick::answer(&picked)) {
+            log::warn!("no file picker: {e:?}");
+            *picked.lock().unwrap() = Some(None);
+        }
+        Pick(picked)
+    }
+
+    fn answer(picked: &Picked) -> sdl3::dialog::DialogCallback {
         let slot = picked.clone();
-        sdl3::dialog::show_open_folder_dialog(
-            None::<&str>,
-            false,
-            window,
-            Box::new(move |result, _| *slot.lock().unwrap() = Some(result.ok().and_then(|mut v| v.pop()))),
-        );
-        FolderPick(picked)
+        Box::new(move |result, _| *slot.lock().unwrap() = Some(result.ok().and_then(|mut v| v.pop())))
     }
 
     /// `Some(choice)` once answered (`Some(None)`: cancelled).

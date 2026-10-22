@@ -90,6 +90,10 @@ pub enum Action {
     FindServers,
     /// Stream from this server (an address found or typed).
     UseServer(String),
+    /// The system's file picker, for a GPU driver package (Android).
+    AddDriver,
+    /// Delete the GPU driver package with this id.
+    RemoveDriver(String),
 }
 
 /// What a text field of the app's takes: the system keyboard follows it.
@@ -209,6 +213,9 @@ pub struct Status<'a> {
     pub searching: bool,
     /// A sign over the game: it waits for the server, or the server is away.
     pub stream_alert: Option<StreamAlert>,
+    /// The GPU drivers the user can add, where this GPU takes them (Android,
+    /// Adreno) or some were added.
+    pub drivers: Option<&'a crate::drivers::Drivers>,
 }
 
 /// The settings button over the game, sized like the touch controls: at the
