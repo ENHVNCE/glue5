@@ -1,0 +1,227 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: mempage4k <mempage4k@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 19:00:00 +0200
+Subject: [PATCH] wgpu-core: a pass's barriers first in its own command buffer
+
+Where command buffers cannot be suspended (Vulkan, since wgpu-hal 0005
+left it out), each render pass took two raw command buffers again: its
+own, and one for the barriers before it, recorded after the pass because
+only then are its resources known. On a Pixel 8a (Mali) the second one
+cost ~16 ms of CPU a frame (~54 passes): 34 -> 50 ms of encoding, 29 ->
+25 fps.
+
+A render pass's resources are known before it is recorded when nothing
+but its attachments and the bind groups, vertex and index buffers its
+commands set adds a usage: no queries, timestamps, bundles or indirect
+draws, and no discarded surface to clear first. Such a pass now merges
+those into a usage scope and records its barriers at the start of its own
+command buffer, just before the render pass begins (a hook in
+RenderPassInfo::start). What it then finds after the pass is nothing new.
+
+And a pass that needs nothing before it (no barriers, clears, query
+resets or indirect draw validation) takes no command buffer for it.
+
+Measured on Metal with the tracker doing the same work (its barriers
+record nothing there): 93-94 % of a game's render passes take the first
+path, and in none of them did the pass find a barrier after it that the
+scan had missed. Metal keeps suspending command buffers (0007), where
+barriers go at the end of the one before.
+---
+diff --git a/src/command/query.rs b/src/command/query.rs
+index 826cba5..5fd449c 100644
+--- a/src/command/query.rs
++++ b/src/command/query.rs
+@@ -69,6 +69,11 @@ pub(crate) struct QueryResetMap {
+     map: FastHashMap<TrackerIndex, (Vec<bool>, Arc<QuerySet>)>,
+ }
+ impl QueryResetMap {
++    /// Whether no query is to be reset.
++    pub fn is_empty(&self) -> bool {
++        self.map.is_empty()
++    }
++
+     pub fn new() -> Self {
+         Self {
+             map: FastHashMap::default(),
+diff --git a/src/command/render.rs b/src/command/render.rs
+index 2a6d28e..3baf69e 100644
+--- a/src/command/render.rs
++++ b/src/command/render.rs
+@@ -1206,6 +1206,7 @@ impl RenderPassInfo {
+         snatch_guard: &SnatchGuard<'_>,
+         query_set_writes: &mut QuerySetWrites,
+         multiview_mask: Option<NonZeroU32>,
++        before_begin: Option<&mut dyn FnMut(&mut dyn hal::DynCommandEncoder, &mut Tracker, &[RenderAttachment])>,
+     ) -> Result<Self, RenderPassErrorInner> {
+         profiling::scope!("RenderPassInfo::start");
+ 
+@@ -1708,6 +1709,9 @@ impl RenderPassInfo {
+             timestamp_writes: timestamp_writes_hal,
+             occlusion_query_set: occlusion_query_set_hal,
+         };
++        if let Some(before_begin) = before_begin {
++            before_begin(encoder, trackers, &render_attachments);
++        }
+         unsafe {
+             encoder
+                 .begin_render_pass(&hal_desc)
+@@ -2324,6 +2328,32 @@ pub(super) fn encode_render_pass(
+             ArcRenderCommand::DrawIndirect { .. } => device.indirect_validation.is_some(),
+             _ => false,
+         });
++    // glue5: where command buffers cannot be suspended (Vulkan), a pass
++    // whose resources are all known before it is recorded (attachments,
++    // bind groups, vertex and index buffers; no query, bundle or indirect
++    // draw, no discarded surface to clear) records its barriers at the
++    // start of its own command buffer, before the render pass begins: one
++    // command buffer a pass instead of two.
++    let barriers_first = !parent_state.raw_encoder.raw.can_suspend()
++        && timestamp_writes.is_none()
++        && !parent_state.texture_memory_actions.has_discards()
++        && !base.commands.iter().any(|command| {
++            matches!(
++                command,
++                ArcRenderCommand::BeginOcclusionQuery { .. }
++                    | ArcRenderCommand::WriteTimestamp { .. }
++                    | ArcRenderCommand::BeginPipelineStatisticsQuery { .. }
++                    | ArcRenderCommand::ExecuteBundle(_)
++                    | ArcRenderCommand::MultiDrawIndirectCount { .. }
++                    | ArcRenderCommand::DrawIndirect { .. }
++            )
++        });
++    let mut barriers_recorded = false;
++    let snatch_guard = parent_state.snatch_guard;
++    let mut record_barriers = |raw: &mut dyn hal::DynCommandEncoder, tracker: &mut Tracker, attachments: &[RenderAttachment]| {
++        barriers_recorded = barriers_before_begin(device, raw, tracker, attachments, &base.commands, snatch_guard);
++    };
++
+     let raw_encoder = if only_barriers_before {
+         parent_state
+             .raw_encoder
+@@ -2354,6 +2384,7 @@ pub(super) fn encode_render_pass(
+             parent_state.snatch_guard,
+             parent_state.query_set_writes,
+             multiview_mask,
++            if barriers_first { Some(&mut record_barriers) } else { None },
+         )
+         .map_pass_err(pass_scope)?;
+ 
+@@ -2744,6 +2775,26 @@ pub(super) fn encode_render_pass(
+     let encoder = &mut parent_state.raw_encoder;
+     let tracker = &mut parent_state.tracker;
+ 
++    // glue5: nothing to run before the pass (its barriers went first in its
++    // command buffer, or it needs none): no command buffer for it. Where
++    // command buffers are suspended, the barriers go at the end of the one
++    // before, which costs nothing.
++    if !encoder.raw.can_suspend()
++        && pending_discard_init_fixups.is_empty()
++        && pending_query_resets.is_empty()
++        && indirect_draw_validation_batcher.is_empty()
++    {
++        tracker.buffers.set_from_usage_scope(&scope.buffers);
++        tracker.textures.set_from_usage_scope(&scope.textures);
++        if !tracker.buffers.has_pending_transitions() && !tracker.textures.has_pending_transitions() {
++            return Ok(());
++        }
++        // Barriers recorded before the pass, and more found after it, would
++        // run in the wrong order (these first): the commands' scan must
++        // cover all a pass uses.
++        debug_assert!(!barriers_recorded, "a pass's barriers were not all known before it");
++    }
++
+     {
+         let transit = encoder
+             .open_before_pass(hal_label(
+@@ -2791,6 +2842,43 @@ pub(super) fn encode_render_pass(
+     Ok(())
+ }
+ 
++/// glue5: records, before a render pass begins, the barriers for what it
++/// uses: its attachments, and the bind groups, vertex and index buffers its
++/// commands set (the caller made sure nothing else adds a usage). Returns
++/// whether it did; it records nothing if a usage conflicts (the pass's own
++/// encoding then reports the error).
++fn barriers_before_begin(
++    device: &Arc<Device>,
++    raw: &mut dyn hal::DynCommandEncoder,
++    tracker: &mut Tracker,
++    attachments: &[RenderAttachment],
++    commands: &[ArcRenderCommand],
++    snatch_guard: &SnatchGuard,
++) -> bool {
++    let mut scope = device.new_usage_scope();
++    for ra in attachments {
++        if unsafe { scope.textures.merge_single(&ra.texture, Some(ra.selector.clone()), ra.usage) }.is_err() {
++            return false;
++        }
++    }
++    for command in commands {
++        let merged = match command {
++            ArcRenderCommand::SetBindGroup { bind_group: Some(group), .. } => unsafe { scope.merge_bind_group(&group.used) },
++            ArcRenderCommand::SetIndexBuffer { buffer, .. } => scope.buffers.merge_single(buffer, wgt::BufferUses::INDEX),
++            ArcRenderCommand::SetVertexBuffer { buffer: Some(buffer), .. } => scope.buffers.merge_single(buffer, wgt::BufferUses::VERTEX),
++            _ => Ok(()),
++        };
++        if merged.is_err() {
++            return false;
++        }
++    }
++    let indices = &device.tracker_indices;
++    tracker.buffers.set_size(indices.buffers.size());
++    tracker.textures.set_size(indices.textures.size());
++    CommandEncoder::insert_barriers_from_scope(raw, tracker, &scope, snatch_guard);
++    true
++}
++
+ fn set_pipeline(
+     state: &mut State,
+     device: &Arc<Device>,
+diff --git a/src/indirect_validation/draw.rs b/src/indirect_validation/draw.rs
+index df22818..6de3128 100644
+--- a/src/indirect_validation/draw.rs
++++ b/src/indirect_validation/draw.rs
+@@ -975,6 +975,11 @@ pub(crate) struct DrawBatcher {
+ }
+ 
+ impl DrawBatcher {
++    /// Whether no indirect draw was batched (no validation pass to inject).
++    pub(crate) fn is_empty(&self) -> bool {
++        self.batches.is_empty()
++    }
++
+     pub(crate) fn new() -> Self {
+         Self {
+             batches: FastHashMap::default(),
+diff --git a/src/track/buffer.rs b/src/track/buffer.rs
+index 1892ac4..b312418 100644
+--- a/src/track/buffer.rs
++++ b/src/track/buffer.rs
+@@ -352,6 +352,11 @@ impl BufferTracker {
+         self.metadata.owned_resources()
+     }
+ 
++    /// Whether transitions are pending (to be drained).
++    pub fn has_pending_transitions(&self) -> bool {
++        !self.temp.is_empty()
++    }
++
+     /// Drains all currently pending transitions.
+     pub fn drain_transitions<'a, 'b: 'a>(
+         &'b mut self,
+diff --git a/src/track/texture.rs b/src/track/texture.rs
+index 439bc08..06964ce 100644
+--- a/src/track/texture.rs
++++ b/src/track/texture.rs
+@@ -491,6 +491,11 @@ impl TextureTracker {
+     pub fn used_resources(&self) -> impl Iterator<Item = &Arc<Texture>> + '_ {
+         self.metadata.owned_resources()
+     }
++    /// Whether transitions are pending (to be drained).
++    pub fn has_pending_transitions(&self) -> bool {
++        !self.temp.is_empty()
++    }
++
+     /// Drain all currently pending transitions.
+     pub fn drain_transitions<'a>(
+         &'a mut self,
