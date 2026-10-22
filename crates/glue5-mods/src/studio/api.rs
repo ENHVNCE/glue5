@@ -182,7 +182,7 @@ files with `--!strict` to have every type checked.
 - Calls take positional numbers and a colour, then a style made ONCE
   outside the loop: `local s = draw.style({ z = 1, rounding = 0.01 })`.
   Colours: `0xRRGGBBAA` (fastest; `draw.rgba(r, g, b, a)`), `{r, g, b, a}`
-  or `"#rrggbb"`. Change a style's field when needed (`s.rotation = a`);
+  or a hex string (#rrggbb). Change a style's field when needed (`s.rotation = a`);
   never build `draw.style{...}` or tables in the loop.
 - `draw.image(img, x, y, w, h?, color?, style?)` (no h: its proportions),
   `draw.rect(x, y, w, h, color?, style?)`, `draw.text(text, x, y, size?,
