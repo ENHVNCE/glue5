@@ -104,7 +104,7 @@ fn long_text() {
     let short: String = eval(&lua, "calls = {} ui.help('Press ~INPUT_CONTEXT~') return calls[1][2]");
     assert_eq!(short, "STRING");
     fails(&lua, "ui.subtitle(12)", "the text is a string");
-    fails(&lua, "ui.buttons({ { 'x', 'Jump' } })", "ui.buttons: button 1");
+    fails(&lua, "ui.buttons({ { control = 'x', label = 'Jump' } })", "ui.buttons: button 1");
 }
 
 /// `ui.notify(text)` is the app's notification still; with options, the
@@ -192,7 +192,7 @@ local ok: boolean = streaming.load("prop_bench_01a", "model", 2000)
 ui.notify("plain")
 ui.notify("feed", { icon = "CHAR_LESTER", title = "Lester" })
 ui.help("Press ~INPUT_CONTEXT~")
-ui.buttons({ { Control.JUMP, "Jump" } })
+ui.buttons({ { control = Control.JUMP, label = "Jump" } })
 local sf = scaleform.load("mp_big_message_freemode")
 if sf then sf:call("SHOW_SHARD_WASTED_MP_MESSAGE", "Hi", "there", 5) sf:draw() end
 local stop = task.every(1000, function() end)

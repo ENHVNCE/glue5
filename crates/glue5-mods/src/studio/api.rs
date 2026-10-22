@@ -163,8 +163,8 @@ files with `--!strict` to have every type checked.
   subtitle})` (without options: the app's notification), `ui.subtitle(text,
   [ms])`, `ui.help(text)` each frame it stays, `ui.loading(text)` and
   `ui.loading()`, `ui.hideHud([component])` this frame, `ui.prompt([label],
-  [default], [max])` (waits; nil if cancelled), `ui.buttons({{Control.JUMP,
-  "Jump"}})` until changed, nil to hide.
+  [default], [max])` (waits; nil if cancelled), `ui.buttons({{control =
+  Control.JUMP, label = "Jump"}})` until changed, nil to hide.
 - `local sf = scaleform.load(name)` (waits), `sf:call(method, ...)`, each
   frame `sf:draw()` or `sf:draw3d(pos, rot, scale)`, `sf:release()`.
 - `task.every(ms, f)` returns a function that stops it. `mod.onStop(f)`: f

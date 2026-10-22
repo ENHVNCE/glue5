@@ -126,15 +126,15 @@ local bar, changed, drawing = nil, false, false
 local buttonString = pad.getControlInstructionalButtonsString
 local usingKeyboard = pad.isUsingKeyboardAndMouse
 
--- The bar at the bottom right, each frame until it changes: `{ { Control.JUMP,
--- "Jump" }, ... }`; nil or {} hides it.
-ui.buttons = function(buttons: { { any } }?)
+-- The bar at the bottom right, each frame until it changes: `{ { control =
+-- Control.JUMP, label = "Jump" }, ... }`; nil or {} hides it.
+ui.buttons = function(buttons: { { control: number, label: string } }?)
 	if buttons ~= nil and type(buttons) ~= "table" then
 		error("ui.buttons: a list of { control, label }, or nil", 2)
 	end
 	for i, b in buttons or {} do
-		if type(b) ~= "table" or type(b[1]) ~= "number" or type(b[2]) ~= "string" then
-			error(`ui.buttons: button {i} is not \{ control, label }`, 2)
+		if type(b) ~= "table" or type(b.control) ~= "number" or type(b.label) ~= "string" then
+			error(`ui.buttons: button {i} is not \{ control = number, label = string }`, 2)
 		end
 	end
 	bar = if buttons and #buttons > 0 then table.clone(buttons) else nil
@@ -156,7 +156,7 @@ ui.buttons = function(buttons: { { any } }?)
 					sf:call("CLEAR_ALL")
 					sf:call("SET_CLEAR_SPACE", 200)
 					for i, b in bar do
-						sf:call("SET_DATA_SLOT", i - 1, buttonString(2, b[1], true), b[2])
+						sf:call("SET_DATA_SLOT", i - 1, buttonString(2, b.control, true), b.label)
 					end
 					sf:call("SET_BACKGROUND_COLOUR", 0, 0, 0, 80)
 					sf:call("DRAW_INSTRUCTIONAL_BUTTONS", -1)
