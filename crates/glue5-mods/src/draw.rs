@@ -320,7 +320,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
     draw.set(
         "image",
         lua.create_function(
-            move |_, (image, x, y, w, h, color, style): (AnyUserData, f64, f64, f64, Option<f64>, Option<f64>, Option<AnyUserData>)| {
+            move |_, (image, x, y, w, h, color, style): (AnyUserData, f64, f64, f64, Option<f64>, Value, Option<AnyUserData>)| {
                 let image = image
                     .borrow::<LuaImage>()
                     .map_err(|_| mlua::Error::runtime("draw.image: an image from draw.loadImage"))?
@@ -334,7 +334,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
                     center: [fraction(x)?, fraction(y)?],
                     size: [fraction(w)?.max(0.0), fraction(h.unwrap_or(0.0))?.max(0.0)],
                     rotation: s.rotation,
-                    tint: rgba(color)?,
+                    tint: rgba(&color)?,
                     uv: s.uv,
                     nine: s.nine,
                 };
@@ -346,12 +346,12 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
     draw.set(
         "rect",
         lua.create_function(
-            move |_, (x, y, w, h, color, style): (f64, f64, f64, f64, Option<f64>, Option<AnyUserData>)| {
+            move |_, (x, y, w, h, color, style): (f64, f64, f64, f64, Value, Option<AnyUserData>)| {
                 let s = Style::of(style)?;
-                let fill = match (color, s.stroke) {
+                let fill = match (&color, s.stroke) {
                     // An outline alone.
-                    (None, Some(_)) => [0; 4],
-                    _ => rgba(color)?,
+                    (Value::Nil, Some(_)) => [0; 4],
+                    _ => rgba(&color)?,
                 };
                 let shape = Shape::Rect {
                     center: [fraction(x)?, fraction(y)?],
@@ -370,7 +370,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
     draw.set(
         "text",
         lua.create_function(
-            move |_, (text, x, y, size, color, style): (mlua::LuaString, f64, f64, Option<f64>, Option<f64>, Option<AnyUserData>)| {
+            move |_, (text, x, y, size, color, style): (mlua::LuaString, f64, f64, Option<f64>, Value, Option<AnyUserData>)| {
                 let s = Style::of(style)?;
                 let shape = Shape::Text {
                     text: c.text(&text),
@@ -378,7 +378,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
                     size: length(size.unwrap_or(0.03))?.clamp(0.001, 1.0),
                     rotation: s.rotation,
                     align: s.align,
-                    color: rgba(color)?,
+                    color: rgba(&color)?,
                 };
                 c.add(&s, shape)
             },
@@ -388,9 +388,9 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
     draw.set(
         "line",
         lua.create_function(
-            move |_, (x1, y1, x2, y2, width, color, style): (f64, f64, f64, f64, Option<f64>, Option<f64>, Option<AnyUserData>)| {
+            move |_, (x1, y1, x2, y2, width, color, style): (f64, f64, f64, f64, Option<f64>, Value, Option<AnyUserData>)| {
                 let s = Style::of(style)?;
-                let stroke = Stroke { color: rgba(color)?, width: length(width.unwrap_or(WIDTH))? };
+                let stroke = Stroke { color: rgba(&color)?, width: length(width.unwrap_or(WIDTH))? };
                 c.add(&s, Shape::Line { from: [fraction(x1)?, fraction(y1)?], to: [fraction(x2)?, fraction(y2)?], stroke })
             },
         )?,
@@ -398,16 +398,16 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
     let c = canvas.clone();
     draw.set(
         "path",
-        lua.create_function(move |_, (points, width, color, style): (Table, Option<f64>, Option<f64>, Option<AnyUserData>)| {
+        lua.create_function(move |_, (points, width, color, style): (Table, Option<f64>, Value, Option<AnyUserData>)| {
             let s = Style::of(style)?;
             let n = points.raw_len();
             if n % 2 != 0 || n < 4 {
                 return Err(mlua::Error::runtime("draw.path: points are {x1, y1, x2, y2, ...}, two at least"));
             }
-            let stroke = match (color, s.fill) {
+            let stroke = match (&color, s.fill) {
                 // A filled outline alone.
-                (None, Some(_)) => None,
-                _ => Some(Stroke { color: rgba(color)?, width: length(width.unwrap_or(WIDTH))? }),
+                (Value::Nil, Some(_)) => None,
+                _ => Some(Stroke { color: rgba(&color)?, width: length(width.unwrap_or(WIDTH))? }),
             };
             let range = c.points(n / 2, |i| Ok([fraction(points.raw_get(2 * i + 1)?)?, fraction(points.raw_get(2 * i + 2)?)?]))?;
             c.add(&s, Shape::Path { points: range, closed: s.closed || s.fill.is_some(), fill: s.fill, stroke })
@@ -416,11 +416,11 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
     let c = canvas.clone();
     draw.set(
         "circle",
-        lua.create_function(move |_, (x, y, r, color, style): (f64, f64, f64, Option<f64>, Option<AnyUserData>)| {
+        lua.create_function(move |_, (x, y, r, color, style): (f64, f64, f64, Value, Option<AnyUserData>)| {
             let s = Style::of(style)?;
-            let fill = match (color, s.stroke) {
-                (None, Some(_)) => None,
-                _ => Some(rgba(color)?),
+            let fill = match (&color, s.stroke) {
+                (Value::Nil, Some(_)) => None,
+                _ => Some(rgba(&color)?),
             };
             c.add(&s, Shape::Circle { center: [fraction(x)?, fraction(y)?], radius: length(r)?.max(0.0), fill, stroke: s.outline() })
         })?,
@@ -429,9 +429,9 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
     draw.set(
         "arc",
         lua.create_function(
-            move |_, (x, y, r, from, to, width, color, style): (f64, f64, f64, f64, f64, Option<f64>, Option<f64>, Option<AnyUserData>)| {
+            move |_, (x, y, r, from, to, width, color, style): (f64, f64, f64, f64, f64, Option<f64>, Value, Option<AnyUserData>)| {
                 let s = Style::of(style)?;
-                let stroke = Stroke { color: rgba(color)?, width: length(width.unwrap_or(WIDTH))? };
+                let stroke = Stroke { color: rgba(&color)?, width: length(width.unwrap_or(WIDTH))? };
                 let (from, to) = (finite(from)? as f32, finite(to)? as f32);
                 c.add(&s, Shape::Arc { center: [fraction(x)?, fraction(y)?], radius: length(r)?.max(0.0), from, to, stroke })
             },
@@ -474,7 +474,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
     draw.set(
         "text3d",
         lua.create_function(
-            move |_, (text, at, size, color, style): (mlua::LuaString, mlua::Vector, Option<f64>, Option<f64>, Option<AnyUserData>)| {
+            move |_, (text, at, size, color, style): (mlua::LuaString, mlua::Vector, Option<f64>, Value, Option<AnyUserData>)| {
                 let s = Style::of(style)?;
                 let shape = Shape::Text {
                     text: c.text(&text),
@@ -482,7 +482,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
                     size: length(size.unwrap_or(0.03))?.clamp(0.001, 1.0),
                     rotation: 0.0,
                     align: s.align,
-                    color: rgba(color)?,
+                    color: rgba(&color)?,
                 };
                 c.in_world(&s, at, shape)
             },
@@ -492,7 +492,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
     draw.set(
         "image3d",
         lua.create_function(
-            move |_, (image, at, w, h, color, style): (AnyUserData, mlua::Vector, f64, Option<f64>, Option<f64>, Option<AnyUserData>)| {
+            move |_, (image, at, w, h, color, style): (AnyUserData, mlua::Vector, f64, Option<f64>, Value, Option<AnyUserData>)| {
                 let image = image
                     .borrow::<LuaImage>()
                     .map_err(|_| mlua::Error::runtime("draw.image3d: an image from draw.loadImage"))?
@@ -506,7 +506,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
                     center: [0.0, 0.0],
                     size: [fraction(w)?.max(0.0), fraction(h.unwrap_or(0.0))?.max(0.0)],
                     rotation: 0.0,
-                    tint: rgba(color)?,
+                    tint: rgba(&color)?,
                     uv: s.uv,
                     nine: s.nine,
                 };
@@ -517,11 +517,11 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
     let c = canvas.clone();
     draw.set(
         "circle3d",
-        lua.create_function(move |_, (at, r, color, style): (mlua::Vector, f64, Option<f64>, Option<AnyUserData>)| {
+        lua.create_function(move |_, (at, r, color, style): (mlua::Vector, f64, Value, Option<AnyUserData>)| {
             let s = Style::of(style)?;
-            let fill = match (color, s.stroke) {
-                (None, Some(_)) => None,
-                _ => Some(rgba(color)?),
+            let fill = match (&color, s.stroke) {
+                (Value::Nil, Some(_)) => None,
+                _ => Some(rgba(&color)?),
             };
             c.in_world(&s, at, Shape::Circle { center: [0.0, 0.0], radius: length(r)?.max(0.0), fill, stroke: s.outline() })
         })?,
@@ -804,7 +804,7 @@ impl Style {
         };
         let color = |v: &Value| match v {
             Value::Nil => Ok(None),
-            v => num(v).ok_or_else(|| bad("a colour (draw.rgba)")).and_then(|c| rgba(Some(c)).map(Some)),
+            v => rgba(v).map(Some),
         };
         let flag = |v: &Value| match v {
             Value::Nil => Ok(false),
@@ -889,12 +889,31 @@ impl UserData for Style {
     }
 }
 
-/// A packed colour (0xRRGGBBAA; none: white).
-fn rgba(c: Option<f64>) -> mlua::Result<Rgba> {
+/// A colour: packed (0xRRGGBBAA, the usual one: checked first), a table
+/// {r, g, b, a} of 0 to 255 (a 255 when left out), or "#rrggbb[aa]"; none:
+/// white.
+fn rgba(c: &Value) -> mlua::Result<Rgba> {
+    let bad = || mlua::Error::runtime("draw: a colour is 0xRRGGBBAA (draw.rgba), {r, g, b, a} or \"#rrggbb[aa]\"");
     match c {
-        None => Ok([255; 4]),
-        Some(c) if c.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(&c) => Ok((c as u32).to_be_bytes()),
-        Some(_) => Err(mlua::Error::runtime("draw: a colour is 0xRRGGBBAA (draw.rgba)")),
+        Value::Nil => Ok([255; 4]),
+        Value::Integer(i) => u32::try_from(*i).map(u32::to_be_bytes).map_err(|_| bad()),
+        Value::Number(n) if n.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(n) => Ok((*n as u32).to_be_bytes()),
+        Value::Table(t) => {
+            let byte = |k: &str, default: Option<u8>| -> mlua::Result<u8> {
+                match t.raw_get::<Value>(k)? {
+                    Value::Nil => default.ok_or_else(bad),
+                    Value::Integer(i) => Ok(i.clamp(0, 255) as u8),
+                    Value::Number(n) if n.is_finite() => Ok(n.clamp(0.0, 255.0).round() as u8),
+                    _ => Err(bad()),
+                }
+            };
+            Ok([byte("r", None)?, byte("g", None)?, byte("b", None)?, byte("a", Some(255))?])
+        }
+        Value::String(s) => {
+            let c = crate::Rgba::from_hex(&s.to_str()?).ok_or_else(bad)?;
+            Ok([c.r, c.g, c.b, c.a])
+        }
+        _ => Err(bad()),
     }
 }
 
@@ -1167,6 +1186,8 @@ mod tests {
             "draw.rect(0 / 0, 0, 1, 1)",
             "draw.rect(0, 0, 1, 1, -1)",
             "draw.rect(0, 0, 1, 1, 0.5)",
+            "draw.rect(0, 0, 1, 1, { r = 1 })",
+            "draw.rect(0, 0, 1, 1, '#12')",
             "draw.rect(0, 0, 1, 1, nil, {})",
             "draw.path({ 0, 0, 1 })",
             "draw.style{ align = 'middle' }",
@@ -1191,6 +1212,8 @@ mod tests {
             draw.path({ 0, 0, 1, 0, 1, 1 }, nil, nil, draw.style{ fill = 0x11223344 })
             draw.line(0, 0, 1, 1)
             draw.text('hi', 0.5, 0.5, 0.05, nil, draw.style{ align = 'right' })
+            draw.rect(0, 0, 1, 1, { r = 1, g = 2, b = 3 })
+            draw.rect(0, 0, 1, 1, '#0a0b0c80')
         ").unwrap();
         let drawn = shown(&lua);
         assert!(matches!(drawn[0], (2, Sprite { shape: Shape::Rect { rotation: 90.0, fill: [255, 0, 0, 255], gradient: Some(([0, 0, 255, 255], false)), rounding: 0.01, stroke: Some(Stroke { color: [0, 0, 0, 255], width: 0.004 }), .. }, additive: false, .. })));
@@ -1201,6 +1224,8 @@ mod tests {
         assert!(matches!(&drawn[3].1.shape, Shape::Path { points, closed: true, fill: Some([0x11, 0x22, 0x33, 0x44]), stroke: None } if c.ready.borrow().points[points.start as usize..points.end as usize] == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]));
         assert!(matches!(drawn[4].1.shape, Shape::Line { stroke: Stroke { color: [255, 255, 255, 255], .. }, .. }));
         assert!(matches!(&drawn[5].1.shape, Shape::Text { text, align: Align::Right, size: 0.05, .. } if &**text == "hi"));
+        assert!(matches!(drawn[6].1.shape, Shape::Rect { fill: [1, 2, 3, 255], .. }));
+        assert!(matches!(drawn[7].1.shape, Shape::Rect { fill: [10, 11, 12, 128], .. }));
     }
 
     /// A sprite sheet's frame and nine-slicing are the image's coordinates.
