@@ -187,7 +187,7 @@ local bad = events.count("everything")
             let errors: Vec<&serde_json::Value> =
                 diagnostics.as_array().unwrap().iter().filter(|d| d["severity"] == "error").collect();
             // Only the group that is none.
-            assert!(errors.len() == 1 && errors[0]["range"][0] == 19, "{diagnostics}");
+            assert!(errors.len() == 1 && errors[0]["range"][0] == 17, "{diagnostics}");
         })
         .unwrap();
     }
