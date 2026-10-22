@@ -167,6 +167,18 @@ pub fn instance(user_dir: &Path, chosen: &mut Option<String>) -> (wgpu::Instance
     (glue5_gpu::instance(), why)
 }
 
+/// The driver `chosen` names opened, but not its GPU (`e`): the setting goes
+/// back to the phone's driver, for this launch too; the word for the user.
+#[cfg(target_os = "android")]
+pub fn device_failed(user_dir: &Path, chosen: &mut Option<String>, e: &anyhow::Error) -> String {
+    let id = chosen.take().unwrap_or_default();
+    let name = list(user_dir).into_iter().find(|p| p.id == id).map_or(id, |p| p.name);
+    shown(user_dir);
+    let why = format!("The GPU driver {name} could not open the GPU: {e:#}. The phone's is in use.");
+    log::warn!("gpu: {why}");
+    why
+}
+
 /// A frame was shown: the driver in use got the app going.
 pub fn shown(user_dir: &Path) {
     let _ = std::fs::remove_file(dir(user_dir).join(TRYING));

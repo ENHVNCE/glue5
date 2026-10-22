@@ -101,11 +101,11 @@ pub fn run() -> Result<()> {
     let overlay = glue5_gpu::Overlay::default();
     // On the GPU driver the user chose (Android), if it opens.
     #[cfg(target_os = "android")]
-    let (instance, driver_note) = drivers::instance(&user_dir, &mut settings.gpu_driver);
+    let (instance, mut driver_note) = drivers::instance(&user_dir, &mut settings.gpu_driver);
     #[cfg(not(target_os = "android"))]
     let (instance, driver_note) = (glue5_gpu::instance(), None::<String>);
     #[cfg(target_os = "android")]
-    let surfaces = instance.clone();
+    let mut surfaces = instance.clone();
     // The window outlives the renderer: the process exits with it.
     #[cfg(not(target_os = "tvos"))]
     let surface = unsafe {
@@ -126,7 +126,23 @@ pub fn run() -> Result<()> {
         surface,
         presentation: presentation.clone(),
         overlay: overlay.clone(),
-    })?;
+    });
+    // A driver the user added that loads but cannot open its GPU: the
+    // phone's, now.
+    #[cfg(target_os = "android")]
+    let screen = match screen {
+        Err(e) if settings.gpu_driver.is_some() => {
+            driver_note = Some(drivers::device_failed(&user_dir, &mut settings.gpu_driver, &e));
+            let instance = glue5_gpu::instance();
+            surfaces = instance.clone();
+            let surface = unsafe {
+                instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::from_display_and_window(&window, &window)?)?
+            };
+            Screen::open(glue5_gpu::Window { instance, surface, presentation: presentation.clone(), overlay: overlay.clone() })
+        }
+        screen => screen,
+    };
+    let screen = screen?;
     let drivers = gpu_drivers(&user_dir, &settings, &screen.adapter_info(), driver_note);
     // While the system resizes the window in a loop of its own (macOS,
     // Windows), events wait for it to end, and so does this loop; SDL still
