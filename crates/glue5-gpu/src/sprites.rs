@@ -371,8 +371,8 @@ impl Layout {
         for sprite in &list.sprites {
             if let Shape::Text { text, size, align, wrap, font, .. } = &sprite.shape {
                 let Some(place) = place_of(&self.places, sprite.group).filter(|p| !p.hidden) else { continue };
-                let px = (size * h * place.scale).clamp(1.0, h.max(1.0));
-                let key = TextKey::new(text, px, *align, wrap * w * place.scale, font.as_ref());
+                let (px, k) = text_size(size * h * place.scale, h, place.scale);
+                let key = TextKey::new(text, px, *align, wrap * w * place.scale / k, font.as_ref());
                 if let Some((_, _, used)) = self.galleys.get_mut(&key) {
                     *used = true;
                     continue;
@@ -477,8 +477,8 @@ impl Layout {
                     (self.points, self.path) = (points, path);
                 }
                 Shape::Text { text, at: from, size, rotation, align, color: c, wrap, font } => {
-                    let px = (size * k).clamp(1.0, h.max(1.0));
-                    let key = TextKey::new(text, px, *align, wrap * w * place.scale, font.as_ref());
+                    let (px, stretch) = text_size(size * k, h, place.scale);
+                    let key = TextKey::new(text, px, *align, wrap * w * place.scale / stretch, font.as_ref());
                     let Some((_, galley, _)) = self.galleys.get(&key) else { continue };
                     let galley = galley.clone();
                     let anchor = match align {
@@ -494,7 +494,13 @@ impl Layout {
                         .with_override_text_color(color(*c, add))
                         .with_angle_and_anchor(rotation.to_radians() + turn, anchor);
                     let mesh = self.batch(FONT_TEXTURE, screen);
+                    let first = mesh.vertices.len();
                     tess.tessellate_text(&shape, mesh);
+                    if stretch != 1.0 {
+                        for v in &mut mesh.vertices[first..] {
+                            v.pos = p + (v.pos - p) * stretch;
+                        }
+                    }
                 }
                 Shape::Line { from, to, stroke: s } => {
                     let (a, b) = (at(*from), at(*to));
@@ -577,6 +583,22 @@ impl Layout {
     }
 }
 
+/// The size a text is laid out at (pixels), and how much its mesh is then
+/// stretched to be `px` high. In a scaled group (one in the world, whose
+/// size follows its distance) the size changes from frame to frame: it is
+/// laid out at a step of a ladder (2^¼ apart) and stretched by the rest,
+/// so a label coming closer is laid out and rasterized again only every
+/// 19 %, not every frame. Elsewhere at its size, as crisp as it gets.
+fn text_size(px: f32, h: f32, scale: f32) -> (f32, f32) {
+    let px = px.clamp(1.0, h.max(1.0));
+    if scale == 1.0 {
+        return (px, 1.0);
+    }
+    let step = (4.0 * px.log2()).round() / 4.0;
+    let laid = step.exp2().max(1.0);
+    (laid, px / laid)
+}
+
 /// A text laid out: its string (by address), size and wrap in pixels,
 /// alignment and font.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -647,6 +669,20 @@ mod tests {
 
     /// A point ahead of the camera lands where its projection says, in the
     /// game's part of the window; one behind it is not drawn.
+    /// Texts in scaled groups are laid out at a few sizes and stretched to
+    /// theirs; elsewhere at theirs.
+    #[test]
+    fn text_sizes() {
+        assert_eq!(text_size(20.0, 1080.0, 1.0), (20.0, 1.0));
+        // 100 sizes from 20 to 30 pixels: four layouts.
+        let sizes: std::collections::HashSet<u32> = (0..100).map(|i| text_size(20.0 + i as f32 * 0.1, 1080.0, 1.5).0.to_bits()).collect();
+        assert_eq!(sizes.len(), 4, "{sizes:?}");
+        for px in [3.0, 17.5, 40.0, 200.0] {
+            let (laid, stretch) = text_size(px, 1080.0, 0.7);
+            assert!((laid * stretch - px).abs() < 1e-3 && (0.9..1.1).contains(&stretch), "{px}: {laid} {stretch}");
+        }
+    }
+
     #[test]
     fn projection() {
         // Looking along +y from the origin: x right, z up, w the distance.
