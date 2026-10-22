@@ -22,8 +22,9 @@ png = "0.18"
 # the same parser as epaint's.
 egui.workspace = true
 skrifa = { version = "0.44", default-features = false, features = ["std", "autohint_shaping"] }
-# Mods' network requests (net.rs): rustls with ring, webpki's roots, gzip.
-ureq = "3.5"
+# Mods' network requests (net.rs): rustls with ring, webpki's roots
+# (bodies are unpacked by net.rs, as a mod asks).
+ureq = { version = "3.5", default-features = false, features = ["rustls"] }
 # net.socket's TLS (socket.rs): ureq's rustls, ring and roots.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 webpki-roots = { version = "1", default-features = false }

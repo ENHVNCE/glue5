@@ -1,6 +1,7 @@
 //! `net`: a mod's requests to the network, HTTP and HTTPS, in the shape of
 //! Lune's `@lune/net` (`net.request`), the Luau runtime's: code written for
-//! it works here. ureq does the requests; rustls with ring and webpki's
+//! it works here, `net.urlEncode`/`urlDecode` too. ureq does the requests
+//! (bodies unpacked here, as Lune's `decompress` asks); rustls with ring and webpki's
 //! roots the TLS, the same on every system (no system TLS; Apple's ATS is
 //! for its own URL loading, so plain HTTP works on iOS too). Each request
 //! runs on a host thread of its own; the mod's coroutine waits for the
@@ -10,6 +11,7 @@
 //! on each. A mod that stops leaves its requests to end on their own
 //! (their timeout at most); their answers go nowhere.
 
+use std::io::Read;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -32,6 +34,8 @@ struct Request {
     headers: Vec<(String, Vec<u8>)>,
     body: Option<Vec<u8>>,
     timeout: Duration,
+    /// Unpack a gzip or deflate body (and ask for one).
+    decompress: bool,
 }
 
 struct Reply {
@@ -72,6 +76,9 @@ fn run(r: Request) -> Result<Reply, String> {
     for (name, value) in &r.headers {
         builder = builder.header(name.as_str(), value.as_slice());
     }
+    if r.decompress && !r.headers.iter().any(|(n, _)| n.eq_ignore_ascii_case("accept-encoding")) {
+        builder = builder.header("accept-encoding", "gzip, deflate");
+    }
     let reply = match r.body {
         Some(body) => {
             let request = builder.body(body).map_err(|e| e.to_string())?;
@@ -96,7 +103,7 @@ fn run(r: Request) -> Result<Reply, String> {
         }
     }
     let status = reply.status();
-    // None to read (ureq would try to unpack an empty gzip one).
+    // None to read.
     if head || status == StatusCode::NO_CONTENT || status == StatusCode::NOT_MODIFIED {
         return Ok(Reply { status, headers, body: Vec::new() });
     }
@@ -104,7 +111,28 @@ fn run(r: Request) -> Result<Reply, String> {
         ureq::Error::BodyExceedsLimit(_) => format!("the answer is larger than {} MB", BODY >> 20),
         e => describe(e, timeout),
     })?;
+    let encoding = headers.iter().find(|(n, _)| n == "content-encoding").map(|(_, v)| v.trim().to_ascii_lowercase());
+    let body = match encoding {
+        Some(encoding) if r.decompress => unpack(&encoding, body)?,
+        _ => body,
+    };
     Ok(Reply { status, headers, body })
+}
+
+/// A body as it was before `encoding` (gzip, deflate; others as they are),
+/// [`BODY`] at most.
+fn unpack(encoding: &str, body: Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let read = match encoding {
+        "gzip" | "x-gzip" => flate2::read::GzDecoder::new(&body[..]).take(BODY + 1).read_to_end(&mut out),
+        "deflate" => flate2::read::ZlibDecoder::new(&body[..]).take(BODY + 1).read_to_end(&mut out),
+        _ => return Ok(body),
+    };
+    read.map_err(|e| format!("the answer could not be unpacked ({encoding}): {e}"))?;
+    if out.len() as u64 > BODY {
+        return Err(format!("the answer is larger than {} MB", BODY >> 20));
+    }
+    Ok(out)
 }
 
 fn describe(e: ureq::Error, timeout: Duration) -> String {
@@ -130,7 +158,14 @@ fn request(v: Value) -> mlua::Result<Request> {
 fn request_of(mut url: String, t: Option<&Table>) -> mlua::Result<Request> {
     let bad = |what: &str| mlua::Error::runtime(format!("net.request: {what}"));
     let Some(t) = t else {
-        return Ok(Request { method: "GET".into(), url, headers: Vec::new(), body: None, timeout: secs(TIMEOUT) });
+        return Ok(Request {
+            method: "GET".into(),
+            url,
+            headers: Vec::new(),
+            body: None,
+            timeout: secs(TIMEOUT),
+            decompress: true,
+        });
     };
     let method = t.get::<Option<String>>("method")?.unwrap_or_else(|| "GET".into()).to_ascii_uppercase();
     if let Some(query) = t.get::<Option<Table>>("query")? {
@@ -163,14 +198,38 @@ fn request_of(mut url: String, t: Option<&Table>) -> mlua::Result<Request> {
     if timeout.is_nan() || timeout <= 0.0 {
         return Err(bad("a timeout is seconds, more than 0"));
     }
-    Ok(Request { method, url, headers, body, timeout: secs(timeout) })
+    let decompress = match t.get::<Option<Table>>("options")? {
+        Some(o) => o.get::<Option<bool>>("decompress")?.unwrap_or(true),
+        None => true,
+    };
+    Ok(Request { method, url, headers, body, timeout: secs(timeout), decompress })
 }
 
 fn secs(s: f64) -> Duration {
     Duration::from_secs_f64(s.min(TIMEOUT_MAX))
 }
 
-/// Percent-encoding of a URL's query part (all but the unreserved).
+/// `%XX` sequences as their bytes (others as they are).
+fn decode(text: &[u8]) -> Vec<u8> {
+    let hex = |b: u8| (b as char).to_digit(16);
+    let mut out = Vec::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        match (text[i], text.get(i + 1).copied().and_then(hex), text.get(i + 2).copied().and_then(hex)) {
+            (b'%', Some(h), Some(l)) => {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+            }
+            (b, _, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Percent-encoding of a URL's parts (all but the unreserved).
 fn encode(text: &[u8]) -> String {
     let mut out = String::with_capacity(text.len());
     for &b in text {
@@ -241,6 +300,26 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
         .call((start, poll, lua.globals().get::<Table>("coroutine")?.get::<Function>("yield")?))?;
     let net = lua.create_table()?;
     net.set("request", request)?;
+    // Lune's: text unless `binary` (text must be UTF-8, before and after).
+    net.set(
+        "urlEncode",
+        lua.create_function(|_, (s, binary): (mlua::LuaString, Option<bool>)| {
+            if binary != Some(true) && std::str::from_utf8(&s.as_bytes()).is_err() {
+                return Err(mlua::Error::runtime("net.urlEncode: not UTF-8 text (binary = true encodes any bytes)"));
+            }
+            Ok(encode(&s.as_bytes()))
+        })?,
+    )?;
+    net.set(
+        "urlDecode",
+        lua.create_function(|lua, (s, binary): (mlua::LuaString, Option<bool>)| {
+            let bytes = decode(&s.as_bytes());
+            if binary != Some(true) && std::str::from_utf8(&bytes).is_err() {
+                return Err(mlua::Error::runtime("net.urlDecode: not UTF-8 text (binary = true decodes any bytes)"));
+            }
+            lua.create_string(bytes)
+        })?,
+    )?;
     crate::socket::install(lua, &net)?;
     lua.globals().set("net", net)
 }
@@ -256,8 +335,13 @@ export type FetchParams = {
 \t-- Added to the URL, encoded.
 \tquery: { [string]: string }?,
 \theaders: { [string]: string }?,
+\toptions: FetchParamsOptions?,
 \t-- Seconds until it gives up (30 by default, 300 at most); GLUE 5's, not Lune's.
 \ttimeout: number?,
+}
+export type FetchParamsOptions = {
+\t-- Unpack a gzip or deflate answer (true by default); false gives the body as it came.
+\tdecompress: boolean?,
 }
 export type WebSocket = {
 \t-- How it was closed (1000: normally), once it is; nil while open.
@@ -282,12 +366,16 @@ export type FetchResponse = {
 -- The network, as Lune's @lune/net. Requests wait, as wait() does, while they go on away from the game:
 -- the game goes on meanwhile. An answer with any status is a response (`ok` for 2xx); no answer (no
 -- network, a bad address, the timeout) is an error. A mod has 4 requests going at once at most (more
--- wait for one to end); an answer's body may be 16 MB (gzip is unpacked).
+-- wait for one to end); an answer's body may be 16 MB.
 declare net: {
 \t-- An HTTP or HTTPS request: a URL (GET), or what FetchParams says.
 \trequest: (config: string | FetchParams) -> FetchResponse,
 \t-- A WebSocket, ws:// or wss://; waits while it connects. A mod has 4 open at once, messages of 16 MB.
 \tsocket: (url: string) -> WebSocket,
+\t-- Percent-encodes `s` (all but letters, digits and -._~); text must be UTF-8 unless `binary`.
+\turlEncode: (s: string, binary: boolean?) -> string,
+\t-- Decodes %XX sequences; the result must be UTF-8 text unless `binary`.
+\turlDecode: (s: string, binary: boolean?) -> string,
 }
 ";
 
@@ -370,6 +458,62 @@ mod tests {
         )
         .unwrap();
         assert_eq!(v.as_string().unwrap().to_str().unwrap(), "PUT /y");
+    }
+
+    /// Lune's decompress: a gzip answer unpacked, or as it came.
+    #[test]
+    fn gzip_unpacked_or_not() {
+        use flate2::{Compression, write::GzEncoder};
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        gz.write_all(b"hello").unwrap();
+        let packed = gz.finish().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(2) {
+                let mut stream = stream.unwrap();
+                let mut buf = [0; 4096];
+                let n = stream.read(&mut buf).unwrap();
+                // Asked for it only when it unpacks.
+                let asked = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase().contains("accept-encoding: gzip");
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nX-Asked: {asked}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    packed.len()
+                );
+                stream.write_all(head.as_bytes()).unwrap();
+                stream.write_all(&packed).unwrap();
+            }
+        });
+        let lua = Lua::new();
+        install(&lua).unwrap();
+        lua.globals().set("url", format!("http://{address}/")).unwrap();
+        let v = run_mod(
+            &lua,
+            r#"
+            local a = net.request(url)
+            assert(a.body == "hello" and a.headers["x-asked"] == "true", a.body)
+            local b = net.request({ url = url, options = { decompress = false } })
+            assert(b.headers["x-asked"] == "false" and b.body:sub(1, 2) == "\x1f\x8b")
+            return true
+            "#,
+        )
+        .unwrap();
+        assert_eq!(v, Value::Boolean(true));
+    }
+
+    #[test]
+    fn url_encoding() {
+        let lua = Lua::new();
+        install(&lua).unwrap();
+        let (e, d, b): (String, String, mlua::LuaString) = lua
+            .load(r#"return net.urlEncode("a b/é~"), net.urlDecode("a%20b%2F%C3%A9~%zz"), net.urlDecode("%FF", true)"#)
+            .eval()
+            .unwrap();
+        assert_eq!((e.as_str(), d.as_str(), &b.as_bytes()[..]), ("a%20b%2F%C3%A9~", "a b/é~%zz", &[0xff][..]));
+        let err = |code: &str| lua.load(code).exec().unwrap_err().to_string();
+        assert!(err(r#"net.urlDecode("%FF")"#).contains("not UTF-8"));
+        assert!(err(r#"net.urlEncode("\xff")"#).contains("not UTF-8"));
+        assert_eq!(lua.load(r#"return net.urlEncode("\xff", true)"#).eval::<String>().unwrap(), "%FF");
     }
 
     #[test]
