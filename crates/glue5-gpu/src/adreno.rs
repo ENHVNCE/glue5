@@ -7,7 +7,7 @@
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Mutex, PoisonError};
 
 use anyhow::{Context, Result, bail};
 
@@ -26,8 +26,13 @@ type OpenLibvulkan = unsafe extern "C" fn(
 ) -> *mut c_void;
 
 /// The driver package in use (its folder's name), once [`instance`] made
-/// an instance on it: the pipeline cache is kept per driver.
-pub(crate) static IN_USE: OnceLock<String> = OnceLock::new();
+/// an instance on it: the pipeline cache is kept per driver. The system's
+/// instance ([`crate::instance`]) clears it.
+static IN_USE: Mutex<Option<String>> = Mutex::new(None);
+
+pub(crate) fn in_use() -> std::sync::MutexGuard<'static, Option<String>> {
+    IN_USE.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// A Vulkan instance on the driver `library` (its file name) of the package
 /// in `dir`, which must be in the app's internal storage (the linker loads
@@ -77,9 +82,13 @@ pub fn instance(dir: &Path, library: &str) -> Result<wgpu::Instance> {
     }
     let gipa = unsafe { std::mem::transmute::<*mut c_void, ash::vk::PFN_vkGetInstanceProcAddr>(gipa) };
     let entry = unsafe { ash::Entry::from_static_fn(ash::StaticFn { get_instance_proc_addr: gipa }) };
+    // Drivers made for emulators, some not conformant yet (Mesa's PanVK on
+    // Mali's kernel driver): the user chose it, wgpu would hide it.
+    let flags = wgpu::InstanceFlags::from_build_config().with_env()
+        | wgpu::InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER;
     let desc = wgpu::hal::InstanceDescriptor {
         name: "wgpu",
-        flags: wgpu::InstanceFlags::from_build_config().with_env(),
+        flags,
         memory_budget_thresholds: Default::default(),
         backend_options: wgpu::BackendOptions::from_env_or_default(),
         telemetry: None,
@@ -100,7 +109,7 @@ pub fn instance(dir: &Path, library: &str) -> Result<wgpu::Instance> {
     }
     let info = adapter.get_info();
     log::info!("gpu: driver {library} from {}: {} ({}, {})", dir.display(), info.name, info.driver, info.driver_info);
-    let _ = IN_USE.set(dir.file_name().unwrap_or_default().to_string_lossy().into_owned());
+    *in_use() = Some(dir.file_name().unwrap_or_default().to_string_lossy().into_owned());
     Ok(instance)
 }
 

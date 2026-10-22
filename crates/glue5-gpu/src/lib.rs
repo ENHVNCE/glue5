@@ -134,6 +134,9 @@ pub use adreno::instance as instance_with_driver;
 
 /// The wgpu instance for this platform (create surfaces with it).
 pub fn instance() -> wgpu::Instance {
+    // On the system's driver again (one the user added did not open its GPU).
+    #[cfg(target_os = "android")]
+    adreno::in_use().take();
     let backends = if cfg!(target_vendor = "apple") { wgpu::Backends::METAL } else { wgpu::Backends::VULKAN };
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = backends;
@@ -199,7 +202,7 @@ fn pipeline_cache_name(info: &wgpu::AdapterInfo) -> String {
     // A driver the user added has a cache of its own: the system's stays
     // for when it is back (each driver refuses the other's).
     #[cfg(target_os = "android")]
-    if let Some(driver) = adreno::IN_USE.get() {
+    if let Some(driver) = adreno::in_use().as_ref() {
         return format!("{name}.{driver}.bin");
     }
     format!("{name}.bin")
