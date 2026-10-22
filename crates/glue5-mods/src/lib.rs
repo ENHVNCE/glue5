@@ -286,7 +286,8 @@ pub fn stored(name: &str) -> String {
         .unwrap_or_else(|| "{}".into())
 }
 
-/// Empties mod `name`'s storage (a running mod's too).
+/// Empties mod `name`'s storage and deletes its database (a running
+/// mod's too).
 pub fn clear_stored(name: &str) {
     if !files::valid_name(name) {
         return;
@@ -294,6 +295,9 @@ pub fn clear_stored(name: &str) {
     if let Some(d) = dir() {
         let _ = std::fs::remove_file(d.join(".glue5/storage").join(format!("{name}.json")));
     }
+    // A running mod's is closed and deleted by its VM (here it may be
+    // open, which some systems do not delete).
+    db::delete(name);
     command(Command::ClearStorage(name.to_string()));
 }
 

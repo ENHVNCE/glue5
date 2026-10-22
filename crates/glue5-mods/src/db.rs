@@ -11,7 +11,7 @@
 //! [`LIMIT`] at most, and a query running past [`RUNAWAY`] is stopped.
 
 use std::cell::{RefCell, RefMut};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -177,6 +177,34 @@ impl Db {
             ))?;
         t.set("transaction", transaction)?;
         lua.globals().set("db", t)
+    }
+}
+
+impl Db {
+    /// Closes it and deletes its files (the player cleared the mod's
+    /// storage); the next use starts an empty one.
+    pub fn clear(&self) {
+        self.conn.borrow_mut().take();
+        if let Some(path) = &self.path {
+            remove(path);
+        }
+    }
+}
+
+/// Deletes mod `module`'s database (a running mod's VM closes it first,
+/// [`Db::clear`]).
+pub fn delete(module: &str) {
+    if let Some(d) = crate::dir() {
+        remove(&d.join(".glue5/storage").join(format!("{module}.db")));
+    }
+}
+
+/// The database at `path`, with its log and shared memory.
+fn remove(path: &Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let mut file = path.as_os_str().to_owned();
+        file.push(suffix);
+        let _ = std::fs::remove_file(file);
     }
 }
 
@@ -426,9 +454,15 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("the database is full"), "{e}");
+        assert!(std::fs::metadata(&path).unwrap().len() <= 1 << 20);
+        // Cleared: closed, its files gone, an empty one at the next use.
+        db.clear();
+        assert!(!path.exists() && !dir.join("m.db-wal").exists());
+        let n: f64 =
+            lua.load("db.exec('CREATE TABLE cars (id)') return #db.query('SELECT * FROM cars')").eval().unwrap();
+        assert_eq!(n, 0.0);
         drop(lua);
         drop(db);
-        assert!(std::fs::metadata(&path).unwrap().len() <= 1 << 20);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

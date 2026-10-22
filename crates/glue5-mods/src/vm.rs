@@ -42,6 +42,8 @@ pub struct Vm {
     main_first: Cell<bool>,
     /// The mod's `storage` (none for the REPL).
     storage: Option<Rc<Storage>>,
+    /// Its database (none for the REPL).
+    db: Option<Rc<crate::db::Db>>,
 }
 
 /// What `task.*` and the menus share with the VM.
@@ -94,7 +96,8 @@ impl Vm {
         lua.globals().set("require", require(&lua, name, dir)?)?;
         let storage = Storage::open(name);
         storage.install(&lua)?;
-        crate::db::Db::new(name).install(&lua)?;
+        let db = crate::db::Db::new(name);
+        db.install(&lua)?;
         crate::folder::install(&lua, name, dir)?;
         crate::draw::set_folder(&lua, name);
         // The mod's code starts once the player is in the game (not on
@@ -127,6 +130,7 @@ impl Vm {
             turn_end: Cell::new(Instant::now()),
             main_first: Cell::new(false),
             storage: Some(storage),
+            db: Some(db),
         })
     }
 
@@ -187,7 +191,7 @@ impl Vm {
             .call((take, reply))?;
         lua.sandbox(true)?;
         let main = lua.create_thread(main)?;
-        Ok(Vm { lua, module: "eval".into(), main: Some(main), main_wake: 0, main_busy: Duration::ZERO, sched, deadline, turn_end: Cell::new(Instant::now()), main_first: Cell::new(false), storage: None })
+        Ok(Vm { lua, module: "eval".into(), main: Some(main), main_wake: 0, main_busy: Duration::ZERO, sched, deadline, turn_end: Cell::new(Instant::now()), main_first: Cell::new(false), storage: None, db: None })
     }
 
     /// A turn at game time `now` (ms): what the player did with the menus
@@ -682,10 +686,13 @@ impl Vm {
         }
     }
 
-    /// Empties the mod's storage.
+    /// Empties the mod's storage and deletes its database.
     pub fn clear_storage(&self) {
         if let Some(storage) = &self.storage {
             storage.clear_now();
+        }
+        if let Some(db) = &self.db {
+            db.clear();
         }
     }
 }
