@@ -144,7 +144,7 @@ menu item: copy a folder into the mods folder to try it.
 | `world` | The vehicles, peds, objects and pickups around and the projectiles in flight, as handles: `world.vehicles()`, or only some, the closest first: `world.peds({ near = pos, radius = 50, model = "a_c_cat_01", max = 5 })`. And the installed game's model names. |
 | `events` | The game's script events of this frame, by group (`"ai"`, `"network"`, `"errors"`): `events.count("network")`, `events.at("network", i)` (its name, `"EVENT_NETWORK_DAMAGE_ENTITY"`), `events.data("network", i)`, the data as a table (`d.victim`, `d.damage`, `d.weapon`...) for the common types: entity damaged or destroyed, damage, dead ped seen, pickups collected, weapon dropped, vehicle undrivable, vehicle entered. |
 | Structures | Natives that fill a structure or an array give a table or a list: `extrametadata.getDlcVehicleData(i)` (`lockHash`, `model`, `cost`), `getDlcWeaponData`, `getDlcWeaponComponentData` (and their `Sp` ones; text labels as strings), `ped.getPedNearbyVehicles(ped, max)`, `ped.getPedNearbyPeds(ped, ignore, max)`. The same natives raw, ScriptHookV's way: `native.invoke` with `memory.alloc`. |
-| `draw` | Images from the mod's folder over the game: `local logo = draw.loadImage("images/logo.png")` (PNG, waits while it is decoded), then each frame `draw.image(logo, 0.9, 0.1, 0.1, nil, { rotation = 15, color = { 255, 255, 255, 200 }, z = 1 })`; `draw.rect` and `draw.text` too, above the images or below. Centred positions and sizes in fractions of the screen, as DRAW_SPRITE's; drawn at the window's resolution over everything the game draws. A mod holds 64 images, 32 MB of them, at most (2048×2048 each), freed when it stops or by `image:release()`. |
+| `draw` | Images, shapes and text over the game, a frame at a time: `draw.image(logo, 0.9, 0.1, 0.1)`, `draw.rect`, `draw.text`, `draw.arc`... and labels that follow a point of the world (`draw.text3d`). See [Drawing](#drawing). |
 | `json`, `storage` | JSON text, and values kept between sessions (1 MB a mod, for this player). |
 | `db` | The mod's SQLite database: `db.exec("CREATE TABLE spots (name TEXT, x REAL)")`, `db.exec("INSERT INTO spots VALUES (?, ?)", name, x)`, `db.query("SELECT * FROM spots WHERE x > :x", { x = 10 })` (its rows as tables), `db.transaction(function() ... end)` (undone if it fails). One file for this player, as the storage, 256 MB at most. Queries run on the mod's turn: large work goes in a transaction (300 inserts in one take under a millisecond). |
 | `net.request(url)`, `net.socket(url)` | HTTP and HTTPS, as [Lune](https://lune-org.github.io/docs)'s `@lune/net`: `net.request("https://...")` or `net.request({ url = ..., method = "POST", headers = {...}, body = ..., query = {...}, options = { decompress = false } })` gives `{ ok, statusCode, statusMessage, headers, body }`. It waits, as `wait()` does, while the request goes on away from the game. No answer (no network, a bad address, 30 s) is an error. 4 requests at once a mod, answers of 16 MB; gzip and deflate answers are unpacked unless `decompress = false`. `net.urlEncode(s)` and `net.urlDecode(s)` (`binary` as a second argument for bytes that are not text). WebSockets too, as Lune's: `local s = net.socket("wss://...")`, `s:send(text)` (`s:send(data, true)` binary), `s:next()` (waits for a message; nil once closed), `s:close()`, `s.closeCode`; 4 open at once a mod, messages of 16 MB. |
@@ -271,6 +271,79 @@ Menus do not go over the game (the Mods page hides the touch controls),
 and have no icons, images or drawing of their own (that is `draw`'s), nor
 text over more than one line. Items keep their order: to change it, clear
 the menu and build it again.
+
+## Drawing
+
+`draw` puts images, shapes and text over the game: HUDs, gauges, panels,
+labels over the world. What a turn of the mod draws shows until its next
+turn, so a mod draws every frame, in a loop with `wait()`, as the game's
+own DRAW_ natives want. They are drawn at the window's resolution (after
+the game's frame is scaled, so over upscaled and generated frames too),
+over everything the game draws and under the app's controls.
+
+```lua
+--!strict
+local panel = draw.loadImage("images/panel.png") -- PNG from the mod's folder
+local font = draw.loadFont("fonts/title.ttf")
+local box = draw.style({ nineSlice = { 12, 12, 12, 12 } }) -- made once
+local title = draw.style({ font = font, align = "center", z = 1 })
+local needle = draw.style({ blend = "add" })
+while true do
+	local speed = entity.getEntitySpeed(player.playerPedId()) / 60
+	draw.image(panel, 0.15, 0.8, 0.2, 0.25, nil, box)
+	draw.arc(0.15, 0.8, 0.08, -120, -120 + 240 * math.min(speed, 1), 0.01, 0x00e0ffff, needle)
+	draw.text(tostring(math.floor(speed * 216)), 0.15, 0.77, 0.05, 0xffffffff, title)
+	wait()
+end
+```
+
+- **Where**: positions are fractions of the screen (0, 0 its top left, 1,
+  1 its bottom right); rectangles and images are centred there, as
+  DRAW_RECT's and DRAW_SPRITE's, a text starts there (its top).
+  Radii, line widths, rounding and text sizes are fractions of the
+  screen's height. `draw.screenSize()` gives the window's pixels.
+- **Calls**: `draw.image(img, x, y, w, h?, color?, style?)`,
+  `draw.rect(x, y, w, h, color?, style?)`,
+  `draw.text(text, x, y, size?, color?, style?)`,
+  `draw.line(x1, y1, x2, y2, width?, color?, style?)`,
+  `draw.path({x1, y1, x2, y2, ...}, width?, color?, style?)`,
+  `draw.circle(x, y, r, color?, style?)`,
+  `draw.arc(x, y, r, from, to, width?, color?, style?)` (degrees,
+  clockwise from the top: gauges). A colour is a number, `0xRRGGBBAA`
+  (`draw.rgba(r, g, b, a)` makes one; the fastest), or as menus take
+  them, `{r, g, b, a}` or `"#rrggbb[aa]"`; white when none.
+- **Styles**: the rest goes in a style made once with `draw.style{...}`
+  and passed with each call; its fields can change (`style.rotation =
+  angle`). `z` (higher in front), `rotation`, `blend = "add"` (glows),
+  `rounding`, `stroke` and `width` (outlines), `gradient` and `horizontal`
+  (a rectangle's), `fill` and `closed` (a path's), `align`, `wrap` and
+  `font` (texts'), `uv = {u0, v0, u1, v1}` (a sprite sheet's frame:
+  `style:setUv(...)` changes it without a table), `nineSlice = {left,
+  top, right, bottom}` (a panel's borders, in the image's pixels), `scale`
+  (groups'), `distanceScale` and `maxDistance` (the world's).
+- **Groups**: `draw.push(x, y, style?)` places what follows from x, y,
+  scaled and turned by the style, until `draw.pop()`; `draw.clip(x, y, w,
+  h)` shows only what falls in that rectangle (a list that scrolls).
+  Groups nest; those left open close with the turn.
+- **The world**: `draw.push3d(pos, style?)` opens a group at a point of
+  the world, `draw.text3d`, `draw.image3d`, `draw.circle3d` draw one thing
+  there. The point is placed with the camera of the frame being shown, so
+  a label stays on its car as the view turns; nothing is drawn while the
+  point is behind the camera, past `maxDistance`, and `distanceScale` (in
+  metres) makes it smaller as it gets farther.
+- **Text**: `draw.measureText(text, size?, style?)` gives its width and
+  height (fractions of the screen's), laid out as it is drawn;
+  `draw.loadFont("fonts/x.ttf")` loads a TrueType or OpenType font.
+- **Limits**: a mod holds 64 images (2048×2048 each, 32 MB in all) and 4
+  fonts (8 MB each), freed when it stops (or by `image:release()`); a turn
+  draws at most 16,384 things, 65,536 path points and 4,096 groups.
+- **Cost**: a frame's drawings, all mods together, are one mesh, drawn in
+  a call for each change of image (shapes and text share one); nothing is
+  done while no mod draws. A call costs about 0.1 µs of the mod's time
+  with a style made once, against 0.3-0.4 µs with an options table. A
+  HUD of a few hundred drawings costs a fraction of a millisecond; 5,000
+  shapes and 500 texts a frame take most of a mod's 2 ms and some 5 ms of
+  the renderer on a fast computer: too much for a phone.
 
 ## Porting ScriptHookV mods
 
