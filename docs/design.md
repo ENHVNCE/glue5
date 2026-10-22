@@ -919,27 +919,79 @@ playing.
   `.glue5/storage/<mod>.json`, so a mod handed on carries no player's
   data. Luau's `buffer` is there too; files and the network are not
   (HTTP, with sites a mod declares and the player approves, is planned).
-- **Drawing** (draw.rs): what ScriptHookV's createTexture/drawTexture
-  gave. The natives already draw rectangles, the game's own sprites
-  (streamed texture dictionaries) and text, inside the game's frame; what
-  they cannot is an image of the mod's own. `draw.loadImage` reads a PNG
-  of the mod's folder (the Studio's paths, checked the same way) and
-  decodes it on a thread of its own (the header first: past 2048×2048, or
-  the 32 MB of decoded pixels a run of a mod may hold, it is refused
-  before decoding); the mod's coroutine waits a frame at a time meanwhile.
-  `draw.image`, `draw.rect` and `draw.text` (the last two so that a label
-  can go over an image; the text is in egui's font, so text that should
-  look like the game's is the text natives' job) add to the mod's list for the frame, 1024 at
-  most; when the engine's frame count changes, the mods' lists become
-  one, by z, handed to the renderer (glue5-runtime's `sprites`). The
-  renderer lays the latest out with egui (a context and renderer of their
-  own, so the app's UI is untouched) and draws it into the window's image
-  after the game's frame is scaled to it, before the app's UI: at the
-  window's resolution, over upscaled and generated frames alike. An image
-  is uploaded the first time it is drawn (its pixels then leave the CPU)
-  and its texture freed when nothing holds it: not the mod (`release`,
-  or its VM going when it stops), not the list drawn. With nothing drawn
-  the renderer reads one counter a frame.
+- **Drawing** (draw.rs, glue5-runtime's sprites.rs, glue5-gpu's
+  sprites.rs): what ScriptHookV's createTexture/drawTexture gave, grown to
+  what HUDs need. The natives already draw rectangles, the game's own
+  sprites (streamed texture dictionaries) and text inside the game's
+  frame; what they cannot is an image of the mod's own, and anything over
+  one.
+  - **Calls are the hot path** (thousands a frame for a busy HUD):
+    positions and sizes are positional numbers, a colour one packed
+    number (0xRRGGBBAA), the rest a style made once (`draw.style{...}`,
+    userdata) and passed again. Measured (release, M1 Pro, 100,000 calls
+    of a rectangle): an options table written in the call 425 ns a call, the same table
+    made once 332 ns (its keys are looked up by string), a packed colour and
+    a style 104 ns, a packed colour alone 65 ns. The call records into the mod's list (no
+    allocation once warm: the lists, their points and groups are kept
+    from turn to turn; a text is the same `Arc<str>` while its Luau
+    string is the same).
+  - **Turns**: what a mod draws in a turn shows from the end of that turn
+    until the end of its next whole one; a turn cut short by the 2 ms
+    slice goes on in the next, its drawings with it (no half a frame on
+    screen). At each engine frame, when a mod drew anew or one stopped,
+    the mods' lists become one, by z (glue5-runtime's `sprites`); the
+    list the renderer is done with comes back to be filled again.
+  - **Images**: `draw.loadImage` reads a PNG of the mod's folder (the
+    Studio's paths, checked the same way) and decodes it on a thread of
+    its own, refused from its header past 2048×2048 or the 32 MB a run
+    of a mod may hold; its smaller levels (mipmaps) are made there too,
+    and count. It is uploaded the first time it is drawn (its pixels
+    leave the CPU) and freed when nothing holds it. A sprite sheet's
+    frame (`uv`) and nine-slicing are texture coordinates: no texture
+    more.
+  - **The renderer** lays the latest list out with epaint (egui's painting
+    crate, no egui frame): its tessellator anti-aliases by a pixel of
+    feathering. All of it is one mesh, cut into draw calls only where the
+    texture changes in the drawing order (shapes and text share the font
+    atlas, a sprite sheet is one texture) or a clip does. Additive
+    drawings are their colour without alpha: the premultiplied blend then
+    adds them, in the same pipeline and batches. Meshes, scratch paths
+    and egui's GPU buffers are kept and only grow; a list is laid out
+    again only when a new one comes, the window's size changes, or it has
+    labels in the world. Texts are laid out once while the same string,
+    size and font are drawn; in a scaled group (a label in the world) at
+    steps of size 2^¼ apart, stretched to theirs, so a label coming nearer
+    is laid out again every 19 %, not every frame; the fonts (the app's and the mods', 4 a mod)
+    share one atlas of 2048 pixels' side. What falls outside the screen
+    or its clip is not tessellated. It is drawn into the window's image
+    after the game's frame is scaled to it, before the app's UI: at the
+    window's resolution, over upscaled and generated frames alike.
+  - **Groups** (`draw.push`, `draw.clip`, `draw.pop`) place what follows
+    (moved, scaled, turned) and clip it, with no function call in
+    between, so a long list in a group can be cut by the time slice like
+    any other drawing.
+  - **The world**: `draw.push3d` and the `3d` calls anchor a group at a
+    point of the world. While the list has one, the renderer asks the
+    command thread for each frame's camera (the view-projection the
+    temporal upscalers read, scene.rs) and projects the anchors when that
+    frame is composed: the label moves with the image, not a frame
+    behind it. Points behind the camera or past `maxDistance` are culled
+    before anything in their group is tessellated.
+  - **Cost**, measured on an M1 Pro, headless at 1920×1080: with mods
+    that do not draw nothing runs (no layout, no pass; frames as without
+    mods). A stress mod (5,000 shapes, 500 texts, 300 sprites, 100 labels
+    in the world, every frame) takes 1.8 ms of its 2 ms slice for its
+    calls; the renderer lays its list out in 2.4 ms alone (the ignored
+    `sprites_cost` test: tessellation 1.3-1.4 ms, buffer copies 1.0 ms),
+    4.3-5.8 ms on its thread in the game, and draws it in 1 ms of GPU,
+    in 3 draw calls; the game went from 5.4-5.8 ms (p50) to 7.0-7.6 ms a
+    frame. The anti-aliasing feathering is about half of that (without
+    it: 1.3 ms CPU, 0.4 ms GPU), and stays. A HUD (gauge, a clipped list
+    of 30 texts, a sprite sheet, a label in the world) takes 0.2-0.3 ms
+    a list. On a phone, three to four times slower, the stress list
+    would take some 8-20 ms of the renderer's thread: HUDs of hundreds of
+    drawings are the size to aim at, and a list without labels in the
+    world is laid out only when it changes.
 - **Stability**:
   - an entity of the wrong kind (`CEntity` +40: 3 vehicle, 4 ped, 5
     object) is an error before the native runs;
