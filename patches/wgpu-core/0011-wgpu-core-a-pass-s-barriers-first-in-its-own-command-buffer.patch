@@ -16,14 +16,18 @@ commands set adds a usage: no queries, timestamps, bundles or indirect
 draws, and no discarded surface to clear first. Such a pass now merges
 those into a usage scope and records its barriers at the start of its own
 command buffer, just before the render pass begins (a hook in
-RenderPassInfo::start). What it then finds after the pass is nothing new.
+RenderPassInfo::start), and nothing is applied after the pass: the
+tracker already holds its usages, and applying them again would add
+barriers (a write after a write needs one where usages are not ordered,
+as on Vulkan) in a command buffer that runs before those, which a Mali
+GPU answered with a lost device.
 
 And a pass that needs nothing before it (no barriers, clears, query
 resets or indirect draw validation) takes no command buffer for it.
 
 Measured on Metal with the tracker doing the same work (its barriers
 record nothing there): 93-94 % of a game's render passes take the first
-path, and in none of them did the pass find a barrier after it that the
+path (95 % on a Pixel 8a), and in none of them did the pass find a barrier after it that the
 scan had missed. Metal keeps suspending command buffers (0007), where
 barriers go at the end of the one before.
 ---
@@ -44,7 +48,7 @@ index 826cba5..5fd449c 100644
          Self {
              map: FastHashMap::default(),
 diff --git a/src/command/render.rs b/src/command/render.rs
-index 2a6d28e..3baf69e 100644
+index 2a6d28e..ac26a28 100644
 --- a/src/command/render.rs
 +++ b/src/command/render.rs
 @@ -1206,6 +1206,7 @@ impl RenderPassInfo {
@@ -106,14 +110,23 @@ index 2a6d28e..3baf69e 100644
          )
          .map_pass_err(pass_scope)?;
  
-@@ -2744,6 +2775,26 @@ pub(super) fn encode_render_pass(
+@@ -2744,6 +2775,31 @@ pub(super) fn encode_render_pass(
      let encoder = &mut parent_state.raw_encoder;
      let tracker = &mut parent_state.tracker;
  
-+    // glue5: nothing to run before the pass (its barriers went first in its
-+    // command buffer, or it needs none): no command buffer for it. Where
-+    // command buffers are suspended, the barriers go at the end of the one
-+    // before, which costs nothing.
++    // glue5: the pass's barriers went first in its own command buffer: the
++    // tracker already holds what the pass uses (the same usages, the scan
++    // covering them all), and applying them again would add barriers (a
++    // write after a write needs one where usages are not ordered, as on
++    // Vulkan) in a command buffer that runs before those.
++    if barriers_recorded {
++        debug_assert!(pending_discard_init_fixups.is_empty() && pending_query_resets.is_empty());
++        return Ok(());
++    }
++    // glue5: nothing else to run before the pass (no barriers, clears,
++    // query resets or validation): no command buffer for it. Where command
++    // buffers are suspended, the barriers go at the end of the one before,
++    // which costs nothing.
 +    if !encoder.raw.can_suspend()
 +        && pending_discard_init_fixups.is_empty()
 +        && pending_query_resets.is_empty()
@@ -124,16 +137,12 @@ index 2a6d28e..3baf69e 100644
 +        if !tracker.buffers.has_pending_transitions() && !tracker.textures.has_pending_transitions() {
 +            return Ok(());
 +        }
-+        // Barriers recorded before the pass, and more found after it, would
-+        // run in the wrong order (these first): the commands' scan must
-+        // cover all a pass uses.
-+        debug_assert!(!barriers_recorded, "a pass's barriers were not all known before it");
 +    }
 +
      {
          let transit = encoder
              .open_before_pass(hal_label(
-@@ -2791,6 +2842,43 @@ pub(super) fn encode_render_pass(
+@@ -2791,6 +2847,43 @@ pub(super) fn encode_render_pass(
      Ok(())
  }
  
