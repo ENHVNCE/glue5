@@ -1031,6 +1031,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cc",
+ "egui",
  "flate2",
  "getrandom 0.4.3",
  "glue5-game",
@@ -1044,6 +1045,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "skrifa",
  "tungstenite",
  "ureq",
  "wasm-bindgen-cli-support",

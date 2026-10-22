@@ -88,6 +88,42 @@ impl Image {
     }
 }
 
+/// A font (TrueType or OpenType) texts may use.
+pub struct Font {
+    id: u64,
+    data: Arc<[u8]>,
+}
+
+impl Font {
+    /// `data`: a font file, checked by the caller (its tables read).
+    pub fn new(data: Vec<u8>) -> Arc<Font> {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Arc::new(Font { id: NEXT.fetch_add(1, Ordering::Relaxed), data: data.into() })
+    }
+
+    /// Unique for the process's life.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn data(&self) -> &Arc<[u8]> {
+        &self.data
+    }
+}
+
+impl Drop for Font {
+    fn drop(&mut self) {
+        FONTS_DROPPED.fetch_add(1, Ordering::Release);
+    }
+}
+
+/// Changes whenever a font is dropped (the renderer's atlas can let it go).
+pub fn fonts_dropped() -> u64 {
+    FONTS_DROPPED.load(Ordering::Acquire)
+}
+
+static FONTS_DROPPED: AtomicU64 = AtomicU64::new(0);
+
 impl Drop for Image {
     fn drop(&mut self) {
         // The renderer frees its texture.
@@ -138,8 +174,9 @@ pub enum Shape {
         stroke: Option<Stroke>,
     },
     /// From `at` (its top; which end of it is there, `align` says), `size`
-    /// high.
-    Text { text: Arc<str>, at: [f32; 2], size: f32, rotation: f32, align: Align, color: Rgba },
+    /// high; lines broken to fit `wrap` (a fraction of the screen's width;
+    /// 0: only at line breaks); in `font` (none: the app's).
+    Text { text: Arc<str>, at: [f32; 2], size: f32, rotation: f32, align: Align, color: Rgba, wrap: f32, font: Option<Arc<Font>> },
     Line { from: [f32; 2], to: [f32; 2], stroke: Stroke },
     /// The list's `points[points]`; a closed one may be filled (convex).
     Path { points: std::ops::Range<u32>, closed: bool, fill: Option<Rgba>, stroke: Option<Stroke> },

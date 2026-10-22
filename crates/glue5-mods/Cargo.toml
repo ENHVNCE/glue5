@@ -18,6 +18,10 @@ httparse = "1"
 getrandom = "0.4"
 flate2 = "1"
 png = "0.18"
+# draw.measureText lays texts out as the renderer does; fonts are read by
+# the same parser as epaint's.
+egui.workspace = true
+skrifa = { version = "0.44", default-features = false, features = ["std", "autohint_shaping"] }
 # Mods' network requests (net.rs): rustls with ring, webpki's roots, gzip.
 ureq = "3.5"
 # net.socket's TLS (socket.rs): ureq's rustls, ring and roots.

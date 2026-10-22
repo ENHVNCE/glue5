@@ -16,14 +16,14 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
-use egui::epaint::text::{FontDefinitions, LayoutJob};
+use egui::epaint::text::{FontData, FontDefinitions, FontFamily, LayoutJob};
 use egui::epaint::tessellator::{Path, path};
 use egui::epaint::{
     ClippedPrimitive, Color32, CornerRadiusF32, FontId, Fonts, Galley, Mesh, PathStroke, Primitive,
     TessellationOptions, Tessellator, TextOptions, TextShape, TextureId, Vertex,
 };
 use egui::emath::{Align2, Pos2, Rect, Rot2, Vec2, pos2, vec2};
-use glue5_runtime::sprites::{self, Align, Image, List, NONE, Rgba, Shape, Stroke};
+use glue5_runtime::sprites::{self, Align, Font, Image, List, NONE, Rgba, Shape, Stroke};
 
 /// The font atlas's side at most (and its texture's).
 const ATLAS: usize = 2048;
@@ -95,9 +95,12 @@ struct Layout {
     points: Vec<Pos2>,
     /// Where each group of the list is.
     places: Vec<Place>,
-    /// Laid-out texts, by their text (held, so its address is not reused),
-    /// size, alignment; whether the last list used them.
-    galleys: HashMap<(usize, u32, u8), (Arc<str>, Arc<Galley>, bool)>,
+    /// Laid-out texts, by their text (held, so its address is not reused)
+    /// and how it is laid out; whether the last list used them.
+    galleys: HashMap<TextKey, (Arc<str>, Arc<Galley>, bool)>,
+    /// The mods' fonts in `fonts` (by id), and the fonts dropped then.
+    registered: Vec<(u64, Weak<Font>)>,
+    fonts_dropped: u64,
 }
 
 impl Sprites {
@@ -136,7 +139,7 @@ impl Sprites {
             self.list = sprites::latest();
             let list = self.list.clone();
             let mut layout = std::mem::take(&mut self.layout);
-            layout.begin();
+            layout.begin(list.as_deref());
             if let Some(list) = &list {
                 layout.list(list, size, game, |image| self.texture(device, queue, image));
             }
@@ -246,7 +249,7 @@ fn stroke(s: &Stroke, h: f32, add: bool) -> PathStroke {
 impl Layout {
     /// A new list: the batches emptied (their memory kept), the font's
     /// texts not used since the last list dropped.
-    fn begin(&mut self) {
+    fn begin(&mut self, list: Option<&List>) {
         for p in self.primitives.drain(..) {
             if let Primitive::Mesh(mut mesh) = p.primitive {
                 mesh.clear();
@@ -254,6 +257,27 @@ impl Layout {
             }
         }
         self.galleys.retain(|_, (_, _, used)| std::mem::take(used));
+        // The fonts the list uses, all in one atlas: made again with the
+        // ones a list brings, without those dropped.
+        let mut new: Vec<Arc<Font>> = Vec::new();
+        for sprite in list.map_or(&[][..], |l| &l.sprites[..]) {
+            if let Shape::Text { font: Some(f), .. } = &sprite.shape
+                && !self.registered.iter().any(|(id, _)| *id == f.id())
+                && !new.iter().any(|n| n.id() == f.id())
+            {
+                new.push(f.clone());
+            }
+        }
+        let dropped = sprites::fonts_dropped();
+        let dead = dropped != self.fonts_dropped && self.registered.iter().any(|(_, f)| f.strong_count() == 0);
+        self.fonts_dropped = dropped;
+        if !new.is_empty() || dead {
+            let mut fonts: Vec<Arc<Font>> = self.registered.iter().filter_map(|(_, f)| f.upgrade()).collect();
+            fonts.extend(new);
+            self.registered = fonts.iter().map(|f| (f.id(), Arc::downgrade(f))).collect();
+            self.fonts = Some(Fonts::new(TextOptions { max_texture_side: ATLAS, ..Default::default() }, definitions(&fonts)));
+            self.galleys.clear();
+        }
         let fonts = self.fonts.get_or_insert_with(|| {
             Fonts::new(TextOptions { max_texture_side: ATLAS, ..Default::default() }, FontDefinitions::default())
         });
@@ -331,21 +355,15 @@ impl Layout {
         // The texts first: their glyphs may grow the atlas, whose size the
         // tessellator needs.
         for sprite in &list.sprites {
-            if let Shape::Text { text, size, align, .. } = &sprite.shape {
+            if let Shape::Text { text, size, align, wrap, font, .. } = &sprite.shape {
                 let Some(place) = place_of(&self.places, sprite.group).filter(|p| !p.hidden) else { continue };
                 let px = (size * h * place.scale).clamp(1.0, h.max(1.0));
-                let key = (text.as_ptr() as usize, px.to_bits(), *align as u8);
+                let key = TextKey::new(text, px, *align, wrap * w * place.scale, font.as_ref());
                 if let Some((_, _, used)) = self.galleys.get_mut(&key) {
                     *used = true;
                     continue;
                 }
-                let mut job = LayoutJob::simple(text.to_string(), FontId::proportional(px), Color32::WHITE, f32::INFINITY);
-                job.halign = match align {
-                    Align::Left => egui::Align::LEFT,
-                    Align::Center => egui::Align::Center,
-                    Align::Right => egui::Align::RIGHT,
-                };
-                let galley = fonts.with_pixels_per_point(1.0).layout_job(job);
+                let galley = fonts.with_pixels_per_point(1.0).layout_job(job(text, &key));
                 self.galleys.insert(key, (text.clone(), galley, true));
             }
         }
@@ -444,9 +462,9 @@ impl Layout {
                     points.clear();
                     (self.points, self.path) = (points, path);
                 }
-                Shape::Text { text, at: from, size, rotation, align, color: c } => {
+                Shape::Text { text, at: from, size, rotation, align, color: c, wrap, font } => {
                     let px = (size * k).clamp(1.0, h.max(1.0));
-                    let key = (text.as_ptr() as usize, px.to_bits(), *align as u8);
+                    let key = TextKey::new(text, px, *align, wrap * w * place.scale, font.as_ref());
                     let Some((_, galley, _)) = self.galleys.get(&key) else { continue };
                     let galley = galley.clone();
                     let anchor = match align {
@@ -543,6 +561,54 @@ impl Layout {
         }
         self.fonts = Some(fonts);
     }
+}
+
+/// A text laid out: its string (by address), size and wrap in pixels,
+/// alignment and font.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct TextKey {
+    text: usize,
+    px: u32,
+    wrap: u32,
+    align: u8,
+    font: u64,
+}
+
+impl TextKey {
+    fn new(text: &Arc<str>, px: f32, align: Align, wrap: f32, font: Option<&Arc<Font>>) -> TextKey {
+        let wrap = if wrap > 0.0 { wrap.max(1.0) } else { f32::INFINITY };
+        TextKey { text: text.as_ptr() as usize, px: px.to_bits(), wrap: wrap.to_bits(), align: align as u8, font: font.map_or(0, |f| f.id()) }
+    }
+}
+
+/// How a text is laid out (the mods measure them the same way: draw.rs).
+fn job(text: &str, key: &TextKey) -> LayoutJob {
+    let family = if key.font == 0 { FontFamily::Proportional } else { FontFamily::Name(family(key.font).into()) };
+    let mut job = LayoutJob::simple(text.to_string(), FontId::new(f32::from_bits(key.px), family), Color32::WHITE, f32::from_bits(key.wrap));
+    job.halign = match key.align {
+        0 => egui::Align::LEFT,
+        1 => egui::Align::Center,
+        _ => egui::Align::RIGHT,
+    };
+    job
+}
+
+/// A mod's font's family.
+fn family(font: u64) -> String {
+    format!("mod-font-{font}")
+}
+
+/// The app's fonts and `fonts`, each a family of its own with the app's as
+/// fallbacks (glyphs it lacks).
+fn definitions(fonts: &[Arc<Font>]) -> FontDefinitions {
+    let mut defs = FontDefinitions::default();
+    let fallbacks = defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    for f in fonts {
+        let name = family(f.id());
+        defs.font_data.insert(name.clone(), Arc::new(FontData::from_owned(f.data().to_vec())));
+        defs.families.insert(FontFamily::Name(name.clone().into()), std::iter::once(name).chain(fallbacks.iter().cloned()).collect());
+    }
+    defs
 }
 
 /// Whether something within `radius` of `center` may show on `screen`.

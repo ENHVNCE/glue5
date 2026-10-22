@@ -33,7 +33,7 @@ use std::rc::Rc;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use glue5_runtime::sprites::{self, Align, Anchor, Group, Image, NONE, Rgba, Shape, Sprite, Stroke};
+use glue5_runtime::sprites::{self, Align, Anchor, Font, Group, Image, NONE, Rgba, Shape, Sprite, Stroke};
 use mlua::{AnyUserData, Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 /// An image's side at most, in pixels: what every GPU takes.
@@ -49,6 +49,9 @@ pub const DRAWINGS: usize = 16384;
 pub const POINTS: usize = 65536;
 /// Groups a mod may open in a turn.
 pub const GROUPS: usize = 4096;
+/// Fonts a run of a mod may hold, and a font file's size at most.
+pub const FONTS: usize = 4;
+const FONT_FILE: u64 = 8 << 20;
 /// A text's length at most, in bytes (past it, it is cut).
 const TEXT: usize = 1024;
 /// Lines' width when none is given (a fraction of the screen's height:
@@ -88,12 +91,27 @@ struct Text {
     used: bool,
 }
 
-/// The images a run of a mod holds, and their bytes.
+/// The images a run of a mod holds, and their bytes; its fonts.
 #[derive(Default)]
 struct Budget {
     images: Cell<usize>,
     bytes: Cell<usize>,
+    fonts: Cell<usize>,
 }
+
+/// A font, as a mod holds it (until it stops).
+struct LuaFont {
+    font: Arc<Font>,
+    budget: Rc<Budget>,
+}
+
+impl Drop for LuaFont {
+    fn drop(&mut self) {
+        self.budget.fonts.set(self.budget.fonts.get() - 1);
+    }
+}
+
+impl UserData for LuaFont {}
 
 /// An image, as a mod holds it; `release` or the mod's end frees it.
 struct LuaImage {
@@ -131,13 +149,19 @@ impl UserData for LuaImage {
     }
 }
 
-/// What the image thread made of a file.
-type Loaded = Arc<Mutex<Option<Result<Arc<Image>, String>>>>;
+/// What the loading thread made of a file.
+enum Made {
+    Image(Arc<Image>),
+    Font(Arc<Font>),
+}
+
+type Loaded = Arc<Mutex<Option<Result<Made, String>>>>;
 
 /// An image being loaded: it counts among the mod's images until it is
 /// in (or failed, or the mod stopped waiting for it).
 struct Load {
     path: String,
+    font: bool,
     result: Loaded,
     budget: Rc<Budget>,
     pending: Cell<bool>,
@@ -146,7 +170,8 @@ struct Load {
 impl Load {
     fn settle(&self) {
         if self.pending.replace(false) {
-            self.budget.images.set(self.budget.images.get() - 1);
+            let count = if self.font { &self.budget.fonts } else { &self.budget.images };
+            count.set(count.get() - 1);
         }
     }
 }
@@ -163,6 +188,7 @@ impl UserData for Load {}
 struct Job {
     file: PathBuf,
     room: usize,
+    font: bool,
     result: Loaded,
 }
 
@@ -176,8 +202,8 @@ fn images_thread() -> Result<&'static Sender<Job>, String> {
     let (tx, rx) = std::sync::mpsc::channel::<Job>();
     glue5_runtime::qos::spawn("mod images", glue5_runtime::qos::Qos::Utility, move || {
         for job in rx {
-            let loaded = std::panic::catch_unwind(|| load_file(&job.file, job.room))
-                .unwrap_or_else(|_| Err("the image could not be decoded".into()));
+            let loaded = std::panic::catch_unwind(|| if job.font { load_font(&job.file) } else { load_file(&job.file, job.room) })
+                .unwrap_or_else(|_| Err("the file could not be read".into()));
             *crate::lock(&job.result) = Some(loaded);
         }
     })
@@ -185,14 +211,25 @@ fn images_thread() -> Result<&'static Sender<Job>, String> {
     Ok(JOBS.get_or_init(|| tx))
 }
 
-fn load_file(file: &std::path::Path, room: usize) -> Result<Arc<Image>, String> {
+/// A font file, its tables read as the renderer's will (skrifa, as epaint).
+fn load_font(file: &std::path::Path) -> Result<Made, String> {
+    let len = std::fs::metadata(file).map_err(|e| e.to_string())?.len();
+    if len > FONT_FILE {
+        return Err(format!("{} MB: font files of {} MB at most", len as usize / MB, FONT_FILE as usize / MB));
+    }
+    let bytes = std::fs::read(file).map_err(|e| e.to_string())?;
+    skrifa::FontRef::from_index(&bytes, 0).map_err(|e| format!("not a font the game can read ({e})"))?;
+    Ok(Made::Font(Font::new(bytes)))
+}
+
+fn load_file(file: &std::path::Path, room: usize) -> Result<Made, String> {
     let len = std::fs::metadata(file).map_err(|e| e.to_string())?.len();
     if len > FILE {
         return Err(format!("{} MB: image files of {} MB at most", len as usize / MB, FILE as usize / MB));
     }
     let bytes = std::fs::read(file).map_err(|e| e.to_string())?;
     let (width, height, pixels) = decode_png(&bytes, room)?;
-    Ok(Image::new(width, height, pixels))
+    Ok(Made::Image(Image::new(width, height, pixels)))
 }
 
 /// A PNG as premultiplied RGBA, refused before it is decoded when larger
@@ -243,34 +280,42 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
     let canvas = Rc::new(Canvas::default());
     let draw = lua.create_table()?;
 
-    let c = canvas.clone();
-    let start = lua.create_function(move |_, path: String| {
-        let module = c.module.borrow().clone().ok_or_else(|| {
-            mlua::Error::runtime("draw.loadImage: images come from a mod's folder (the console has none)")
-        })?;
-        let file = crate::files::resolve(&format!("{module}/{path}"))
-            .map_err(|_| mlua::Error::runtime(format!("draw.loadImage(\"{path}\"): a file of the mod, as \"images/logo.png\"")))?;
-        if !path.to_ascii_lowercase().ends_with(".png") {
-            return Err(mlua::Error::runtime(format!("draw.loadImage(\"{path}\"): PNG images only")));
-        }
-        let budget = &c.budget;
-        if budget.images.get() >= IMAGES {
-            return Err(mlua::Error::runtime(format!(
-                "draw.loadImage(\"{path}\"): a mod may hold {IMAGES} images (release the ones it no longer draws)"
-            )));
-        }
-        let result: Loaded = Arc::default();
-        let room = IMAGE_BYTES - budget.bytes.get();
-        images_thread()
-            .and_then(|jobs| jobs.send(Job { file, room, result: result.clone() }).map_err(|_| "the image thread stopped".into()))
-            .map_err(|e| mlua::Error::runtime(format!("draw.loadImage(\"{path}\"): {e}")))?;
-        budget.images.set(budget.images.get() + 1);
-        Ok(Load { path, result, budget: budget.clone(), pending: Cell::new(true) })
-    })?;
+    // Starts loading an image (or a font), off the game's thread.
+    let starter = |font: bool| {
+        let c = canvas.clone();
+        let (what, example, kinds): (&str, &str, &[&str]) =
+            if font { ("draw.loadFont", "fonts/title.ttf", &[".ttf", ".otf"]) } else { ("draw.loadImage", "images/logo.png", &[".png"]) };
+        lua.create_function(move |_, path: String| {
+            let module = c.module.borrow().clone().ok_or_else(|| {
+                mlua::Error::runtime(format!("{what}: files come from a mod's folder (the console has none)"))
+            })?;
+            let file = crate::files::resolve(&format!("{module}/{path}"))
+                .map_err(|_| mlua::Error::runtime(format!("{what}(\"{path}\"): a file of the mod, as \"{example}\"")))?;
+            let lower = path.to_ascii_lowercase();
+            if !kinds.iter().any(|k| lower.ends_with(k)) {
+                let only = if font { "TrueType or OpenType fonts (.ttf, .otf) only" } else { "PNG images only" };
+                return Err(mlua::Error::runtime(format!("{what}(\"{path}\"): {only}")));
+            }
+            let budget = &c.budget;
+            let (count, most) = if font { (&budget.fonts, FONTS) } else { (&budget.images, IMAGES) };
+            if count.get() >= most {
+                let kind = if font { "fonts" } else { "images (release the ones it no longer draws)" };
+                return Err(mlua::Error::runtime(format!("{what}(\"{path}\"): a mod may hold {most} {kind}")));
+            }
+            let result: Loaded = Arc::default();
+            let room = IMAGE_BYTES - budget.bytes.get();
+            images_thread()
+                .and_then(|jobs| jobs.send(Job { file, room, font, result: result.clone() }).map_err(|_| "the loading thread stopped".into()))
+                .map_err(|e| mlua::Error::runtime(format!("{what}(\"{path}\"): {e}")))?;
+            count.set(count.get() + 1);
+            Ok(Load { path, font, result, budget: budget.clone(), pending: Cell::new(true) })
+        })
+    };
+    let (start, start_font) = (starter(false)?, starter(true)?);
     let poll = lua.create_function(|lua, load: AnyUserData| {
         let load = load.borrow::<Load>()?;
         if !load.pending.get() {
-            return Err(mlua::Error::runtime("draw.loadImage: loaded already"));
+            return Err(mlua::Error::runtime("draw: loaded already"));
         }
         let loaded = crate::lock(&load.result).take();
         let path = &load.path;
@@ -278,9 +323,14 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
             None => Ok(Value::Nil),
             Some(Err(e)) => {
                 load.settle();
-                Err(mlua::Error::runtime(format!("draw.loadImage(\"{path}\"): {e}")))
+                let what = if load.font { "draw.loadFont" } else { "draw.loadImage" };
+                Err(mlua::Error::runtime(format!("{what}(\"{path}\"): {e}")))
             }
-            Some(Ok(image)) => {
+            Some(Ok(Made::Font(font))) => {
+                load.pending.set(false);
+                Ok(Value::UserData(lua.create_userdata(LuaFont { font, budget: load.budget.clone() })?))
+            }
+            Some(Ok(Made::Image(image))) => {
                 let budget = &load.budget;
                 // Others may have come in meanwhile.
                 if budget.bytes.get() + image.bytes() > IMAGE_BYTES {
@@ -313,8 +363,32 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
              end end",
         )
         .set_name("=draw.loadImage")
-        .call((start, poll, lua.globals().get::<Table>("coroutine")?.get::<Function>("yield")?))?;
+        .call((start, poll.clone(), lua.globals().get::<Table>("coroutine")?.get::<Function>("yield")?))?;
     draw.set("loadImage", load)?;
+    let load: Function = lua
+        .load(
+            "local start, poll, yield = ...\n\
+             return function(path)\n\
+             local load = start(path)\n\
+             while true do\n\
+             local font = poll(load)\n\
+             if font then return font end\n\
+             yield(0)\n\
+             end end",
+        )
+        .set_name("=draw.loadFont")
+        .call((start_font, poll, lua.globals().get::<Table>("coroutine")?.get::<Function>("yield")?))?;
+    draw.set("loadFont", load)?;
+    draw.set(
+        "measureText",
+        lua.create_function(|_, (text, size, style): (mlua::LuaString, Option<f64>, Option<AnyUserData>)| {
+            let s = Style::of(style)?;
+            let bytes = text.as_bytes();
+            let text = String::from_utf8_lossy(&bytes[..bytes.len().min(TEXT)]).into_owned();
+            let size = length(size.unwrap_or(0.03))?.clamp(0.001, 1.0);
+            Ok(measure(text, size, s.wrap, s.align, s.font.as_ref()))
+        })?,
+    )?;
 
     let c = canvas.clone();
     draw.set(
@@ -379,6 +453,8 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
                     rotation: s.rotation,
                     align: s.align,
                     color: rgba(&color)?,
+                    wrap: s.wrap,
+                    font: s.font.clone(),
                 };
                 c.add(&s, shape)
             },
@@ -483,6 +559,8 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
                     rotation: 0.0,
                     align: s.align,
                     color: rgba(&color)?,
+                    wrap: s.wrap,
+                    font: s.font.clone(),
                 };
                 c.in_world(&s, at, shape)
             },
@@ -597,6 +675,7 @@ thread_local! {
 /// The running mods' drawings for the renderer, when one of them drew
 /// anew or the mods changed: in one list, by z, then in the order drawn.
 pub fn publish(canvases: impl IntoIterator<Item = Rc<Canvas>>) {
+    measured_frame();
     PUBLISHER.with_borrow_mut(|p| {
         p.current.clear();
         p.current.extend(canvases);
@@ -724,7 +803,7 @@ impl Canvas {
 
 /// What a drawing has besides where it is: made once (`draw.style{...}`)
 /// and passed with each call, its fields changed as needed.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Style {
     z: i32,
     rotation: f32,
@@ -736,6 +815,8 @@ struct Style {
     gradient: Option<Rgba>,
     horizontal: bool,
     align: Align,
+    wrap: f32,
+    font: Option<Arc<Font>>,
     scaled_at: f32,
     max_distance: f32,
     scale: f32,
@@ -755,6 +836,8 @@ const PLAIN: Style = Style {
     gradient: None,
     horizontal: false,
     align: Align::Left,
+    wrap: 0.0,
+    font: None,
     scaled_at: 0.0,
     max_distance: 0.0,
     scale: 1.0,
@@ -767,7 +850,7 @@ impl Style {
     fn of(style: Option<AnyUserData>) -> mlua::Result<Style> {
         match style {
             None => Ok(PLAIN),
-            Some(u) => u.borrow::<Style>().map(|s| *s).map_err(|_| mlua::Error::runtime("draw: a style from draw.style")),
+            Some(u) => u.borrow::<Style>().map(|s| s.clone()).map_err(|_| mlua::Error::runtime("draw: a style from draw.style")),
         }
     }
 
@@ -823,6 +906,14 @@ impl Style {
             "fill" => self.fill = color(&v)?,
             "gradient" => self.gradient = color(&v)?,
             "closed" => self.closed = flag(&v)?,
+            "wrap" => self.wrap = fraction(num(&v).ok_or_else(|| bad("a number"))?)?.max(0.0),
+            "font" => {
+                self.font = match &v {
+                    Value::Nil => None,
+                    Value::UserData(u) => Some(u.borrow::<LuaFont>().map_err(|_| bad("a font from draw.loadFont"))?.font.clone()),
+                    _ => return Err(bad("a font from draw.loadFont")),
+                }
+            }
             "uv" | "nineSlice" => {
                 let four = match &v {
                     Value::Nil => None,
@@ -866,7 +957,7 @@ impl Style {
 }
 
 /// A style's fields, as `draw.style{...}` and assignments name them.
-const STYLE_FIELDS: &[&str] = &["z", "rotation", "scale", "distanceScale", "maxDistance", "rounding", "width", "stroke", "fill", "gradient", "closed", "horizontal", "align", "uv", "nineSlice", "blend"];
+const STYLE_FIELDS: &[&str] = &["z", "rotation", "scale", "distanceScale", "maxDistance", "rounding", "width", "stroke", "fill", "gradient", "closed", "horizontal", "align", "wrap", "font", "uv", "nineSlice", "blend"];
 
 impl UserData for Style {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
@@ -887,6 +978,61 @@ impl UserData for Style {
             Ok(())
         });
     }
+}
+
+thread_local! {
+    /// The texts' layout for draw.measureText (on the engine's thread), the
+    /// same as the renderer's, and the mods' fonts in it.
+    static MEASURE: RefCell<Option<(egui::epaint::Fonts, Vec<(u64, std::sync::Weak<Font>)>)>> = const { RefCell::new(None) };
+}
+
+/// The size of a text as drawn (fractions of the screen's width and
+/// height), laid out as the renderer does (glue5-gpu's sprites.rs).
+fn measure(text: String, size: f32, wrap: f32, align: Align, font: Option<&Arc<Font>>) -> (f32, f32) {
+    use egui::epaint::text::{FontData, FontDefinitions, FontFamily, LayoutJob};
+    let (w, h) = match sprites::screen() {
+        (0, _) | (_, 0) => (1920.0, 1080.0),
+        (w, h) => (w as f32, h as f32),
+    };
+    let options = egui::epaint::TextOptions { max_texture_side: 2048, ..Default::default() };
+    MEASURE.with_borrow_mut(|m| {
+        let rebuild = m.as_ref().is_none_or(|(_, r)| font.is_some_and(|f| !r.iter().any(|(id, _)| *id == f.id())));
+        if rebuild {
+            // The fonts again, with this one, without those dropped.
+            let mut fonts: Vec<Arc<Font>> = m.as_ref().map(|(_, r)| r.iter().filter_map(|(_, f)| f.upgrade()).collect()).unwrap_or_default();
+            fonts.extend(font.cloned());
+            let mut defs = FontDefinitions::default();
+            let fallbacks = defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+            for f in &fonts {
+                let name = format!("mod-font-{}", f.id());
+                defs.font_data.insert(name.clone(), Arc::new(FontData::from_owned(f.data().to_vec())));
+                defs.families.insert(FontFamily::Name(name.clone().into()), std::iter::once(name).chain(fallbacks.iter().cloned()).collect());
+            }
+            *m = Some((egui::epaint::Fonts::new(options, defs), fonts.iter().map(|f| (f.id(), Arc::downgrade(f))).collect()));
+        }
+        let (fonts, _) = m.as_mut().expect("made above");
+        let family = font.map_or(FontFamily::Proportional, |f| FontFamily::Name(format!("mod-font-{}", f.id()).into()));
+        let px = (size * h).clamp(1.0, h);
+        let wrap = if wrap > 0.0 { (wrap * w).max(1.0) } else { f32::INFINITY };
+        let mut job = LayoutJob::simple(text, egui::epaint::FontId::new(px, family), egui::epaint::Color32::WHITE, wrap);
+        job.halign = match align {
+            Align::Left => egui::Align::LEFT,
+            Align::Center => egui::Align::Center,
+            Align::Right => egui::Align::RIGHT,
+        };
+        let size = fonts.with_pixels_per_point(1.0).layout_job(job).size();
+        (size.x / w, size.y / h)
+    })
+}
+
+/// Once a frame: the texts measured and not again drop from the layout's
+/// cache.
+fn measured_frame() {
+    MEASURE.with_borrow_mut(|m| {
+        if let Some((fonts, _)) = m {
+            fonts.begin_pass(egui::epaint::TextOptions { max_texture_side: 2048, ..Default::default() });
+        }
+    });
 }
 
 /// A colour: packed (0xRRGGBBAA, the usual one: checked first), a table
@@ -933,6 +1079,8 @@ fn length(v: f64) -> mlua::Result<f32> {
 
 /// The definitions of `draw`, for the type checker.
 pub const DEFINITIONS: &str = "
+-- A font a mod loaded (draw.loadFont), for a style's font.
+export type Font = {}
 -- An image a mod loaded (draw.loadImage); its size in pixels.
 export type Image = {
 \twidth: number,
@@ -972,10 +1120,15 @@ export type Style = {
 \tdistanceScale: number,
 \tmaxDistance: number,
 \tscale: number,
+\t-- Texts' lines broken to fit this width (a fraction of the screen's; 0: only at line breaks).
+\twrap: number,
+\t-- Texts' font (draw.loadFont); none: the app's.
+\tfont: Font?,
 \t-- Which end of a text is at x.
 \talign: \"left\" | \"center\" | \"right\",
 }
 export type StyleOptions = {
+\twrap: number?, font: Font?,
 \tz: number?, rotation: number?, scale: number?, distanceScale: number?, maxDistance: number?, rounding: number?, stroke: Color?, width: number?, fill: Color?, closed: boolean?,
 \tgradient: Color?, horizontal: boolean?, align: (\"left\" | \"center\" | \"right\")?, uv: { number }?, nineSlice: { number }?, blend: (\"alpha\" | \"add\")?,
 }
@@ -991,6 +1144,12 @@ declare draw: {
 \t-- while it is read and decoded away from the game. A mod holds 64 images, 32 MB of them
 \t-- (4 bytes a pixel), at most; they go when it stops.
 \tloadImage: (path: string) -> Image,
+\t-- A font from the mod's folder (\"fonts/title.ttf\"): TrueType or OpenType, 8 MB at most, 4 a mod.
+\t-- Waits, as loadImage does, while it is read.
+\tloadFont: (path: string) -> Font,
+\t-- How wide and high `text` is drawn (fractions of the screen's width and height), with the style's
+\t-- font and wrap: for laying out around it.
+\tmeasureText: (text: string, size: number?, style: Style?) -> (number, number),
 \t-- `image` centred at x, y, width by height (none: the image's proportions), its colours multiplied by `color`.
 \timage: (image: Image, x: number, y: number, width: number, height: number?, color: Color?, style: Style?) -> (),
 \t-- A rectangle centred at x, y; with no colour and a style's stroke, its outline alone.
@@ -1055,6 +1214,12 @@ mod tests {
             std::fs::write(images.join("a.png"), png(16, 8, png::ColorType::Rgba, &[200; 16 * 8 * 4])).unwrap();
             std::fs::write(images.join("big.png"), png(2049, 1, png::ColorType::Grayscale, &[0; 2049])).unwrap();
             std::fs::write(images.join("bad.png"), "not a png").unwrap();
+            // A font: one of the app's own.
+            let defs = egui::epaint::text::FontDefinitions::default();
+            let font = defs.font_data.values().next().unwrap();
+            std::fs::create_dir_all(dir.join("drawtest/fonts")).unwrap();
+            std::fs::write(dir.join("drawtest/fonts/a.ttf"), &font.font[..]).unwrap();
+            std::fs::write(dir.join("drawtest/fonts/bad.ttf"), "not a font").unwrap();
             crate::open(&dir);
         });
     }
@@ -1299,6 +1464,34 @@ mod tests {
         assert_eq!(groups[1].anchor, Some(Anchor { position: [4.0, 5.0, 6.0], scaled_at: 0.0, max_distance: 0.0 }));
         assert!(canvas(&lua).unwrap().open.borrow().is_empty());
         assert!(run(&lua, "draw.push3d(vector.create(0 / 0, 0, 0))").is_err());
+    }
+
+    /// Texts measure as they are laid out: longer is wider, wrapped is
+    /// narrower and taller; a mod's font is a text's font, and a bad file
+    /// is an error.
+    #[test]
+    fn text_layout() {
+        let lua = vm();
+        let size = |code: &str| -> (f64, f64) {
+            let v: Vec<f64> = run(&lua, code).unwrap().into_iter().map(|v| v.as_f64().unwrap()).collect();
+            (v[0], v[1])
+        };
+        let one = size("return draw.measureText('Hello there', 0.05)");
+        let two = size("return draw.measureText('Hello there Hello there', 0.05)");
+        assert!(two.0 > one.0 * 1.8 && (two.1 - one.1).abs() < 1e-6, "{one:?} {two:?}");
+        let wrapped = size("return draw.measureText('Hello there Hello there', 0.05, draw.style{ wrap = 0.1 })");
+        assert!(wrapped.0 < two.0 && wrapped.1 > two.1 * 1.5, "{two:?} {wrapped:?}");
+        let custom = size("local f = draw.loadFont('fonts/a.ttf') return draw.measureText('Hello there', 0.05, draw.style{ font = f })");
+        assert!(custom.0 > 0.0);
+        run(&lua, "local f = draw.loadFont('fonts/a.ttf') draw.text('x', 0, 0, nil, nil, draw.style{ font = f, wrap = 0.2 })").unwrap();
+        assert!(matches!(&shown(&lua)[0].1.shape, Shape::Text { font: Some(_), wrap: 0.2, .. }));
+        let e = run(&lua, "draw.loadFont('fonts/bad.ttf')").unwrap_err().to_string();
+        assert!(e.contains("not a font"), "{e}");
+        let e = run(&lua, "draw.loadFont('images/a.png')").unwrap_err().to_string();
+        assert!(e.contains(".ttf, .otf"), "{e}");
+        lua.app_data_ref::<Rc<Canvas>>().unwrap().budget.fonts.set(FONTS);
+        let e = run(&lua, "draw.loadFont('fonts/a.ttf')").unwrap_err().to_string();
+        assert!(e.contains("may hold 4 fonts"), "{e}");
     }
 
     /// A turn cut short leaves the last whole one on screen; the next whole
