@@ -774,7 +774,7 @@ impl App {
                 preparing: self.play_requested.then(|| self.screen.as_ref().and_then(Screen::progress)).flatten(),
                 mode: self.mode,
                 benchmark: self.benchmark.as_ref(),
-                online: self.game.is_some() && matches!(self.mode, Mode::Story | Mode::Online),
+                online: self.game.is_some() && self.mode == Mode::Online,
                 friend_requests: glue5_runtime::friends::pending(),
                 source: self.settings.source,
                 stream: stream.as_ref().map(|(server, status)| (*server, status)),
