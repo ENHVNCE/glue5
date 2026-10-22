@@ -1,15 +1,16 @@
 //! The mods' menus in the Mods page: one entry per menu, each opening what
-//! its mod defines (its submenus) as a stack of
+//! its mod defines (submenus, a list's options) as a stack of
 //! levels with a back button. Drawn every frame from the runtime's
 //! snapshot with the app's own rows; touch, mouse, keyboard and controllers
 //! alike (a controller arrives as arrows and Enter, see `Ui::nav`). The
 //! view only reads the menus it is given and says what the player did
 //! ([`Out`]): the Mods page sends it, tests read it.
 
+mod pick;
 mod rows;
 
 use egui::{Align, Id, Layout, Rect, Response, RichText, Sense, Ui, UiBuilder, pos2, vec2};
-use glue5_mods::{Menu, MenuInput, MenuKind};
+use glue5_mods::{Menu, MenuInput, MenuItem, MenuKind};
 
 use super::theme::{self, MUTED, density};
 use super::widgets::focus;
@@ -19,6 +20,8 @@ use super::widgets::focus;
 pub enum Level {
     /// A menu, top-level or a submenu, by id.
     Menu(u32),
+    /// A choice's or a multi's options, by the item's id.
+    Pick(u32),
 }
 
 /// What the player did, for the runtime.
@@ -75,12 +78,13 @@ struct Open {
 }
 
 /// What the page keeps between frames: the stack, the focus to give, the
-/// text being typed.
+/// text being typed, a picker's search.
 #[derive(Default)]
 pub struct MenusView {
     stack: Vec<Open>,
     pending: Option<Pending>,
     draft: Option<Draft>,
+    search: String,
     /// The menus the runtime was told are shown.
     viewing: Vec<(String, u32)>,
 }
@@ -95,6 +99,11 @@ fn menu_row_id(menu: u32) -> Id {
 
 fn find_menu(menus: &[Menu], id: u32) -> Option<&Menu> {
     menus.iter().find(|m| m.id == id)
+}
+
+/// An item and the menu it is in.
+fn find_item(menus: &[Menu], id: u32) -> Option<(&Menu, &MenuItem)> {
+    menus.iter().find_map(|m| m.items.iter().find(|i| i.id == id).map(|i| (m, i)))
 }
 
 /// The row in `menu`'s parent that opens it.
@@ -115,6 +124,9 @@ impl MenusView {
         let usable = |level: Level| match level {
             Level::Menu(id) => find_menu(menus, id)
                 .is_some_and(|m| m.parent.is_none() || submenu_row(menus, m).is_some_and(|(_, visible)| visible)),
+            Level::Pick(id) => find_item(menus, id).is_some_and(|(_, i)| {
+                i.enabled && i.visible && matches!(i.kind, MenuKind::Choice { .. } | MenuKind::Multi { .. })
+            }),
         };
         if let Some(n) = self.stack.iter().position(|o| !usable(o.level)) {
             self.stack.truncate(n);
@@ -156,6 +168,9 @@ impl MenusView {
     fn push(&mut self, level: Level, from: Id, keys: bool) {
         self.stack.push(Open { level, from });
         self.draft = None;
+        if matches!(level, Level::Pick(_)) {
+            self.search.clear();
+        }
         self.pending = Some(Pending::Opened { focus: keys });
     }
 
@@ -189,6 +204,33 @@ impl MenusView {
                     self.pop(ui.ctx().memory(|m| m.focused() == Some(back_id())));
                 } else {
                     self.menu(ui, menu, &mut landing, &mut out);
+                }
+            }
+            Some(Level::Pick(id)) => {
+                let (menu, item) = find_item(menus, id).expect("pruned");
+                let filtered = pick::filter(item, &self.search);
+                let mut chosen = None;
+                let back = self.nav_bar(ui, &item.label, &title(&menu.module), |ui| {
+                    chosen = pick::header(ui, item, &filtered);
+                });
+                if back {
+                    self.pop(ui.ctx().memory(|m| m.focused() == Some(back_id())));
+                } else {
+                    if let Some(input) = chosen {
+                        out.push(Out::Input { module: menu.module.clone(), item: item.id, input });
+                    }
+                    match pick::list(ui, item, &filtered, &mut self.search, pending.as_ref()) {
+                        Some(pick::Picked::Chosen { input, keys }) => {
+                            if let Some(input) = input {
+                                out.push(Out::Input { module: menu.module.clone(), item: item.id, input });
+                            }
+                            self.pop(keys);
+                        }
+                        Some(pick::Picked::Toggled(input)) => {
+                            out.push(Out::Input { module: menu.module.clone(), item: item.id, input });
+                        }
+                        None => {}
+                    }
                 }
             }
         }
@@ -275,9 +317,9 @@ impl MenusView {
         let shown: Vec<(String, u32)> = self
             .stack
             .iter()
-            .filter_map(|o| {
-                let Level::Menu(id) = o.level;
-                find_menu(menus, id).map(|m| (m.module.clone(), id))
+            .filter_map(|o| match o.level {
+                Level::Menu(id) => find_menu(menus, id).map(|m| (m.module.clone(), id)),
+                _ => None,
             })
             .collect();
         for (module, menu) in self.viewing.extract_if(.., |v| !shown.contains(v)) {

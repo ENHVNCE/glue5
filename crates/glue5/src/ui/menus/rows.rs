@@ -88,6 +88,13 @@ pub(super) fn chevron(ui: &Ui, at: Pos2, towards: Vec2, color: Color32) {
     ui.painter().add(Shape::line(vec![at - depth + side, at + depth, at - depth - side], Stroke::new(2.0 * s, color)));
 }
 
+/// A check mark centred at `at`.
+pub(super) fn check(ui: &Ui, at: Pos2, color: Color32) {
+    let s = density(ui);
+    let points = [vec2(-5.0, 0.5), vec2(-1.5, 4.0), vec2(5.5, -4.0)].map(|p| at + p * s);
+    ui.painter().add(Shape::line(points.to_vec(), Stroke::new(2.0 * s, color)));
+}
+
 /// An item's row; what the player did with it.
 pub(super) fn row(ui: &mut Ui, item: &MenuItem, draft: &mut Option<Draft>, landing: &mut Landing) -> Option<RowAction> {
     let s = density(ui);
@@ -142,6 +149,37 @@ pub(super) fn row(ui: &mut Ui, item: &MenuItem, draft: &mut Option<Draft>, landi
                 return (v != *value).then_some(RowAction::Input(MenuInput::Number(v)));
             }
             (row.response.clicked() || stepper.value_clicked).then_some(RowAction::Edit)
+        }
+        MenuKind::Choice { options, index } => {
+            let row = frame(ui, id, &item.label, note, (available * 0.6).min(200.0 * s), Sense::click(), landing);
+            let shown = options.get(*index).map_or("", String::as_str);
+            let stepper = stepper(ui, &row, shown, item.id, &mut None, TextKind::Text);
+            let delta = stepper.delta + arrows(ui, &row.response);
+            if delta != 0 {
+                let n = options.len() as i64;
+                let i = (*index as i64 + i64::from(delta)).rem_euclid(n) as usize;
+                return (i != *index).then_some(RowAction::Input(MenuInput::Choose(i)));
+            }
+            let keys = row.response.has_focus();
+            (row.response.clicked() || stepper.value_clicked)
+                .then_some(RowAction::Push { level: Level::Pick(item.id), keys })
+        }
+        MenuKind::Multi { options, selected } => {
+            let row = frame(ui, id, &item.label, note, (available * 0.5).min(240.0 * s), Sense::click(), landing);
+            let names: Vec<&str> =
+                selected.iter().filter_map(|&i| options.get(usize::from(i)).map(String::as_str)).collect();
+            let summary = match names.len() {
+                0 => "None".to_owned(),
+                1 | 2 => names.join(", "),
+                n => format!("{} +{}", names[..2].join(", "), n - 2),
+            };
+            let at = row.control.right_center() - vec2(4.0 * s, 0.0);
+            chevron(ui, at, vec2(1.0, 0.0), MUTED);
+            let text =
+                truncated(ui, RichText::new(summary).size(13.0 * s).color(MUTED), row.control.width() - 22.0 * s);
+            ui.painter().galley(pos2(at.x - 14.0 * s - text.size().x, at.y - text.size().y * 0.5), text, MUTED);
+            let keys = row.response.has_focus();
+            row.response.clicked().then_some(RowAction::Push { level: Level::Pick(item.id), keys })
         }
         MenuKind::Submenu(menu) => {
             let row = frame(ui, id, &item.label, note, 16.0 * s, Sense::click(), landing);
