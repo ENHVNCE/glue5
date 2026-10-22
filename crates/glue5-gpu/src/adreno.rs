@@ -90,13 +90,41 @@ pub fn instance(dir: &Path, library: &str) -> Result<wgpu::Instance> {
         .context("a Vulkan instance on the driver")?;
     let instance = unsafe { wgpu::Instance::from_hal::<wgpu::hal::api::Vulkan>(hal) };
     // Where its hook fails, libadrenotools loads the phone's driver after
-    // all, or finds no GPU: the log says which driver runs.
+    // all, or finds no GPU. So does the linker when the phone's driver is
+    // loaded already under the package's library name (Android's own UI
+    // renders with Skia on Vulkan).
     let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN));
     let Some(adapter) = adapters.first() else { bail!("the driver found no GPU") };
+    if !loaded_from(dir) {
+        bail!("the phone's own was loaded in its place, its library having the same name ({library})");
+    }
     let info = adapter.get_info();
     log::info!("gpu: driver {library} from {}: {} ({}, {})", dir.display(), info.name, info.driver, info.driver_info);
     let _ = IN_USE.set(dir.file_name().unwrap_or_default().to_string_lossy().into_owned());
     Ok(instance)
+}
+
+/// Whether a library from `dir` is loaded.
+fn loaded_from(dir: &Path) -> bool {
+    // As given and as the linker has it (/data/user/0 is /data/data).
+    let dirs: Vec<Vec<u8>> = [Some(dir.to_path_buf()), std::fs::canonicalize(dir).ok()]
+        .into_iter()
+        .flatten()
+        .map(|d| {
+            let mut d = d.into_os_string().into_encoded_bytes();
+            d.push(b'/');
+            d
+        })
+        .collect();
+    unsafe extern "C" fn each(info: *mut libc::dl_phdr_info, _: usize, dirs: *mut c_void) -> c_int {
+        let (name, dirs) = unsafe { ((*info).dlpi_name, &*(dirs as *const Vec<Vec<u8>>)) };
+        if name.is_null() {
+            return 0;
+        }
+        let name = unsafe { CStr::from_ptr(name) }.to_bytes();
+        dirs.iter().any(|d| name.starts_with(d)).into()
+    }
+    unsafe { libc::dl_iterate_phdr(Some(each), (&raw const dirs).cast_mut().cast()) != 0 }
 }
 
 fn dl_error() -> String {
