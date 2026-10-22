@@ -29,7 +29,8 @@ packages they need with sdkmanager (versions in
 
 Every task first runs `mise run setup`, which prepares wgpu, wgpu-core,
 wgpu-hal and wasm2c with [our patches](../patches/README.md) (only when
-they change). Run cargo by hand through mise too: in a shell with
+they change), and fetches the other sources the build takes at pinned
+versions (Luau, libadrenotools for Android, ...). Run cargo by hand through mise too: in a shell with
 `mise activate`, or `mise exec -- cargo ...`.
 
 Compiled C objects are cached in `target/glue5-tools/objcache`, shared by

@@ -11,6 +11,8 @@
 //! UI shows before the game starts, and the renderer takes the same device
 //! and window over when it does.
 
+#[cfg(target_os = "android")]
+mod adreno;
 mod bc;
 mod done;
 mod draw;
@@ -127,6 +129,9 @@ pub(crate) fn take_trim() -> bool {
     TRIM.swap(false, Ordering::Relaxed)
 }
 
+#[cfg(target_os = "android")]
+pub use adreno::instance as instance_with_driver;
+
 /// The wgpu instance for this platform (create surfaces with it).
 pub fn instance() -> wgpu::Instance {
     let backends = if cfg!(target_vendor = "apple") { wgpu::Backends::METAL } else { wgpu::Backends::VULKAN };
@@ -190,7 +195,14 @@ pub(crate) const WANTED_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_COMPR
     .union(wgpu::Features::SHADER_F16);
 
 fn pipeline_cache_name(info: &wgpu::AdapterInfo) -> String {
-    format!("pipelines.{:?}.{:x}.{:x}.bin", info.backend, info.vendor, info.device).to_lowercase()
+    let name = format!("pipelines.{:?}.{:x}.{:x}", info.backend, info.vendor, info.device).to_lowercase();
+    // A driver the user added has a cache of its own: the system's stays
+    // for when it is back (each driver refuses the other's).
+    #[cfg(target_os = "android")]
+    if let Some(driver) = adreno::IN_USE.get() {
+        return format!("{name}.{driver}.bin");
+    }
+    format!("{name}.bin")
 }
 
 /// Writes the driver's pipeline cache for the next run (Vulkan; Metal keeps
@@ -276,6 +288,11 @@ impl Screen {
         gpu.queue.submit(output.compose(&gpu.device, &gpu.queue, &frame, None, None));
         output.show(&gpu.device, &gpu.queue, frame, false);
         true
+    }
+
+    /// The GPU and its driver.
+    pub fn adapter_info(&self) -> wgpu::AdapterInfo {
+        self.gpu.adapter.get_info()
     }
 
     /// Whether this GPU has `upscaler`.
