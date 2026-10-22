@@ -165,6 +165,27 @@ impl MenusView {
         true
     }
 
+    /// Opens `menu` of `module` with the levels above it (`menu:show()`).
+    /// False when there is no such menu.
+    pub fn open_at(&mut self, menus: &[Menu], module: &str, menu: u32) -> bool {
+        let mut path = Vec::new();
+        let mut at = Some(menu);
+        while let Some(id) = at {
+            let Some(m) = find_menu(menus, id).filter(|m| m.module == module) else { return false };
+            let from = match submenu_row(menus, m) {
+                Some((row, _)) => row_id(row),
+                None => menu_row_id(m.id),
+            };
+            path.push(Open { level: Level::Menu(id), from });
+            at = m.parent;
+        }
+        path.reverse();
+        self.stack = path;
+        self.draft = None;
+        self.pending = Some(Pending::Opened { focus: false });
+        true
+    }
+
     /// The page no longer shows the menus (closed, another tab): the
     /// runtime hears that they are not looked at. The stack stays (the
     /// page opens again where the player was).

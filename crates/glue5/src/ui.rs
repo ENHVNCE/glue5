@@ -451,6 +451,14 @@ impl Ui {
         }
     }
 
+    /// A mod asked for its menu (`menu:show()`): the Mods page opens at it,
+    /// unless a page is open.
+    pub fn show_mod_menu(&mut self, module: &str, menu: u32) {
+        if self.page.is_none() && self.mods.show_menu(module, menu) {
+            self.show(Some(Page::Mods));
+        }
+    }
+
     fn show(&mut self, page: Option<Page>) {
         if self.page == Some(Page::Mods) && page != Some(Page::Mods) {
             self.mods.closed();

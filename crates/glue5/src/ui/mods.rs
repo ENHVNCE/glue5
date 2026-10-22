@@ -34,6 +34,16 @@ impl ModsPage {
         self.tab = Tab::Menus;
     }
 
+    /// Opens at menu `menu` of mod `module` (`menu:show()`). False when
+    /// there is no such menu.
+    pub fn show_menu(&mut self, module: &str, menu: u32) -> bool {
+        let shown = self.menus.open_at(&glue5_mods::menus(), module, menu);
+        if shown {
+            self.tab = Tab::Menus;
+        }
+        shown
+    }
+
     /// Back (B, Esc) inside the page: false when the page should close.
     pub fn back(&mut self, ctx: &egui::Context) -> bool {
         self.tab == Tab::Menus && self.menus.back(ctx)

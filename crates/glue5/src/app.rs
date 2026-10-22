@@ -638,6 +638,13 @@ impl App {
     fn update(&mut self, page_before: Option<Page>) -> Result<bool> {
         self.keep_sources();
         self.update_studio();
+        // A mod asked for its menu (`menu:show()`): not while something is
+        // typed (nor over another page, `show_mod_menu`).
+        if let Some((module, menu)) = glue5_mods::take_menu_show()
+            && self.typing.is_none()
+        {
+            self.ui.show_mod_menu(&module, menu);
+        }
         let in_game = self.game.is_some();
         // Touch controls: a virtual pad in slot 0 unless a controller has it.
         let show = in_game
