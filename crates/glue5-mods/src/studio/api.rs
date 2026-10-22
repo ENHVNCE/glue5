@@ -174,20 +174,41 @@ files with `--!strict` to have every type checked.
   `geo.fromQuaternion(x, y, z, w)`: the game's rotations, in degrees.
 
 ## Drawing
-- `local logo = draw.loadImage("images/logo.png")` loads a PNG of the
-  mod's folder (2048×2048 at most; a mod holds 64 images, 32 MB, freed
-  when it stops or by `logo:release()`); it waits a few frames while the
-  image is decoded, so call it from the main code or a task.
-- Each frame (in a loop with `wait()`): `draw.image(logo, x, y, width,
-  [height], [options])`, `draw.rect(x, y, width, height, [options])`,
-  `draw.text(text, x, y, [options])`. Positions are the centre (a text's
-  top), sizes fractions of the screen (0 to 1), as DRAW_RECT's; no height
-  keeps the image's proportions. Options: `rotation` (degrees), `color`
-  (`{r, g, b, a}`, 0 to 255), `z` (higher in front); text: `size` (a
-  fraction of the screen's height), `align` ("left", "center", "right").
-- They are drawn over everything the game draws, at the window's
-  resolution. For the game's own sprites and text, use the natives
-  (`graphics.drawSprite`, `hud.beginTextCommandDisplayText`, ...).
+- Draw every frame (a loop with `wait()`): what a turn draws shows until
+  the mod's next turn. Positions are fractions of the screen (0 to 1);
+  rectangles and images are centred there (as DRAW_RECT's), a text starts
+  there (its top); radii, widths and text sizes are fractions of its
+  height.
+- Calls take positional numbers and a colour, then a style made ONCE
+  outside the loop: `local s = draw.style({ z = 1, rounding = 0.01 })`.
+  Colours: `0xRRGGBBAA` (fastest; `draw.rgba(r, g, b, a)`), `{r, g, b, a}`
+  or `"#rrggbb"`. Change a style's field when needed (`s.rotation = a`);
+  never build `draw.style{...}` or tables in the loop.
+- `draw.image(img, x, y, w, h?, color?, style?)` (no h: its proportions),
+  `draw.rect(x, y, w, h, color?, style?)`, `draw.text(text, x, y, size?,
+  color?, style?)`, `draw.line(x1, y1, x2, y2, width?, color?, style?)`,
+  `draw.path({x1, y1, ...}, width?, color?, style?)`, `draw.circle(x, y,
+  r, color?, style?)`, `draw.arc(x, y, r, from, to, width?, color?,
+  style?)` (degrees clockwise from the top: gauges).
+- Style fields: `z`, `rotation`, `blend = "add"`, `rounding`, `stroke` +
+  `width` (outlines), `gradient` + `horizontal` (rectangles), `fill` +
+  `closed` (paths, convex), `align`, `wrap`, `font` (texts), `uv = {u0,
+  v0, u1, v1}` (sprite sheets; `style:setUv(...)` per frame), `nineSlice
+  = {l, t, r, b}` (panels), `scale` (groups), `distanceScale`,
+  `maxDistance` (the world).
+- `draw.loadImage("images/x.png")` (PNG, 2048 px, 64 images / 32 MB a
+  mod) and `draw.loadFont("fonts/x.ttf")` (4 a mod) wait while they load:
+  call them before the loop. `draw.measureText(text, size?, style?)`
+  gives width, height.
+- Groups: `draw.push(x, y, style?)` ... `draw.pop()` places and scales
+  what is between; `draw.clip(x, y, w, h)` ... `draw.pop()` cuts it to a
+  rectangle (scrolling lists).
+- The world: `draw.text3d(text, pos, size?, color?, style?)`,
+  `draw.image3d`, `draw.circle3d`, or `draw.push3d(pos, style?)` ...
+  `draw.pop()`: placed with the frame's own camera (labels over cars).
+- Over everything the game draws, at the window's resolution. For the
+  game's own sprites and text, use the natives (`graphics.drawSprite`,
+  `hud.beginTextCommandDisplayText`, ...).
 
 ## Data
 - `json.encode(value, pretty?)` and `json.decode(text)`: tables with keys
