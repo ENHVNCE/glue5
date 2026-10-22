@@ -41,7 +41,7 @@ function Scaleform:draw(x: number?, y: number?, width: number?, height: number?)
 	if x then
 		g.drawScaleformMovie(self.handle, x, y or 0.5, width or 1, height or 1, 255, 255, 255, 255, 0)
 	else
-		g.drawScaleformMovieFullscreen(self.handle, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0)
+		g.drawScaleformMovieFullscreen(self.handle, 255, 255, 255, 255, 0)
 	end
 end
 
@@ -58,7 +58,7 @@ end
 scaleform = {
 	-- The movie, once loaded (nil if it does not load in `timeoutMs`, 10 s).
 	load = function(name: string, timeoutMs: number?): any
-		local handle = g.requestScaleformMovie(name, false, false)
+		local handle = g.requestScaleformMovie(name)
 		if handle == 0 then
 			return nil
 		end

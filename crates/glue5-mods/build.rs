@@ -216,7 +216,12 @@ fn run() -> Result<()> {
         }
         let entry = by_name.get(&b.name).map(|(_, e, _)| *e);
         let from_db = entry.map(|e| db_params(e, &b.name)).transpose()?;
-        let from_binary = b.command.as_ref().map(|c| binary_params(c, &b.name));
+        let script = script_params(b.signature);
+        // The typed command may be a helper the handler calls with values
+        // of its own (DRAW_SCALEFORM_MOVIE's and _FULLSCREEN's share one of
+        // 11): where it takes another count, the script signature's.
+        let helper = matches!((&b.command, &script), (Some(c), Some(s)) if c.len() != s.len());
+        let from_binary = b.command.as_ref().filter(|_| !helper).map(|c| binary_params(c, &b.name));
         // A pointer the database cannot type (`Any*`: a structure, an array,
         // a gamer handle) where the binary takes an `int&`, which is also
         // how the commands take the scripts' structures: its size is
@@ -225,7 +230,7 @@ fn run() -> Result<()> {
         // A `float&` or a `Vector3&` is one value; where the binary takes a
         // value, the database is wrong and the binary is right (ADD_ROPE).
         let untyped = entry.is_some_and(untyped_pointer);
-        let params = match (from_db, from_binary) {
+        let mut params = match (from_db.clone(), from_binary) {
             (Some(Some(db)), Some(Some(bin))) => merge(db, &bin),
             (Some(Some(db)), _) => db,
             (_, Some(Some(bin))) if untyped && bin.iter().any(|p| p.dir != Dir::In && p.kind == Kind::Int) => {
@@ -238,6 +243,24 @@ fn run() -> Result<()> {
                 continue;
             }
         };
+        // The database may disagree with what the handler reads too
+        // (NETWORK_SPENT_TAXI's five for four): the script signature's
+        // values, with the database's names and finer types where they fit.
+        if let Some(s) = &script
+            && (helper || !fits(&params, s))
+        {
+            let db = from_db.flatten();
+            // A pointer the database does not type: a buffer of one value
+            // could be written past (native.invoke still reaches it).
+            if pointers_untyped(db.as_deref(), s) {
+                skip("untyped pointers");
+                continue;
+            }
+            params = match db {
+                Some(db) => vectors_out(merge(db.clone(), s), &db),
+                None => s.clone(),
+            };
+        }
         let ret = match entry.and_then(|e| e["return_type"].as_str()) {
             Some(t) => match value_kind(t) {
                 Some(k) => Some(k),
@@ -634,6 +657,127 @@ fn merge(db: Vec<Param>, bin: &[Param]) -> Vec<Param> {
     out
 }
 
+/// The parameters the script signature (`rage::scrSignature`) gives a
+/// native, what its handler reads; none if it has none (0). A code per
+/// value, the result's first, each 3 bits on from the last after a marker
+/// bit: 0 none, 2 bool, 4 int, 6 float, 8 vector, 12 string, 14 a pointer
+/// (`int&`, `float&`, a structure). Codes are even and those of 8 and more
+/// reach into the next field: a field's low bit is the last code's high
+/// one.
+fn script_codes(signature: u64) -> Option<Vec<u8>> {
+    if signature & 1 == 0 {
+        return None;
+    }
+    let mut fields = Vec::new();
+    let mut v = signature >> 1;
+    while v != 0 {
+        fields.push((v & 7) as u8);
+        v >>= 3;
+    }
+    let mut codes: Vec<u8> = Vec::new();
+    for (i, &f) in fields.iter().enumerate() {
+        let carry = f & 1;
+        if carry == 1
+            && let Some(last) = codes.last_mut()
+        {
+            *last += 8;
+        }
+        // The last code's high bit alone.
+        if i == fields.len() - 1 && f == 1 {
+            break;
+        }
+        codes.push(f - carry);
+    }
+    if codes.is_empty() {
+        codes.push(0);
+    }
+    Some(codes)
+}
+
+fn script_params(signature: u64) -> Option<Vec<Param>> {
+    let codes = script_codes(signature)?;
+    Some(
+        codes[1..]
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| {
+                let (kind, dir) = match c {
+                    2 => (Kind::Bool, Dir::In),
+                    6 => (Kind::Float, Dir::In),
+                    8 => (Kind::Vec3, Dir::In),
+                    12 => (Kind::Str, Dir::In),
+                    14 => (Kind::Int, Dir::InOut),
+                    _ => (Kind::Int, Dir::In),
+                };
+                Param { name: format!("p{i}"), kind, dir }
+            })
+            .collect(),
+    )
+}
+
+/// Whether `params` pass what the script signature's `script` say: the same
+/// values, a vector as one or as three floats, any integer kind where it
+/// says int or bool, an output where it says pointer (or vector: an
+/// out `Vector3&` is a vector to it).
+fn fits(params: &[Param], script: &[Param]) -> bool {
+    let mut j = 0;
+    for s in script {
+        let Some(p) = params.get(j) else { return false };
+        let integer = |k: Kind| matches!(k, Kind::Int | Kind::Bool | Kind::Hash | Kind::Any | Kind::Handle(_));
+        let ok = match (s.kind, s.dir) {
+            (Kind::Vec3, _) if p.kind == Kind::Vec3 => true,
+            (Kind::Vec3, _) => {
+                let floats = params.get(j..j + 3).is_some_and(|f| f.iter().all(|f| f.kind == Kind::Float && f.dir == Dir::In));
+                if floats {
+                    j += 2;
+                }
+                floats
+            }
+            (_, Dir::InOut) => p.dir != Dir::In,
+            (Kind::Str, _) => p.kind == Kind::Str && p.dir == Dir::In,
+            (Kind::Float, _) => p.kind == Kind::Float && p.dir == Dir::In,
+            _ => integer(p.kind) && p.dir == Dir::In,
+        };
+        if !ok {
+            return false;
+        }
+        j += 1;
+    }
+    j == params.len()
+}
+
+/// A vector to the signature is one either way: an output where the
+/// database, of as many parameters, has a `Vector3*` (GET_COORDS_OF_PROJECTILE_TYPE_WITHIN_DISTANCE).
+fn vectors_out(mut params: Vec<Param>, db: &[Param]) -> Vec<Param> {
+    if params.len() == db.len() {
+        for (p, d) in params.iter_mut().zip(db) {
+            if p.kind == Kind::Vec3 && d.kind == Kind::Vec3 {
+                p.dir = d.dir;
+            }
+        }
+    }
+    params
+}
+
+/// Whether a pointer of the script signature's has no pointer of the
+/// database at its value (by the values before it).
+fn pointers_untyped(db: Option<&[Param]>, script: &[Param]) -> bool {
+    let mut at = HashMap::new();
+    let mut slot = 0;
+    for p in db.unwrap_or_default() {
+        at.insert(slot, p);
+        slot += p.slots();
+    }
+    let mut slot = 0;
+    for s in script {
+        if s.dir != Dir::In && !at.get(&slot).is_some_and(|d| d.dir != Dir::In) {
+            return true;
+        }
+        slot += s.slots();
+    }
+    false
+}
+
 /// What the binary says about the result, when the database has nothing.
 fn binary_return(b: &Binary) -> Option<Option<Kind>> {
     match b.result.as_deref() {
@@ -766,7 +910,7 @@ fn native_rows(s: &mut String, natives: &[Native], spaces: &[&str]) {
 /// (an in-out int); none if neither knows.
 fn raw_signature(entry: Option<&Value>, b: &Binary) -> Option<(Vec<Param>, Option<Kind>)> {
     let param = |name: String, kind, dir| Param { name, kind, dir };
-    let params = match entry {
+    let params: Vec<Param> = match entry {
         Some(e) => e["params"]
             .as_array()?
             .iter()
@@ -806,9 +950,13 @@ fn raw_signature(entry: Option<&Value>, b: &Binary) -> Option<(Vec<Param>, Optio
         Some(t) => Some(value_kind(t).unwrap_or(Kind::Any)),
         None => binary_return(b).unwrap_or(Some(Kind::Any)),
     };
+    // What the handler reads, where the database or the binary say otherwise.
+    let params = match script_params(b.signature) {
+        Some(script) if !fits(&params, &script) => merge(params, &script),
+        _ => params,
+    };
     Some((params, ret))
 }
-
 
 fn luau_type(k: Kind, input: bool) -> String {
     match k {

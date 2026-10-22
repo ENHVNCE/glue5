@@ -778,6 +778,28 @@ mod tests {
         assert!(resolve(&Value::Boolean(true)).is_err());
     }
 
+    /// A native takes what its handler reads (the script signature), not
+    /// what its typed command or the database say where they differ.
+    #[test]
+    fn script_arity() {
+        let native = |name: &str| NATIVES.iter().find(|n| n.name == name).unwrap_or_else(|| panic!("{name}"));
+        let floats = |name: &str| native(name).params.iter().map(|p| p.kind == K::Float).collect::<Vec<_>>();
+        // Both share a helper of 11 values; the handlers read 10 and 6.
+        let (f, t) = (false, true);
+        assert_eq!(floats("DRAW_SCALEFORM_MOVIE"), [f, t, t, t, t, f, f, f, f, f]);
+        assert_eq!(floats("DRAW_SCALEFORM_MOVIE_FULLSCREEN"), [f; 6]);
+        assert_eq!(native("REQUEST_SCALEFORM_MOVIE").params.len(), 1);
+        assert_eq!(native("SET_BLIP_NAME_TO_PLAYER_NAME").params.len(), 2);
+        // The database's five, the handler's four.
+        assert_eq!(native("NETWORK_SPENT_TAXI").params.len(), 4);
+        // A vector the signature cannot tell from an output: the database's.
+        let out = native("GET_COORDS_OF_PROJECTILE_TYPE_WITHIN_DISTANCE").params.iter().find(|p| p.kind == K::Vec3);
+        assert_eq!(out.map(|p| p.dir), Some(D::Out));
+        // A structure's pointer the database calls a value: native.invoke only.
+        assert!(!NATIVES.iter().any(|n| n.name == "PLAYSTATS_MISSION_ENDED"));
+        assert!(RAW.iter().any(|n| n.name == "PLAYSTATS_MISSION_ENDED"));
+    }
+
     /// `VEHICLE.CREATE_VEHICLE` is `vehicle.createVehicle`, and only that.
     #[test]
     fn game_names() {
