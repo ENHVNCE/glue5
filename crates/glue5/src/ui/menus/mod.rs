@@ -45,6 +45,8 @@ pub(super) enum RowAction {
         level: Level,
         keys: bool,
     },
+    /// Start typing into the item (a text, a number's typed entry).
+    Edit,
 }
 
 /// What a push or a pop leaves for the next drawing.
@@ -57,17 +59,28 @@ enum Pending {
     Row { id: Id, focus: bool },
 }
 
+/// The text typed into an item until it is committed (Enter, Done, the
+/// field left) or dropped (Back).
+pub(super) struct Draft {
+    pub item: u32,
+    pub text: String,
+    /// Not drawn yet: the field takes the focus at its first drawing.
+    pub fresh: bool,
+}
+
 struct Open {
     level: Level,
     /// The row that opened it.
     from: Id,
 }
 
-/// What the page keeps between frames: the stack, the focus to give.
+/// What the page keeps between frames: the stack, the focus to give, the
+/// text being typed.
 #[derive(Default)]
 pub struct MenusView {
     stack: Vec<Open>,
     pending: Option<Pending>,
+    draft: Option<Draft>,
     /// The menus the runtime was told are shown.
     viewing: Vec<(String, u32)>,
 }
@@ -105,11 +118,12 @@ impl MenusView {
         };
         if let Some(n) = self.stack.iter().position(|o| !usable(o.level)) {
             self.stack.truncate(n);
+            self.draft = None;
             self.pending = Some(Pending::Opened { focus: false });
         }
     }
 
-    /// Back (B, Esc): a field being typed into lets go of the focus, else a
+    /// Back (B, Esc): a field being typed into lets go of the text, else a
     /// level closes. False when there was nothing to go back from (the page
     /// closes).
     pub fn back(&mut self, ctx: &egui::Context) -> bool {
@@ -119,6 +133,9 @@ impl MenusView {
                     m.surrender_focus(id);
                 }
             });
+            if let Some(draft) = self.draft.take() {
+                self.pending = Some(Pending::Row { id: row_id(draft.item), focus: true });
+            }
             return true;
         }
         if self.stack.is_empty() {
@@ -132,16 +149,19 @@ impl MenusView {
     /// runtime hears that they are not looked at. The stack stays (the
     /// page opens again where the player was).
     pub fn hidden(&mut self) -> Vec<Out> {
+        self.draft = None;
         self.viewing.drain(..).map(|(module, menu)| Out::Viewer { module, menu, open: false }).collect()
     }
 
     fn push(&mut self, level: Level, from: Id, keys: bool) {
         self.stack.push(Open { level, from });
+        self.draft = None;
         self.pending = Some(Pending::Opened { focus: keys });
     }
 
     fn pop(&mut self, keys: bool) {
         if let Some(open) = self.stack.pop() {
+            self.draft = None;
             self.pending = Some(Pending::Row { id: open.from, focus: keys });
         }
     }
@@ -206,12 +226,15 @@ impl MenusView {
         let mut shown = false;
         for item in menu.items.iter().filter(|i| i.visible) {
             shown = true;
-            let action = ui.add_enabled_ui(item.enabled, |ui| rows::row(ui, item, landing)).inner;
+            let action = ui.add_enabled_ui(item.enabled, |ui| rows::row(ui, item, &mut self.draft, landing)).inner;
             match action {
                 Some(RowAction::Input(input)) => {
                     out.push(Out::Input { module: menu.module.clone(), item: item.id, input })
                 }
                 Some(RowAction::Push { level, keys }) => self.push(level, row_id(item.id), keys),
+                Some(RowAction::Edit) => {
+                    self.draft = Some(Draft { item: item.id, text: rows::edit_text(item), fresh: true });
+                }
                 None => {}
             }
         }

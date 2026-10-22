@@ -329,6 +329,10 @@ impl Typing {
             Typing::App(ui::TextKind::Code) => (TextInputType::Text, Capitalization::Letters, false),
             Typing::App(ui::TextKind::Address) => (TextInputType::Text, Capitalization::None, false),
             Typing::App(ui::TextKind::Name) => (TextInputType::Text, Capitalization::Words, false),
+            Typing::App(ui::TextKind::Number) if cfg!(not(target_os = "ios")) => {
+                (TextInputType::Number, Capitalization::None, false)
+            }
+            Typing::App(ui::TextKind::Number) => (TextInputType::Text, Capitalization::None, false),
             Typing::Game(TextType::Email) => (TextInputType::Email, Capitalization::None, false),
             Typing::Game(TextType::Password) => (TextInputType::PasswordHidden, Capitalization::None, false),
             Typing::Game(TextType::Numeric) if cfg!(not(target_os = "ios")) => {

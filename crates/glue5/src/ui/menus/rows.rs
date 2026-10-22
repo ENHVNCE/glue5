@@ -9,12 +9,14 @@ use egui::text::{LayoutJob, TextWrapping};
 use egui::*;
 use glue5_mods::{MenuInput, MenuItem, MenuKind};
 
+use super::super::TextKind;
 use super::super::theme::{INK, MUTED, density};
 use super::super::widgets::focus;
-use super::{Landing, Level, RowAction, row_id};
+use super::{Draft, Landing, Level, RowAction, row_id};
 
 pub(super) const FILL: Color32 = Color32::from_gray(28);
 const FILL_LIT: Color32 = Color32::from_gray(33);
+const FIELD: Color32 = Color32::from_gray(36);
 
 /// A row as allocated: the whole of it, where its control goes, and the
 /// row's widget.
@@ -87,7 +89,7 @@ pub(super) fn chevron(ui: &Ui, at: Pos2, towards: Vec2, color: Color32) {
 }
 
 /// An item's row; what the player did with it.
-pub(super) fn row(ui: &mut Ui, item: &MenuItem, landing: &mut Landing) -> Option<RowAction> {
+pub(super) fn row(ui: &mut Ui, item: &MenuItem, draft: &mut Option<Draft>, landing: &mut Landing) -> Option<RowAction> {
     let s = density(ui);
     let id = row_id(item.id);
     let note = item.note.as_deref();
@@ -121,6 +123,25 @@ pub(super) fn row(ui: &mut Ui, item: &MenuItem, landing: &mut Landing) -> Option
         MenuKind::Slider { value, min, max, step, unit } => {
             let row = frame(ui, id, &item.label, note, (available * 0.55).min(260.0 * s), Sense::click(), landing);
             slider(ui, &row, *value, *min, *max, *step, unit.as_deref()).map(|v| RowAction::Input(MenuInput::Number(v)))
+        }
+        MenuKind::Number { value, min, max, step, unit } => {
+            let row = frame(ui, id, &item.label, note, (available * 0.6).min(200.0 * s), Sense::click(), landing);
+            let (lo, hi) = (min.unwrap_or(-1e15), max.unwrap_or(1e15));
+            let shown = number_text(*value, decimals(*step), unit.as_deref());
+            let stepper = stepper(ui, &row, &shown, item.id, draft, TextKind::Number);
+            let delta = stepper.delta + arrows(ui, &row.response);
+            if let Some(text) = stepper.committed {
+                if text_committed_by_enter(ui) {
+                    row.response.request_focus();
+                }
+                let typed = text.trim().replace(',', ".").parse::<f64>().ok().filter(|v| v.is_finite());
+                return typed.map(|v| RowAction::Input(MenuInput::Number(v)));
+            }
+            if delta != 0 {
+                let v = step_on_grid(*value, delta, min.unwrap_or(0.0), *step, lo, hi);
+                return (v != *value).then_some(RowAction::Input(MenuInput::Number(v)));
+            }
+            (row.response.clicked() || stepper.value_clicked).then_some(RowAction::Edit)
         }
         MenuKind::Submenu(menu) => {
             let row = frame(ui, id, &item.label, note, 16.0 * s, Sense::click(), landing);
@@ -169,6 +190,14 @@ pub(super) fn row(ui: &mut Ui, item: &MenuItem, landing: &mut Landing) -> Option
             frame(ui, id, &item.label, note, 0.0, Sense::hover(), landing);
             None
         }
+    }
+}
+
+/// What the typed entry of an item starts with.
+pub(super) fn edit_text(item: &MenuItem) -> String {
+    match &item.kind {
+        MenuKind::Number { value, step, .. } => format!("{:.*}", decimals(*step), value),
+        _ => String::new(),
     }
 }
 
@@ -231,6 +260,115 @@ fn slider(ui: &Ui, row: &Row, value: f64, min: f64, max: f64, step: f64, unit: O
     let shown = number_text(if percent { v * 100.0 } else { v }, places, unit);
     ui.painter().text(c.right_center(), Align2::RIGHT_CENTER, shown, font, Color32::WHITE);
     (v != value).then_some(v)
+}
+
+struct Stepper {
+    /// −1 or +1: an arrow was tapped.
+    delta: i32,
+    /// The value in the middle was tapped.
+    value_clicked: bool,
+    /// The typed entry, when committed.
+    committed: Option<String>,
+}
+
+/// `‹ value ›` (the choice control's look): its arrows and the value,
+/// which a number types into while `draft` is its.
+fn stepper(ui: &mut Ui, row: &Row, shown: &str, item: u32, draft: &mut Option<Draft>, kind: TextKind) -> Stepper {
+    let s = density(ui);
+    let c = row.control;
+    let radius = 12.0 * s;
+    ui.painter().rect_filled(c, radius, FIELD);
+    let inner = c.shrink(3.0 * s);
+    let side = inner.height();
+    let prev = Rect::from_min_size(inner.min, vec2(side, side));
+    let next = Rect::from_min_size(pos2(inner.right() - side, inner.top()), vec2(side, side));
+    let mut delta = 0;
+    for (rect, glyph, step, name) in [(prev, "‹", -1, "prev"), (next, "›", 1, "next")] {
+        let response = ui.interact(rect, row.response.id.with(name), Sense::CLICK);
+        if response.hovered() || response.is_pointer_button_down_on() {
+            ui.painter().rect_filled(
+                rect,
+                10.0 * s,
+                Color32::from_gray(if response.is_pointer_button_down_on() { 60 } else { 46 }),
+            );
+        }
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(14.0 * s), Color32::WHITE);
+        if response.clicked() {
+            delta += step;
+        }
+    }
+    let middle =
+        Rect::from_min_max(pos2(prev.right() + 2.0 * s, inner.top()), pos2(next.left() - 2.0 * s, inner.bottom()));
+    let value_clicked = ui.interact(middle, row.response.id.with("value"), Sense::CLICK).clicked();
+    let mut committed = None;
+    match edit(ui, middle, item, draft, kind, 24, Align::Center) {
+        Edited::Typing => {
+            ui.painter().rect_stroke(c, radius, Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
+        }
+        Edited::Committed(text) => committed = Some(text),
+        Edited::No => {
+            let text = truncated(ui, RichText::new(shown).size(13.0 * s).color(Color32::WHITE), middle.width());
+            ui.painter().galley(middle.center() - text.size() * 0.5, text, Color32::WHITE);
+        }
+    }
+    Stepper { delta, value_clicked, committed }
+}
+
+pub(super) enum Edited {
+    /// The item is not being typed into.
+    No,
+    Typing,
+    /// Enter, Done or the field left: the text.
+    Committed(String),
+}
+
+/// The field typing into `item` (while `draft` is its), in `rect`.
+pub(super) fn edit(
+    ui: &mut Ui,
+    rect: Rect,
+    item: u32,
+    draft: &mut Option<Draft>,
+    kind: TextKind,
+    max: usize,
+    align: Align,
+) -> Edited {
+    let Some(d) = draft.as_mut().filter(|d| d.item == item) else { return Edited::No };
+    let s = density(ui);
+    let id = Id::new(("mod-edit", item));
+    let fresh = std::mem::take(&mut d.fresh);
+    if fresh {
+        ui.memory_mut(|m| m.request_focus(id));
+    }
+    let response = ui
+        .scope_builder(UiBuilder::new().max_rect(rect).layout(Layout::left_to_right(Align::Center)), |ui| {
+            ui.add(
+                TextEdit::singleline(&mut d.text)
+                    .id(id)
+                    .frame(Frame::NONE)
+                    .char_limit(max)
+                    .font(FontId::proportional(15.0 * s))
+                    .margin(Vec2::ZERO)
+                    .horizontal_align(align)
+                    .desired_width(rect.width()),
+            )
+        })
+        .inner;
+    if response.has_focus() {
+        ui.ctx().data_mut(|data| data.insert_temp(Id::new(super::super::TEXT_KIND), kind));
+        // In view while the sheet shrinks above the on-screen keyboard.
+        if !ui.clip_rect().contains_rect(rect) {
+            ui.scroll_to_rect(rect, None);
+        }
+        return Edited::Typing;
+    }
+    let text = draft.take().map(|d| d.text).unwrap_or_default();
+    if response.lost_focus() { Edited::Committed(text) } else { Edited::No }
+}
+
+/// The text field was left with Enter (the row takes the focus back, for
+/// a controller or keys to go on).
+fn text_committed_by_enter(ui: &Ui) -> bool {
+    ui.input(|i| i.key_pressed(Key::Enter))
 }
 
 /// Decimals that show `step` (0 to 3).

@@ -103,6 +103,8 @@ pub enum TextKind {
     Address,
     /// The player's name.
     Name,
+    /// A number (a mod's menu's typed entry).
+    Number,
 }
 
 /// Where the focused text field keeps its [`TextKind`] (egui's memory).
