@@ -118,6 +118,10 @@ pub(super) fn row(ui: &mut Ui, item: &MenuItem, landing: &mut Landing) -> Option
             switch(ui, row.control, id, *on);
             row.response.clicked().then_some(RowAction::Input(MenuInput::Toggle(!on)))
         }
+        MenuKind::Slider { value, min, max, step, unit } => {
+            let row = frame(ui, id, &item.label, note, (available * 0.55).min(260.0 * s), Sense::click(), landing);
+            slider(ui, &row, *value, *min, *max, *step, unit.as_deref()).map(|v| RowAction::Input(MenuInput::Number(v)))
+        }
         MenuKind::Submenu(menu) => {
             let row = frame(ui, id, &item.label, note, 16.0 * s, Sense::click(), landing);
             chevron(ui, row.control.right_center() - vec2(4.0 * s, 0.0), vec2(1.0, 0.0), MUTED);
@@ -179,4 +183,106 @@ fn switch(ui: &Ui, rect: Rect, id: Id, on: bool) {
     );
     let x = lerp((rect.left() + 14.0 * s)..=(rect.right() - 14.0 * s), t);
     ui.painter().circle_filled(pos2(x, rect.center().y), 8.0 * s, if on { INK } else { MUTED });
+}
+
+/// ←/→ on a focused row whose value moves sideways: steps (up and down
+/// still move the focus).
+fn arrows(ui: &Ui, row: &Response) -> i32 {
+    if !row.has_focus() {
+        return 0;
+    }
+    ui.memory_mut(|m| m.set_focus_lock_filter(row.id, EventFilter { horizontal_arrows: true, ..Default::default() }));
+    ui.input(|i| i.num_presses(Key::ArrowRight) as i32 - i.num_presses(Key::ArrowLeft) as i32)
+}
+
+/// The slider's control (as `widgets::slider`): a rail to tap or drag,
+/// the value and its unit. The new value, when it moved.
+fn slider(ui: &Ui, row: &Row, value: f64, min: f64, max: f64, step: f64, unit: Option<&str>) -> Option<f64> {
+    let s = density(ui);
+    let c = row.control;
+    let percent = unit == Some("%");
+    let places = decimals(if percent { step * 100.0 } else { step });
+    let widest = [min, max].map(|v| number_text(if percent { v * 100.0 } else { v }, places, unit));
+    let font = FontId::proportional(14.0 * s);
+    let text_width = widest
+        .iter()
+        .map(|t| ui.painter().layout_no_wrap(t.clone(), font.clone(), Color32::WHITE).size().x)
+        .fold(46.0 * s, f32::max);
+    let area = Rect::from_min_max(c.min, pos2(c.right() - text_width - 10.0 * s, c.bottom()));
+    let rail_response = ui.interact(area, row.response.id.with("rail"), Sense::CLICK | Sense::DRAG);
+    let mut v = value;
+    let rail = Rect::from_min_max(
+        pos2(area.left() + 5.0 * s, c.center().y - 2.0 * s),
+        pos2(area.right() - 5.0 * s, c.center().y + 2.0 * s),
+    );
+    if let Some(pos) = rail_response.interact_pointer_pos() {
+        let t = f64::from(((pos.x - rail.left()) / rail.width().max(1.0)).clamp(0.0, 1.0));
+        v = snap(min + t * (max - min), min, max, step);
+    }
+    let delta = arrows(ui, &row.response);
+    if delta != 0 {
+        v = step_on_grid(v, delta, min, step, min, max);
+    }
+    let t = if max > min { ((v - min) / (max - min)).clamp(0.0, 1.0) as f32 } else { 0.0 };
+    let x = rail.left() + rail.width() * t;
+    ui.painter().rect_filled(rail, 1, Color32::from_gray(68));
+    ui.painter().rect_filled(Rect::from_min_max(rail.min, pos2(x, rail.bottom())), 1, Color32::WHITE);
+    ui.painter().circle_filled(pos2(x, c.center().y), 5.0 * s, Color32::WHITE);
+    let shown = number_text(if percent { v * 100.0 } else { v }, places, unit);
+    ui.painter().text(c.right_center(), Align2::RIGHT_CENTER, shown, font, Color32::WHITE);
+    (v != value).then_some(v)
+}
+
+/// Decimals that show `step` (0 to 3).
+pub(super) fn decimals(step: f64) -> usize {
+    (0..=3)
+        .find(|&d| {
+            let x = step * 10f64.powi(d as i32);
+            (x - x.round()).abs() < 1e-6 * x.abs().max(1.0)
+        })
+        .unwrap_or(3)
+}
+
+/// A value with its unit: "%", "°" and "×" stick to it, words after a space.
+pub(super) fn number_text(value: f64, decimals: usize, unit: Option<&str>) -> String {
+    match unit {
+        None | Some("") => format!("{value:.decimals$}"),
+        Some(u @ ("%" | "°" | "×")) => format!("{value:.decimals$}{u}"),
+        Some(u) => format!("{value:.decimals$} {u}"),
+    }
+}
+
+/// `v` on the grid `min + k*step`, or `max` when nearer.
+fn snap(v: f64, min: f64, max: f64, step: f64) -> f64 {
+    let on = (min + ((v - min) / step).round() * step).clamp(min, max);
+    if (max - v).abs() < (on - v).abs() { max } else { on }
+}
+
+/// The next point of the grid `origin + k*step` from `v`, `delta` steps
+/// up or down, within `lo..=hi` (the ends are reachable off the grid).
+pub(super) fn step_on_grid(v: f64, delta: i32, origin: f64, step: f64, lo: f64, hi: f64) -> f64 {
+    let k = (v - origin) / step;
+    let k = if delta > 0 { (k + 1e-9).floor() + f64::from(delta) } else { (k - 1e-9).ceil() + f64::from(delta) };
+    (origin + k * step).clamp(lo, hi)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn values_step_along_their_grid_and_reach_the_ends() {
+        // From the max off the grid, left lands on the grid's last point.
+        assert_eq!(step_on_grid(10.0, -1, 0.0, 3.0, 0.0, 10.0), 9.0);
+        assert_eq!(step_on_grid(9.0, 1, 0.0, 3.0, 0.0, 10.0), 10.0);
+        assert_eq!(step_on_grid(4.0, 1, 0.0, 3.0, 0.0, 10.0), 6.0);
+        assert_eq!(step_on_grid(0.0, -1, 0.0, 1.0, 0.0, 10.0), 0.0);
+        assert_eq!(snap(9.8, 0.0, 10.0, 3.0), 10.0);
+        assert_eq!(snap(7.0, 0.0, 10.0, 3.0), 6.0);
+        assert_eq!(decimals(1.0), 0);
+        assert_eq!(decimals(0.25), 2);
+        assert_eq!(decimals(0.1), 1);
+        assert_eq!(number_text(0.5 * 100.0, 0, Some("%")), "50%");
+        assert_eq!(number_text(1000.0, 0, Some("$")), "1000 $");
+    }
 }
