@@ -33,7 +33,7 @@ use std::rc::Rc;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use glue5_runtime::sprites::{self, Align, Group, Image, NONE, Rgba, Shape, Sprite, Stroke};
+use glue5_runtime::sprites::{self, Align, Anchor, Group, Image, NONE, Rgba, Shape, Sprite, Stroke};
 use mlua::{AnyUserData, Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value};
 
 /// An image's side at most, in pixels: what every GPU takes.
@@ -442,7 +442,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
         "push",
         lua.create_function(move |_, (x, y, style): (f64, f64, Option<AnyUserData>)| {
             let s = Style::of(style)?;
-            c.push([fraction(x)?, fraction(y)?], s.scale, s.rotation, None)
+            c.push([fraction(x)?, fraction(y)?], s.scale, s.rotation, None, None)
         })?,
     )?;
     let c = canvas.clone();
@@ -450,7 +450,7 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
         "clip",
         lua.create_function(move |_, (x, y, w, h): (f64, f64, f64, f64)| {
             let clip = [fraction(x)?, fraction(y)?, fraction(w)?.max(0.0), fraction(h)?.max(0.0)];
-            c.push([0.0, 0.0], 1.0, 0.0, Some(clip))
+            c.push([0.0, 0.0], 1.0, 0.0, Some(clip), None)
         })?,
     )?;
     let c = canvas.clone();
@@ -459,6 +459,71 @@ pub fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(move |_, ()| match c.open.borrow_mut().pop() {
             Some(_) => Ok(()),
             None => Err(mlua::Error::runtime("draw.pop: no group open (draw.push, draw.clip)")),
+        })?,
+    )?;
+    let c = canvas.clone();
+    draw.set(
+        "push3d",
+        lua.create_function(move |_, (at, style): (mlua::Vector, Option<AnyUserData>)| {
+            let s = Style::of(style)?;
+            c.push([0.0, 0.0], s.scale, s.rotation, None, Some(s.anchor(at)?))
+        })?,
+    )?;
+    // One drawing at a point of the world: a group of its own around it.
+    let c = canvas.clone();
+    draw.set(
+        "text3d",
+        lua.create_function(
+            move |_, (text, at, size, color, style): (mlua::LuaString, mlua::Vector, Option<f64>, Option<f64>, Option<AnyUserData>)| {
+                let s = Style::of(style)?;
+                let shape = Shape::Text {
+                    text: c.text(&text),
+                    at: [0.0, 0.0],
+                    size: length(size.unwrap_or(0.03))?.clamp(0.001, 1.0),
+                    rotation: 0.0,
+                    align: s.align,
+                    color: rgba(color)?,
+                };
+                c.in_world(&s, at, shape)
+            },
+        )?,
+    )?;
+    let c = canvas.clone();
+    draw.set(
+        "image3d",
+        lua.create_function(
+            move |_, (image, at, w, h, color, style): (AnyUserData, mlua::Vector, f64, Option<f64>, Option<f64>, Option<AnyUserData>)| {
+                let image = image
+                    .borrow::<LuaImage>()
+                    .map_err(|_| mlua::Error::runtime("draw.image3d: an image from draw.loadImage"))?
+                    .image
+                    .borrow()
+                    .clone()
+                    .ok_or_else(|| mlua::Error::runtime("draw.image3d: the image was released"))?;
+                let s = Style::of(style)?;
+                let shape = Shape::Image {
+                    image,
+                    center: [0.0, 0.0],
+                    size: [fraction(w)?.max(0.0), fraction(h.unwrap_or(0.0))?.max(0.0)],
+                    rotation: 0.0,
+                    tint: rgba(color)?,
+                    uv: s.uv,
+                    nine: s.nine,
+                };
+                c.in_world(&s, at, shape)
+            },
+        )?,
+    )?;
+    let c = canvas.clone();
+    draw.set(
+        "circle3d",
+        lua.create_function(move |_, (at, r, color, style): (mlua::Vector, f64, Option<f64>, Option<AnyUserData>)| {
+            let s = Style::of(style)?;
+            let fill = match (color, s.stroke) {
+                (None, Some(_)) => None,
+                _ => Some(rgba(color)?),
+            };
+            c.in_world(&s, at, Shape::Circle { center: [0.0, 0.0], radius: length(r)?.max(0.0), fill, stroke: s.outline() })
         })?,
     )?;
     draw.set(
@@ -589,15 +654,23 @@ fn c_top(open: &RefCell<Vec<u32>>) -> u32 {
 
 impl Canvas {
     /// Opens a group in the one open.
-    fn push(&self, origin: [f32; 2], scale: f32, rotation: f32, clip: Option<[f32; 4]>) -> mlua::Result<()> {
+    fn push(&self, origin: [f32; 2], scale: f32, rotation: f32, clip: Option<[f32; 4]>, anchor: Option<Anchor>) -> mlua::Result<()> {
         let mut rec = self.rec.borrow_mut();
         if rec.groups.len() >= GROUPS {
             return Err(mlua::Error::runtime(format!("draw: {GROUPS} groups a turn at most")));
         }
         let parent = c_top(&self.open);
-        rec.groups.push(Group { parent, origin, scale, rotation, clip });
+        rec.groups.push(Group { parent, origin, scale, rotation, clip, anchor });
         self.open.borrow_mut().push(rec.groups.len() as u32 - 1);
         Ok(())
+    }
+
+    /// `shape` in a group of its own at a point of the world.
+    fn in_world(&self, s: &Style, at: mlua::Vector, shape: Shape) -> mlua::Result<()> {
+        self.push([0.0, 0.0], s.scale, s.rotation, None, Some(s.anchor(at)?))?;
+        let added = self.add(s, shape);
+        self.open.borrow_mut().pop();
+        added
     }
 
     fn add(&self, s: &Style, shape: Shape) -> mlua::Result<()> {
@@ -663,6 +736,8 @@ struct Style {
     gradient: Option<Rgba>,
     horizontal: bool,
     align: Align,
+    scaled_at: f32,
+    max_distance: f32,
     scale: f32,
     uv: [f32; 4],
     nine: Option<[f32; 4]>,
@@ -680,6 +755,8 @@ const PLAIN: Style = Style {
     gradient: None,
     horizontal: false,
     align: Align::Left,
+    scaled_at: 0.0,
+    max_distance: 0.0,
     scale: 1.0,
     uv: [0.0, 0.0, 1.0, 1.0],
     nine: None,
@@ -692,6 +769,15 @@ impl Style {
             None => Ok(PLAIN),
             Some(u) => u.borrow::<Style>().map(|s| *s).map_err(|_| mlua::Error::runtime("draw: a style from draw.style")),
         }
+    }
+
+    /// A point of the world with this style's distances.
+    fn anchor(&self, at: mlua::Vector) -> mlua::Result<Anchor> {
+        let position = [at.x(), at.y(), at.z()];
+        if position.iter().any(|v| !v.is_finite()) {
+            return Err(mlua::Error::runtime("draw: a position is a vector of numbers"));
+        }
+        Ok(Anchor { position, scaled_at: self.scaled_at, max_distance: self.max_distance })
     }
 
     fn outline(&self) -> Option<Stroke> {
@@ -728,6 +814,8 @@ impl Style {
         match key {
             "z" => self.z = num(&v).ok_or_else(|| bad("a number"))?.clamp(-1e6, 1e6).round() as i32,
             "rotation" => self.rotation = (num(&v).ok_or_else(|| bad("a number"))? % 360.0) as f32,
+            "distanceScale" => self.scaled_at = num(&v).ok_or_else(|| bad("a number"))?.clamp(0.0, 1e5) as f32,
+            "maxDistance" => self.max_distance = num(&v).ok_or_else(|| bad("a number"))?.clamp(0.0, 1e5) as f32,
             "scale" => self.scale = num(&v).ok_or_else(|| bad("a number"))?.clamp(0.0, 1e3) as f32,
             "rounding" => self.rounding = length(num(&v).ok_or_else(|| bad("a number"))?)?.max(0.0),
             "width" => self.width = length(num(&v).ok_or_else(|| bad("a number"))?)?.max(0.0),
@@ -778,7 +866,7 @@ impl Style {
 }
 
 /// A style's fields, as `draw.style{...}` and assignments name them.
-const STYLE_FIELDS: &[&str] = &["z", "rotation", "scale", "rounding", "width", "stroke", "fill", "gradient", "closed", "horizontal", "align", "uv", "nineSlice", "blend"];
+const STYLE_FIELDS: &[&str] = &["z", "rotation", "scale", "distanceScale", "maxDistance", "rounding", "width", "stroke", "fill", "gradient", "closed", "horizontal", "align", "uv", "nineSlice", "blend"];
 
 impl UserData for Style {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
@@ -861,12 +949,15 @@ export type Style = {
 \tnineSlice: { number }?,
 \tsetUv: (self: Style, u0: number, v0: number, u1: number, v1: number) -> (),
 \t-- A group's scale (draw.push).
+\t-- In the world (draw.push3d, text3d...): scaled by this distance (m) over the camera's, when set\n\t-- (bigger nearer, smaller farther); not drawn farther than maxDistance (m), when set.
+\tdistanceScale: number,
+\tmaxDistance: number,
 \tscale: number,
 \t-- Which end of a text is at x.
 \talign: \"left\" | \"center\" | \"right\",
 }
 export type StyleOptions = {
-\tz: number?, rotation: number?, scale: number?, rounding: number?, stroke: Color?, width: number?, fill: Color?, closed: boolean?,
+\tz: number?, rotation: number?, scale: number?, distanceScale: number?, maxDistance: number?, rounding: number?, stroke: Color?, width: number?, fill: Color?, closed: boolean?,
 \tgradient: Color?, horizontal: boolean?, align: (\"left\" | \"center\" | \"right\")?, uv: { number }?, nineSlice: { number }?, blend: (\"alpha\" | \"add\")?,
 }
 
@@ -900,6 +991,14 @@ declare draw: {
 \t-- Opens a group that shows only what falls in this rectangle (centred at x, y), until draw.pop().
 \tclip: (x: number, y: number, width: number, height: number) -> (),
 \tpop: () -> (),
+\t-- Opens a group at a point of the world (draw.pop() closes it): its 0, 0 follows the point on screen,
+\t-- placed with the frame's own camera when it is shown (no lag behind the view); nothing in it is
+\t-- drawn while the point is behind the camera.
+\tpush3d: (at: vector, style: Style?) -> (),
+\t-- A text, image or disc at a point of the world (in a group of its own, as push3d).
+\ttext3d: (text: string, at: vector, size: number?, color: Color?, style: Style?) -> (),
+\timage3d: (image: Image, at: vector, width: number, height: number?, color: Color?, style: Style?) -> (),
+\tcircle3d: (at: vector, radius: number, color: Color?, style: Style?) -> (),
 \t-- A packed colour, 0 to 255 each (alpha 255 when none).
 \trgba: (r: number, g: number, b: number, a: number?) -> Color,
 \tstyle: (options: StyleOptions?) -> Style,
@@ -943,7 +1042,7 @@ mod tests {
 
     fn vm() -> Lua {
         folder();
-        let lua = Lua::new_with(StdLib::COROUTINE | StdLib::TABLE | StdLib::STRING, Default::default()).unwrap();
+        let lua = Lua::new_with(StdLib::COROUTINE | StdLib::TABLE | StdLib::STRING | StdLib::VECTOR, Default::default()).unwrap();
         install(&lua).unwrap();
         set_folder(&lua, "drawtest");
         lua
@@ -1142,8 +1241,8 @@ mod tests {
         let drawn = shown(&b);
         assert_eq!(drawn.iter().map(|(_, s)| s.group).collect::<Vec<_>>(), [1, 0, NONE]);
         let groups = canvas(&b).unwrap().ready.borrow().groups.clone();
-        assert_eq!(groups[0], Group { parent: NONE, origin: [0.5, 0.5], scale: 2.0, rotation: 90.0, clip: None });
-        assert_eq!(groups[1], Group { parent: 0, origin: [0.0, 0.0], scale: 1.0, rotation: 0.0, clip: Some([0.0, 0.0, 0.2, 0.1]) });
+        assert_eq!(groups[0], Group { parent: NONE, origin: [0.5, 0.5], scale: 2.0, rotation: 90.0, clip: None, anchor: None });
+        assert_eq!(groups[1], Group { parent: 0, origin: [0.0, 0.0], scale: 1.0, rotation: 0.0, clip: Some([0.0, 0.0, 0.2, 0.1]), anchor: None });
         assert!(canvas(&b).unwrap().open.borrow().is_empty(), "closed with the turn");
         assert!(run(&a, "draw.pop()").is_err());
         run(&a, "draw.push(0, 0) draw.rect(0, 0, 1, 1) draw.pop()").unwrap();
@@ -1154,6 +1253,27 @@ mod tests {
         // third left open, empty).
         assert_eq!(list.groups.iter().map(|g| g.parent).collect::<Vec<_>>(), [NONE, NONE, 1, NONE]);
         assert_eq!(list.sprites.iter().map(|s| s.group).collect::<Vec<_>>(), [0, 2, 1, NONE]);
+    }
+
+    /// A drawing in the world is in a group of its own at its point, with
+    /// the style's distances.
+    #[test]
+    fn world() {
+        let lua = vm();
+        run(&lua, "
+            local far = draw.style{ distanceScale = 10, maxDistance = 100 }
+            draw.text3d('car', vector.create(1, 2, 3), 0.02, nil, far)
+            draw.push3d(vector.create(4, 5, 6))
+            draw.rect(0, 0.01, 0.1, 0.03)
+            draw.pop()
+        ").unwrap();
+        let drawn = shown(&lua);
+        assert_eq!(drawn.iter().map(|(_, s)| s.group).collect::<Vec<_>>(), [0, 1]);
+        let groups = canvas(&lua).unwrap().ready.borrow().groups.clone();
+        assert_eq!(groups[0].anchor, Some(Anchor { position: [1.0, 2.0, 3.0], scaled_at: 10.0, max_distance: 100.0 }));
+        assert_eq!(groups[1].anchor, Some(Anchor { position: [4.0, 5.0, 6.0], scaled_at: 0.0, max_distance: 0.0 }));
+        assert!(canvas(&lua).unwrap().open.borrow().is_empty());
+        assert!(run(&lua, "draw.push3d(vector.create(0 / 0, 0, 0))").is_err());
     }
 
     /// A turn cut short leaves the last whole one on screen; the next whole

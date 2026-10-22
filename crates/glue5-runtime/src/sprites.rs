@@ -4,7 +4,7 @@
 //! window's image after the game's frame is scaled to it (upscaled and
 //! generated frames too), under the application's own UI.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::Locked;
@@ -173,6 +173,20 @@ pub struct Group {
     /// What shows of it: centre x, y, width, height in its coordinates (on
     /// screen, the box around them when it is turned).
     pub clip: Option<[f32; 4]>,
+    /// Its 0, 0 is this point of the world, where the frame shown sees it
+    /// (`origin` and the groups around it then do not place it).
+    pub anchor: Option<Anchor>,
+}
+
+/// A point of the world a group follows on screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Anchor {
+    pub position: [f32; 3],
+    /// When not 0: the group is scaled by this distance (m) over the
+    /// camera's (larger nearer, smaller farther).
+    pub scaled_at: f32,
+    /// When not 0: farther than this (m), it is not drawn.
+    pub max_distance: f32,
 }
 
 /// What is drawn in a frame, in drawing order. Kept and reused: a list the
@@ -202,6 +216,9 @@ static LATEST: Mutex<Option<Arc<List>>> = Mutex::new(None);
 static SPARE: Mutex<Option<Arc<List>>> = Mutex::new(None);
 /// Changes with the list.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
+/// The latest list has groups in the world: the renderer needs each
+/// frame's camera.
+static WORLD: AtomicBool = AtomicBool::new(false);
 /// Images dropped so far.
 static DROPPED: AtomicU64 = AtomicU64::new(0);
 /// The window's image, in pixels (width << 32 | height), as last drawn.
@@ -214,6 +231,7 @@ pub fn publish(list: List) {
     if list.is_empty() && latest.is_none() {
         return;
     }
+    WORLD.store(list.groups.iter().any(|g| g.anchor.is_some()), Ordering::Relaxed);
     let old = std::mem::replace(&mut *latest, (!list.is_empty()).then(|| Arc::new(list)));
     GENERATION.fetch_add(1, Ordering::Release);
     drop(latest);
@@ -233,6 +251,12 @@ pub fn spare() -> List {
         }
         _ => List::default(),
     }
+}
+
+/// Whether the latest list has groups in the world (each frame's camera
+/// places them).
+pub fn in_world() -> bool {
+    WORLD.load(Ordering::Relaxed)
 }
 
 /// The list to draw.

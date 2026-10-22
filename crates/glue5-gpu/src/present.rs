@@ -975,7 +975,10 @@ impl Output {
         // before it; a second pass would load and store the whole window
         // again on tiling GPUs).
         let overlay = self.overlay.prepare(device, queue, &mut encoder, format, [size.0, size.1]);
-        let sprites = src.is_some() && self.sprites.prepare(device, queue, &mut encoder, format, [size.0, size.1]);
+        // The game's image in the window, and its camera, place sprites in
+        // the world.
+        let game = src.map(|p| (fit((p.width, p.height), size), p.camera));
+        let sprites = game.is_some_and(|game| self.sprites.prepare(device, queue, &mut encoder, format, [size.0, size.1], game));
         let mut pass = begin_pass(&mut encoder, &target, if src.is_some() { wgpu::Color::BLACK } else { BACKGROUND })
             .forget_lifetime();
         if let Some(p) = src {
@@ -1145,6 +1148,7 @@ impl Gpu {
         let mut present = if self.window { self.present_view(id) } else { None };
         if let Some(p) = &mut present {
             p.scene = self.scene.done.take();
+            p.camera = self.scene.view_proj().filter(|_| self.scene.sprites);
         }
         if self.settings.shot_every > 0
             && (self.stats.presents + self.total_presents).is_multiple_of(self.settings.shot_every as u64)
@@ -1175,6 +1179,7 @@ impl Gpu {
             _ => 1.0,
         };
         self.scene.next_frame(wanted, id, size, scale);
+        self.scene.sprites = glue5_runtime::sprites::in_world();
         self.stats.presents += 1;
         if self.last_stats.elapsed() >= Duration::from_secs(10) {
             self.total_presents += self.stats.presents;
@@ -1207,7 +1212,7 @@ impl Gpu {
         });
         let view = view.clone();
         t.used.set(epoch);
-        Some(crate::submit::Present { view, texture: t.tex.clone(), width: t.width, height: t.height, scene: None })
+        Some(crate::submit::Present { view, texture: t.tex.clone(), width: t.width, height: t.height, scene: None, camera: None })
     }
 
     /// Writes texture `id` to a PNG in the screenshot directory (once the GPU is done).

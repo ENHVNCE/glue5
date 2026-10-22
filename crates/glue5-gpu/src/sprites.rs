@@ -48,6 +48,24 @@ struct Texture {
     id: TextureId,
 }
 
+/// Where the game's image is in the window (x, y, width, height, pixels),
+/// and its camera (view-projection, row vectors), if known.
+pub(crate) type Game = ((u32, u32, u32, u32), Option<[[f32; 4]; 4]>);
+
+/// Where a point of the world is on screen (pixels), and how far it is
+/// from the camera (m); none when behind it.
+fn project(game: &Game, p: [f32; 3]) -> Option<(Pos2, f32)> {
+    let ((x, y, w, h), Some(m)) = *game else { return None };
+    let clip = |j: usize| p[0] * m[0][j] + p[1] * m[1][j] + p[2] * m[2][j] + m[3][j];
+    let depth = clip(3);
+    // Behind, or closer than the camera's near plane.
+    if depth < 0.1 {
+        return None;
+    }
+    let (nx, ny) = (clip(0) / depth, clip(1) / depth);
+    Some((pos2(x as f32 + (nx + 1.0) / 2.0 * w as f32, y as f32 + (1.0 - ny) / 2.0 * h as f32), depth))
+}
+
 /// Where a group is: what is drawn in it at `p` (pixels in its own
 /// coordinates) is at `offset + rot * p * scale` on screen, cut to `clip`.
 #[derive(Clone, Copy)]
@@ -92,6 +110,7 @@ impl Sprites {
         encoder: &mut wgpu::CommandEncoder,
         format: wgpu::TextureFormat,
         size: [u32; 2],
+        game: Game,
     ) -> bool {
         sprites::set_screen(size[0], size[1]);
         let generation = sprites::generation();
@@ -110,14 +129,16 @@ impl Sprites {
             self.layout.galleys.clear();
             self.seen = None;
         }
-        let relayout = self.seen.is_none_or(|(g, _, s)| g != generation || s != size);
+        // Sprites in the world move with the camera: every frame.
+        let world = game.1.is_some() && sprites::in_world();
+        let relayout = world || self.seen.is_none_or(|(g, _, s)| g != generation || s != size);
         if relayout {
             self.list = sprites::latest();
             let list = self.list.clone();
             let mut layout = std::mem::take(&mut self.layout);
             layout.begin();
             if let Some(list) = &list {
-                layout.list(list, size, |image| self.texture(device, queue, image));
+                layout.list(list, size, game, |image| self.texture(device, queue, image));
             }
             let renderer = &mut self.renderer.as_mut().unwrap().1;
             if let Some(delta) = layout.fonts.as_mut().and_then(Fonts::font_image_delta) {
@@ -261,7 +282,7 @@ impl Layout {
     }
 
     /// The list as batches, in pixels; `texture` gives an image's.
-    fn list(&mut self, list: &List, size: [u32; 2], mut texture: impl FnMut(&Arc<Image>) -> Option<TextureId>) {
+    fn list(&mut self, list: &List, size: [u32; 2], game: Game, mut texture: impl FnMut(&Arc<Image>) -> Option<TextureId>) {
         let (w, h) = (size[0] as f32, size[1] as f32);
         let screen = Rect::from_min_size(Pos2::ZERO, vec2(w, h));
         let px = |p: [f32; 2]| pos2(p[0] * w, p[1] * h);
@@ -278,6 +299,23 @@ impl Layout {
                 scale: parent.scale * g.scale,
                 ..parent
             };
+            if let Some(a) = g.anchor {
+                // At the point, as this frame's camera sees it; culled
+                // before anything in it is laid out.
+                let seen = project(&game, a.position).filter(|(_, d)| a.max_distance <= 0.0 || *d <= a.max_distance);
+                let angle = g.rotation.to_radians();
+                place = match seen {
+                    Some((at, distance)) => Place {
+                        offset: at.to_vec2(),
+                        rot: Rot2::from_angle(angle),
+                        angle,
+                        scale: g.scale * if a.scaled_at > 0.0 { (a.scaled_at / distance).clamp(0.05, 20.0) } else { 1.0 },
+                        clip: screen,
+                        hidden: false,
+                    },
+                    None => Place { hidden: true, ..root },
+                };
+            }
             if let Some(c) = g.clip {
                 let half = vec2(c[2] * w, c[3] * h) / 2.0;
                 let centre = px([c[0], c[1]]);
@@ -521,4 +559,24 @@ fn quad(mesh: &mut Mesh, center: Pos2, rot: Rot2, rect: [f32; 4], uv: [f32; 4], 
         mesh.vertices.push(Vertex { pos, uv: pos2(u, v), color });
     }
     mesh.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A point ahead of the camera lands where its projection says, in the
+    /// game's part of the window; one behind it is not drawn.
+    #[test]
+    fn projection() {
+        // Looking along +y from the origin: x right, z up, w the distance.
+        let camera = [[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]];
+        let game: Game = ((100, 0, 800, 600), Some(camera));
+        let (at, distance) = project(&game, [0.0, 10.0, 0.0]).unwrap();
+        assert_eq!((at, distance), (pos2(500.0, 300.0), 10.0));
+        let (at, _) = project(&game, [5.0, 10.0, 5.0]).unwrap();
+        assert_eq!(at, pos2(700.0, 150.0));
+        assert!(project(&game, [0.0, -10.0, 0.0]).is_none());
+        assert!(project(&((0, 0, 800, 600), None), [0.0, 10.0, 0.0]).is_none());
+    }
 }

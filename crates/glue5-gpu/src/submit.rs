@@ -53,6 +53,9 @@ pub struct Present {
     pub height: u32,
     /// The scene without the HUD, for a temporal upscaler (see scene.rs).
     pub scene: Option<crate::scene::SceneInputs>,
+    /// The frame's camera (view-projection, row vectors), while sprites in
+    /// the world want it.
+    pub camera: Option<[[f32; 4]; 4]>,
 }
 
 pub enum Grave {
