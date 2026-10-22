@@ -26,13 +26,6 @@ fn stubbed(setup: &str) -> Lua {
         wait = function() end
         task = { spawn = function(f, ...) f(...) end, wait = wait }
         mod = {}
-        -- Memory as addresses of the strings written there.
-        strings, nextAddress = {}, 0
-        memory = {
-            alloc = function() nextAddress += 64 return nextAddress end,
-            writeString = function(at, text) strings[at] = text end,
-        }
-        native = { invoke = function(name, ...) table.insert(calls, { "native." .. name, ... }) return 0 end }
         "#,
     )
     .exec()
@@ -102,16 +95,13 @@ fn long_text() {
         for _, c in calls do
             if c[1] == "hud.addTextComponentSubstringPlayerName" then table.insert(parts, c[2]) end
         end
-        return strings[calls[1][2]], parts
+        return calls[1][2], parts
         "#,
     );
     assert_eq!(label, "CELL_EMAIL_BCON");
     assert!(parts.iter().all(|p| p.len() <= 99), "{parts:?}");
     assert_eq!(parts.concat(), text);
-    // The label in the mod's memory: the game keeps its pointer.
-    let (command, short): (String, String) =
-        eval(&lua, "calls = {} ui.help('Press ~INPUT_CONTEXT~') return calls[1][1], strings[calls[1][2]]");
-    assert_eq!(command, "native.BEGIN_TEXT_COMMAND_DISPLAY_HELP");
+    let short: String = eval(&lua, "calls = {} ui.help('Press ~INPUT_CONTEXT~') return calls[1][2]");
     assert_eq!(short, "STRING");
     fails(&lua, "ui.subtitle(12)", "the text is a string");
     fails(&lua, "ui.buttons({ { 'x', 'Jump' } })", "ui.buttons: button 1");

@@ -7,7 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use glue5_game::{Env, exports};
+use glue5_game::{Env, exports, orig};
 use glue5_runtime::memory::Mem;
 use mlua::{Function, Lua, MultiValue, Table, Value};
 
@@ -273,12 +273,66 @@ thread_local! {
     static ENV: Cell<*mut Env> = const { Cell::new(std::ptr::null_mut()) };
 }
 
-/// Runs `f` with natives callable through `env`.
+/// Runs `f` with natives callable through `env`; then frees the text
+/// commands' labels the engine is done with.
 pub fn with_env<R>(env: *mut Env, f: impl FnOnce() -> R) -> R {
     let old = ENV.replace(env);
     let r = f();
+    // (The environment `ENV` holds is the engine thread's while it runs.)
+    unsafe { release_labels(ENV.get()) };
     ENV.set(old);
     r
+}
+
+/// Natives that keep their string past the call: a text command's label.
+/// `CScriptTextConstruction::Begin*` keeps the pointer (when no command is
+/// open), its END_TEXT_COMMAND_* reads the text through it; the strings of
+/// the components in between are copied.
+fn keeps_string(name: &str) -> bool {
+    name.starts_with("BEGIN_TEXT_COMMAND_")
+}
+
+/// The open text command's kind (u32, 0: none) and its label (u64).
+const TEXT_COMMAND: u64 = 23856328;
+const TEXT_LABEL: u64 = 23856056;
+
+thread_local! {
+    /// The labels given to text commands, in the game's heap: kept while
+    /// the engine may read them.
+    static LABELS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A copy of `bytes` (and a NUL) that outlives the call, for a text
+/// command's label.
+unsafe fn keep_label(env: *mut Env, bytes: &[u8]) -> Option<u64> {
+    unsafe { release_labels(env) };
+    let at = unsafe { orig::builtin_malloc(env, bytes.len() as u64 + 1) };
+    if at == 0 {
+        return None;
+    }
+    let mem = unsafe { Mem::of(env) };
+    mem.bytes_mut(at, bytes.len()).copy_from_slice(bytes);
+    mem.set_u8(at + bytes.len() as u64, 0);
+    LABELS.with_borrow_mut(|l| l.push(at));
+    Some(at)
+}
+
+/// Frees the labels the engine no longer reads: all but the open
+/// command's.
+unsafe fn release_labels(env: *mut Env) {
+    if LABELS.with_borrow(Vec::is_empty) {
+        return;
+    }
+    let mem = unsafe { Mem::of(env) };
+    let open = (mem.u32(TEXT_COMMAND) != 0).then(|| mem.u64(TEXT_LABEL));
+    let done: Vec<u64> = LABELS.with_borrow_mut(|l| {
+        let (keep, done) = l.drain(..).partition(|&at| Some(at) == open);
+        *l = keep;
+        done
+    });
+    for at in done {
+        unsafe { orig::builtin_free(env, at) };
+    }
 }
 
 /// Jenkins' one-at-a-time hash of the lowercase string (`GET_HASH_KEY`).
@@ -497,8 +551,13 @@ fn call_native(lua: &Lua, n: &'static Native, args: MultiValue, raw: bool) -> ml
                         if bytes.len() > MAX_STRING {
                             return Err(bad(&format!("a string of at most {} KB", MAX_STRING >> 10)));
                         }
-                        let at = alloc(bytes.len() as u64 + 1)?;
-                        mem.bytes_mut(at, bytes.len()).copy_from_slice(&bytes);
+                        let at = if keeps_string(n.name) {
+                            unsafe { keep_label(env, &bytes) }.ok_or_else(|| bad("a string the game has memory for"))?
+                        } else {
+                            let at = alloc(bytes.len() as u64 + 1)?;
+                            mem.bytes_mut(at, bytes.len()).copy_from_slice(&bytes);
+                            at
+                        };
                         mem.set_u64(target, at);
                     }
                     Value::Nil => {}
