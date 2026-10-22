@@ -25,6 +25,17 @@ use egui::epaint::{
 use egui::emath::{Align2, Pos2, Rect, Rot2, Vec2, pos2, vec2};
 use glue5_runtime::sprites::{self, Align, Font, Image, List, NONE, Rgba, Shape, Stroke};
 
+/// Time laying lists out (and recording their uploads), and how many,
+/// for the statistics.
+static LAYOUT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static LAYOUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The lists laid out since the last call, and the milliseconds that took.
+pub(crate) fn take_stats() -> (u64, f64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (LAYOUTS.swap(0, Relaxed), LAYOUT_NS.swap(0, Relaxed) as f64 / 1e6)
+}
+
 /// The font atlas's side at most (and its texture's).
 const ATLAS: usize = 2048;
 /// The font atlas's texture (as egui's).
@@ -136,6 +147,7 @@ impl Sprites {
         let world = game.1.is_some() && sprites::in_world();
         let relayout = world || self.seen.is_none_or(|(g, _, s)| g != generation || s != size);
         if relayout {
+            let started = std::time::Instant::now();
             self.list = sprites::latest();
             let list = self.list.clone();
             let mut layout = std::mem::take(&mut self.layout);
@@ -152,6 +164,8 @@ impl Sprites {
                 renderer.update_buffers(device, queue, encoder, &layout.primitives, &screen);
             }
             self.layout = layout;
+            LAYOUT_NS.fetch_add(started.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+            LAYOUTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         // Images nobody holds (the list laid out holds its own): their
         // textures go.
@@ -644,5 +658,133 @@ mod tests {
         assert_eq!(at, pos2(700.0, 150.0));
         assert!(project(&game, [0.0, -10.0, 0.0]).is_none());
         assert!(project(&((0, 0, 800, 600), None), [0.0, 10.0, 0.0]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod cost {
+    use std::time::Instant;
+
+    use glue5_runtime::sprites::{Anchor, Group};
+
+    use super::*;
+
+    /// The stress list (as the stress mod's): 5,000 shapes, 500 texts, 300
+    /// sprites from a sheet, 100 labels in the world.
+    fn stress() -> List {
+        let mut list = List::default();
+        let image = Image::new(256, 64, vec![200; 256 * 64 * 4]);
+        let names: Vec<Arc<str>> = (0..50).map(|i| format!("Label {i}").into()).collect();
+        let numbers: Vec<Arc<str>> = (0..50).map(|i| format!("{}", i * 7).into()).collect();
+        let at = |i: usize| [(i as f32 * 0.618_034) % 1.0, (i as f32 * 0.414_213_5) % 1.0];
+        let stroke = Stroke { color: [255; 4], width: 0.001 };
+        let mut push = |shape| list.sprites.push(sprites::Sprite { shape, additive: false, group: NONE });
+        for i in 1..=2000 {
+            push(Shape::Rect { center: at(i), size: [0.01, 0.01], rotation: 0.0, fill: [48, 128, 255, 128], gradient: None, rounding: if i % 2 == 0 { 0.004 } else { 0.0 }, stroke: None });
+        }
+        for i in 2001..=3500 {
+            push(Shape::Circle { center: at(i), radius: 0.006, fill: Some([255, 128, 48, 128]), stroke: (i % 3 == 0).then_some(stroke) });
+        }
+        for i in 3501..=4500 {
+            let a = at(i);
+            push(Shape::Line { from: a, to: [a[0] + 0.02, a[1] + 0.01], stroke });
+        }
+        for i in 4501..=5000 {
+            push(Shape::Arc { center: at(i), radius: 0.01, from: -90.0, to: 90.0 + (i % 180) as f32, stroke: Stroke { width: 0.002, ..stroke } });
+        }
+        for i in 1..=500 {
+            let text = if i <= 450 { names[i % 50].clone() } else { numbers[i % 50].clone() };
+            push(Shape::Text { text, at: at(i), size: 0.015, rotation: 0.0, align: Align::Left, color: [255; 4], wrap: 0.0, font: None });
+        }
+        for i in 1..=300 {
+            let f = (i % 4) as f32 / 4.0;
+            push(Shape::Image { image: image.clone(), center: at(i + 300), size: [0.03, 0.0], rotation: 0.0, tint: [255; 4], uv: [f, 0.0, f + 0.25, 1.0], nine: None });
+        }
+        for i in 0..100 {
+            let a = i as f32 * 0.7;
+            list.groups.push(Group {
+                parent: NONE,
+                origin: [0.0, 0.0],
+                scale: 1.0,
+                rotation: 0.0,
+                clip: None,
+                anchor: Some(Anchor { position: [a.cos() * 20.0, 30.0 + a.sin() * 20.0, 1.0], scaled_at: 20.0, max_distance: 300.0 }),
+            });
+            list.sprites.push(sprites::Sprite {
+                shape: Shape::Text { text: names[i % 50].clone(), at: [0.0, 0.0], size: 0.02, rotation: 0.0, align: Align::Center, color: [255; 4], wrap: 0.0, font: None },
+                additive: false,
+                group: i as u32,
+            });
+        }
+        list
+    }
+
+    /// What the stress list costs at 1920×1080: laying it out (CPU, every
+    /// frame, as with labels in the world), and drawing it (GPU: a frame's
+    /// pass with it, less the same pass without). Run with
+    /// `cargo test -r -p glue5-gpu -- --ignored sprites_cost --nocapture`.
+    #[test]
+    #[ignore]
+    fn sprites_cost() {
+        let adapter = pollster::block_on(crate::instance().request_adapter(&Default::default())).unwrap();
+        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let size = [1920, 1080];
+        let format = wgpu::TextureFormat::Bgra8Unorm;
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        sprites::publish(stress());
+        // A camera looking north from the south of the labels.
+        let camera = [[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, -0.1, 1.0], [0.0, 1.7, 0.0, 0.0], [0.0, -1.7, 0.1, 0.0]];
+        let game = ((0, 0, size[0], size[1]), Some(camera));
+        let mut sprites = Sprites::default();
+        let frame = |sprites: &mut Sprites, draw: bool| {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let t = Instant::now();
+            let shown = draw && sprites.prepare(&device, &queue, &mut encoder, format, size, game);
+            let cpu = t.elapsed();
+            let mut pass = crate::present::begin_pass(&mut encoder, &view, wgpu::Color::BLACK).forget_lifetime();
+            if shown {
+                sprites.render(&mut pass, size);
+            }
+            drop(pass);
+            let t = Instant::now();
+            queue.submit([encoder.finish()]);
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            (cpu, t.elapsed())
+        };
+        for _ in 0..10 {
+            frame(&mut sprites, true);
+        }
+        let n = 100;
+        let (mut cpu, mut with, mut without) = (0.0, 0.0, 0.0);
+        for _ in 0..n {
+            let (c, g) = frame(&mut sprites, true);
+            cpu += c.as_secs_f64();
+            with += g.as_secs_f64();
+            without += frame(&mut sprites, false).1.as_secs_f64();
+        }
+        let ms = |s: f64| s * 1000.0 / n as f64;
+        let batches = sprites.layout.primitives.len();
+        let (vertices, indices) = sprites.layout.primitives.iter().fold((0, 0), |(v, i), p| match &p.primitive {
+            Primitive::Mesh(m) => (v + m.vertices.len(), i + m.indices.len()),
+            Primitive::Callback(_) => (v, i),
+        });
+        println!(
+            "sprites: layout + uploads {:.2} ms CPU a frame; pass {:.2} ms (without {:.2}): {:.2} ms GPU; {batches} draw calls, {vertices} vertices, {} triangles",
+            ms(cpu),
+            ms(with),
+            ms(without),
+            ms(with - without),
+            indices / 3
+        );
     }
 }

@@ -1336,6 +1336,10 @@ impl Gpu {
         if let Some(ms) = crate::present::take_upscaling() {
             frames_line += &format!(", upscaling {ms:.2} ms GPU");
         }
+        // The mods' drawings laid out (only when there are some).
+        if let (n @ 1.., ms) = crate::sprites::take_stats() {
+            frames_line += &format!(", sprites {:.2} ms a list ({n})", ms / n as f64);
+        }
         let [encode, submit, gpu_wait, drawable, present, release] = self.submitter.stats.take();
         let per_frame = |d: Duration| d.as_secs_f64() * 1000.0 / frames as f64;
         let mut skipped: Vec<_> = st.skipped.iter().map(|(k, n)| format!("{k} {n}")).collect();
