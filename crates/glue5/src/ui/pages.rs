@@ -434,6 +434,12 @@ fn info(
     if let Some(why) = status.last_failure {
         card(ui, |ui| last_failure(ui, why, status.graphics_reset, actions));
     }
+    if let Some(why) = status.drivers.and_then(|d| d.fallback.as_deref()) {
+        card(ui, |ui| {
+            card_title(ui, "GPU DRIVER", Some(("Phone's", WARN)));
+            ui.label(RichText::new(why).small().color(theme::MUTED));
+        });
+    }
     ui.label(RichText::new(open_hint()).small().color(theme::MUTED));
 }
 
@@ -1157,7 +1163,8 @@ mod tests {
         }
         // With an Adreno GPU, its drivers last.
         let packages = vec![crate::drivers::Package { id: "turnip".into(), name: "Turnip".into(), library: "vulkan.ad07XX.so".into() }];
-        let drivers = Drivers { packages, in_use: None, running: "Driver Build: 0e9a8a8".into(), adding: false };
+        let drivers =
+            Drivers { packages, in_use: None, running: "Driver Build: 0e9a8a8".into(), adding: false, fallback: None };
         let mut settings = Settings::default();
         settings.gpu_driver = Some("turnip".into());
         phone_video_options(settings, Some(&drivers), "GPU drivers");

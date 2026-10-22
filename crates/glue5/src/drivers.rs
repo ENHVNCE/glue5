@@ -43,6 +43,9 @@ pub struct Drivers {
     pub running: String,
     /// A package is being added.
     pub adding: bool,
+    /// Why the phone's driver runs although another was chosen (it went
+    /// back to it at launch), for the start page.
+    pub fallback: Option<String>,
 }
 
 /// `meta.json` (libadrenotools' ADPKG.md); the rest of its fields are
@@ -147,14 +150,15 @@ pub fn instance(user_dir: &Path, chosen: &mut Option<String>) -> (wgpu::Instance
     };
     let why = match package {
         None => failed(format!("The GPU driver {id} is no longer there: the phone's is in use.")),
-        Some(_) if mark.exists() => failed(format!(
-            "The GPU driver {id} stopped Glue 5 before its start page last time: the phone's is in use again."
+        Some(p) if mark.exists() => failed(format!(
+            "The GPU driver {} stopped Glue 5 before its start page last time: the phone's is in use again.",
+            p.name
         )),
         Some(p) => {
             let _ = std::fs::write(&mark, &p.id);
             match glue5_gpu::instance_with_driver(&dir(user_dir).join(&p.id), &p.library) {
                 Ok(instance) => return (instance, None),
-                Err(e) => failed(format!("The GPU driver {} did not open ({e:#}): the phone's is in use.", p.name)),
+                Err(e) => failed(format!("The GPU driver {} did not open: {e:#}. The phone's is in use.", p.name)),
             }
         }
     };

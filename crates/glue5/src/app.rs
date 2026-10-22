@@ -127,7 +127,7 @@ pub fn run() -> Result<()> {
         presentation: presentation.clone(),
         overlay: overlay.clone(),
     })?;
-    let drivers = gpu_drivers(&user_dir, &settings, &screen.adapter_info());
+    let drivers = gpu_drivers(&user_dir, &settings, &screen.adapter_info(), driver_note);
     // While the system resizes the window in a loop of its own (macOS,
     // Windows), events wait for it to end, and so does this loop; SDL still
     // calls watches, and from there the renderer follows the window. The
@@ -240,10 +240,9 @@ pub fn run() -> Result<()> {
         game: None,
     };
     app.last_failure = std::fs::read_to_string(app.user_dir.join(FAILURE_FILE)).ok();
-    if let Some(note) = driver_note {
+    if app.drivers.as_ref().is_some_and(|d| d.fallback.is_some()) {
         // The setting went back to the phone's driver.
         app.settings.save(&app.user_dir);
-        app.ui.note(note);
     }
     app.find_game(args.game_dir.as_deref());
     if args.play {
@@ -1812,18 +1811,24 @@ fn mouse_bit(b: MouseButton) -> u32 {
 }
 
 /// What the settings show of the GPU drivers the user can add: on Android
-/// with an Adreno GPU (Qualcomm's), or once some were added.
-fn gpu_drivers(user_dir: &Path, settings: &Settings, info: &wgpu::AdapterInfo) -> Option<drivers::Drivers> {
+/// with an Adreno GPU (Qualcomm's), or once some were added; `fallback`,
+/// why the one chosen does not run.
+fn gpu_drivers(
+    user_dir: &Path,
+    settings: &Settings,
+    info: &wgpu::AdapterInfo,
+    fallback: Option<String>,
+) -> Option<drivers::Drivers> {
     const QUALCOMM: u32 = 0x5143;
     let packages = drivers::list(user_dir);
-    if !cfg!(target_os = "android") || (info.vendor != QUALCOMM && packages.is_empty()) {
+    if !cfg!(target_os = "android") || (info.vendor != QUALCOMM && packages.is_empty() && fallback.is_none()) {
         return None;
     }
     // Its version, as the driver gives it (Qualcomm's: its build, date,
     // compiler...).
     let version = info.driver_info.split(',').next().map(str::trim).filter(|v| !v.is_empty());
     let running = version.unwrap_or(&info.driver).chars().take(60).collect();
-    Some(drivers::Drivers { packages, in_use: settings.gpu_driver.clone(), running, adding: false })
+    Some(drivers::Drivers { packages, in_use: settings.gpu_driver.clone(), running, adding: false, fallback })
 }
 
 /// The system's folder or file picker, answered asynchronously (SDL calls
