@@ -17,6 +17,7 @@ use super::{Draft, Landing, Level, RowAction, row_id};
 pub(super) const FILL: Color32 = Color32::from_gray(28);
 const FILL_LIT: Color32 = Color32::from_gray(33);
 const FIELD: Color32 = Color32::from_gray(36);
+const PLACEHOLDER: Color32 = Color32::from_gray(100);
 
 /// A row as allocated: the whole of it, where its control goes, and the
 /// row's widget.
@@ -181,6 +182,34 @@ pub(super) fn row(ui: &mut Ui, item: &MenuItem, draft: &mut Option<Draft>, landi
             let keys = row.response.has_focus();
             row.response.clicked().then_some(RowAction::Push { level: Level::Pick(item.id), keys })
         }
+        MenuKind::Text { value, placeholder, max } => {
+            let row = frame(ui, id, &item.label, note, (available * 0.6).min(320.0 * s), Sense::click(), landing);
+            let field = row.control;
+            ui.painter().rect_filled(field, 12.0 * s, FIELD);
+            let inner = field.shrink2(vec2(14.0 * s, 0.0));
+            let tapped = ui.interact(field, id.with("field"), Sense::CLICK).clicked();
+            match edit(ui, inner, item.id, draft, TextKind::Text, usize::from(*max), Align::LEFT) {
+                Edited::Typing => {
+                    ui.painter().rect_stroke(field, 12.0 * s, Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
+                    None
+                }
+                Edited::Committed(text) => {
+                    if text_committed_by_enter(ui) {
+                        row.response.request_focus();
+                    }
+                    (text != *value).then_some(RowAction::Input(MenuInput::Text(text)))
+                }
+                Edited::No => {
+                    let (shown, color) = match placeholder {
+                        Some(p) if value.is_empty() => (p.as_str(), PLACEHOLDER),
+                        _ => (value.as_str(), Color32::WHITE),
+                    };
+                    let text = truncated(ui, RichText::new(shown).size(15.0 * s).color(color), inner.width());
+                    ui.painter().galley(pos2(inner.left(), inner.center().y - text.size().y * 0.5), text, color);
+                    (row.response.clicked() || tapped).then_some(RowAction::Edit)
+                }
+            }
+        }
         MenuKind::Submenu(menu) => {
             let row = frame(ui, id, &item.label, note, 16.0 * s, Sense::click(), landing);
             chevron(ui, row.control.right_center() - vec2(4.0 * s, 0.0), vec2(1.0, 0.0), MUTED);
@@ -234,6 +263,7 @@ pub(super) fn row(ui: &mut Ui, item: &MenuItem, draft: &mut Option<Draft>, landi
 /// What the typed entry of an item starts with.
 pub(super) fn edit_text(item: &MenuItem) -> String {
     match &item.kind {
+        MenuKind::Text { value, .. } => value.clone(),
         MenuKind::Number { value, step, .. } => format!("{:.*}", decimals(*step), value),
         _ => String::new(),
     }
