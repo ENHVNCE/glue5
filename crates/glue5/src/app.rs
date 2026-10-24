@@ -1063,7 +1063,7 @@ impl App {
         let s = &self.settings;
         let back_buffer = settings::render_size(self.window.size_in_pixels(), s.render_scale(), s.low_memory);
         if s.mods {
-            glue5_mods::install(&paths::mods_dir(&self.user_dir));
+            glue5_mods::install(&mods_dir(&self.user_dir));
         }
         let game = glue5_runtime::start(
             glue5_runtime::Config {
@@ -1373,7 +1373,7 @@ impl App {
     /// while it is on.
     fn update_studio(&mut self) {
         if self.settings.mods && glue5_mods::dir().is_none() {
-            glue5_mods::open(&paths::mods_dir(&self.user_dir));
+            glue5_mods::open(&mods_dir(&self.user_dir));
         }
         // None yet, "New" pressed, or not a code (an edited settings file).
         let code = match glue5_mods::studio::normalize(&self.settings.studio_code) {
@@ -1630,6 +1630,14 @@ impl App {
         }
         self.ui.repaint();
     }
+}
+
+/// The mods folder, with the mods that come with GLUE 5 put there (once a
+/// run of the app).
+fn mods_dir(user_dir: &Path) -> PathBuf {
+    let dir = paths::mods_dir(user_dir);
+    glue5_mods::bundled::install(&dir);
+    dir
 }
 
 /// The whole game downloaded from a server into `dir`: a copy (it has the

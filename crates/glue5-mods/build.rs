@@ -325,6 +325,53 @@ fn run() -> Result<()> {
     checker(&root)?;
     let web = studio_files(&root, &out)?;
     assets(&out, &web)?;
+    bundled(&root, &out)?;
+    Ok(())
+}
+
+/// The mods that come with GLUE 5, the repository's `mods/` (a folder each,
+/// with a main.luau): their files built in (`bundled.rs`), which
+/// glue5-mods' bundled.rs copies into the player's mods folder.
+fn bundled(root: &Path, out: &Path) -> Result<()> {
+    fn walk(root: &Path, at: &Path, files: &mut Vec<(String, PathBuf)>) -> Result<()> {
+        for entry in fs::read_dir(at)? {
+            let path = entry?.path();
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if name.starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                walk(root, &path, files)?;
+            } else {
+                let rel = path.strip_prefix(root)?.to_string_lossy().replace('\\', "/");
+                files.push((rel, path));
+            }
+        }
+        Ok(())
+    }
+    let dir = root.join("mods");
+    // A folder's whole tree, files added or removed too.
+    println!("cargo:rerun-if-changed={}", dir.display());
+    let mut s = String::from("pub static BUNDLED: &[(&str, &[(&str, &[u8])])] = &[\n");
+    let mut names: Vec<PathBuf> = fs::read_dir(&dir)?.map(|e| e.map(|e| e.path())).collect::<Result<_, _>>()?;
+    names.sort();
+    for m in names.iter().filter(|m| m.join("main.luau").is_file()) {
+        let name = m.file_name().unwrap_or_default().to_string_lossy();
+        anyhow::ensure!(
+            name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'),
+            "mods/{name}: a mod's name is lowercase letters, digits, - and _"
+        );
+        let mut files = Vec::new();
+        walk(m, m, &mut files)?;
+        files.sort();
+        writeln!(s, "    ({name:?}, &[")?;
+        for (rel, path) in files {
+            writeln!(s, "        ({rel:?}, include_bytes!({:?})),", path.display().to_string())?;
+        }
+        writeln!(s, "    ]),")?;
+    }
+    s.push_str("];\n");
+    fs::write(out.join("bundled.rs"), s)?;
     Ok(())
 }
 

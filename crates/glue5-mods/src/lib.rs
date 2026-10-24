@@ -5,8 +5,10 @@
 //! a `mod.json` (`{"autostart": true}`). The application calls [`install`]
 //! before the game starts, then [`start`], [`stop`], [`mods`] and [`logs`]
 //! from any thread; the mods themselves run on the engine's script update
-//! (engine.rs). [`studio`] serves GLUE 5 Studio and the MCP endpoint.
+//! (engine.rs). [`studio`] serves GLUE 5 Studio and the MCP endpoint;
+//! [`bundled`] puts the mods that come with GLUE 5 in the mods folder.
 
+pub mod bundled;
 mod checker;
 mod db;
 mod draw;
