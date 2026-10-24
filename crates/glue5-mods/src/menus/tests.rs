@@ -202,6 +202,20 @@ fn snapshot_and_rev() {
     assert_eq!(rev(&a), rev(&a.clone()));
 }
 
+/// Assignments that change nothing leave the menu's `rev` (a mod showing
+/// the game's state every frame costs the readers nothing).
+#[test]
+fn unchanged_assignments_keep_the_rev() {
+    let m = Mod::new("menus-test-same");
+    m.run("m = ui.menu('x') t = m:toggle('t') c = m:choice('c', { 'a', 'b' }) s = m:submenu('s')");
+    let rev = || crate::menus().iter().find(|x| x.instance == m.instance && x.parent.is_none()).unwrap().rev;
+    let before = rev();
+    m.run("t.value = false t.label = 't' t.note = nil t.enabled = true c.value = 1 c.options = { 'a', 'b' } m.title = 'x' s.visible = true");
+    assert_eq!(rev(), before);
+    m.run("t.value = true");
+    assert_eq!(rev(), before + 1);
+}
+
 /// The docs' Garage, as it was written for the first menus: it runs
 /// unchanged.
 #[test]

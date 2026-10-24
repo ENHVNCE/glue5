@@ -566,7 +566,7 @@ impl MenuRef {
                     let title = title.clone();
                     super::edit_item(row.item.id, |i| i.label = title);
                 }
-                super::edit_menu(self.id, |m| m.title = title);
+                super::edit_menu(self.id, super::MenuField::Title(title));
             }
             "note" => {
                 let note = optional_string(&what, &v, validate::NOTE)?;
@@ -576,7 +576,7 @@ impl MenuRef {
                     let note = note.clone();
                     super::edit_item(row.item.id, |i| i.note = note);
                 }
-                super::edit_menu(self.id, |m| m.note = note);
+                super::edit_menu(self.id, super::MenuField::Note(note));
             }
             "enabled" | "visible" => {
                 let on = boolean(&what, &v)?;
