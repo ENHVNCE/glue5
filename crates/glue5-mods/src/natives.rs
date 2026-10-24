@@ -639,6 +639,15 @@ fn call_native(lua: &Lua, n: &'static Native, args: MultiValue, raw: bool) -> ml
                 qualified(n)
             )));
         }
+        // A mod's script is no network script of the game's (they are
+        // listed in its script data): the engine stops the game when one
+        // asks to be one.
+        if n.name.starts_with("NETWORK_SET_THIS_SCRIPT_IS_NETWORK_SCRIPT") || n.name == "NETWORK_TRY_TO_SET_THIS_SCRIPT_IS_NETWORK_SCRIPT" {
+            return Err(mlua::Error::runtime(format!(
+                "{}: a mod's script cannot be a network script (the game stops for it); what it makes is this player's own",
+                qualified(n)
+            )));
+        }
         // The engine fails when a pool is full: refused before that
         // (CREATE_PED, CLONE_PED, CREATE_VEHICLE...).
         if n.name.starts_with("CREATE_") || n.name.starts_with("CLONE_") {
