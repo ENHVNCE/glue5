@@ -1,35 +1,35 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: mempage4k <mempage4k@users.noreply.github.com>
 Date: Thu, 22 Oct 2026 19:00:00 +0200
-Subject: [PATCH] wgpu-core: a pass's barriers first, in the open command buffer
+Subject: [PATCH] wgpu-core: a pass's barriers first in its own command buffer
 
 Where command buffers cannot be suspended (Vulkan, since wgpu-hal 0005
-left it out), each render pass ended the command buffer before it and took
-two of its own: one for the pass, one for the barriers before it (recorded
-after the pass, because only then are its resources known). What came
-after the pass (copies, clears) began yet another. On a Pixel 8a (Mali)
-that cost ~16 ms of CPU a frame (~54 passes): 34 -> 50 ms of encoding,
-29 -> 25 fps.
+left it out), each render pass took two raw command buffers again: its
+own, and one for the barriers before it, recorded after the pass because
+only then are its resources known. On a Pixel 8a (Mali) the second one
+cost ~16 ms of CPU a frame (~54 passes): 34 -> 50 ms of encoding, 29 ->
+25 fps.
 
 A render pass's resources are known before it is recorded when nothing
 but its attachments and the bind groups, vertex and index buffers its
 commands set adds a usage: no queries, timestamps, bundles or indirect
 draws, and no discarded surface to clear first. Such a pass now merges
-those into a usage scope, records its barriers just before the render
-pass begins (a hook in RenderPassInfo::start), and goes on in the command
-buffer the encoder has open, which stays open after it. Nothing is
-applied after the pass: the tracker already holds its usages, and
-applying them again would add barriers (a write after a write needs one
-where usages are not ordered, as on Vulkan) out of order.
+those into a usage scope and records its barriers at the start of its own
+command buffer, just before the render pass begins (a hook in
+RenderPassInfo::start), and nothing is applied after the pass: the
+tracker already holds its usages, and applying them again would add
+barriers (a write after a write needs one where usages are not ordered,
+as on Vulkan) in a command buffer that runs before those, which a Mali
+GPU answered with a lost device.
 
 And a pass that needs nothing before it (no barriers, clears, query
 resets or indirect draw validation) takes no command buffer for it.
 
 Measured on Metal with the tracker doing the same work (its barriers
 record nothing there): 93-94 % of a game's render passes take the first
-path (95 % on a Pixel 8a), and in none of them did the pass find a
-barrier after it that the scan had missed. Metal keeps suspending
-command buffers (0007), where barriers go at the end of the one before.
+path (95 % on a Pixel 8a), and in none of them did the pass find a barrier after it that the
+scan had missed. Metal keeps suspending command buffers (0007), where
+barriers go at the end of the one before.
 ---
 diff --git a/src/command/query.rs b/src/command/query.rs
 index 826cba5..5fd449c 100644
@@ -48,7 +48,7 @@ index 826cba5..5fd449c 100644
          Self {
              map: FastHashMap::default(),
 diff --git a/src/command/render.rs b/src/command/render.rs
-index 2a6d28e..bf4ee0d 100644
+index 2a6d28e..ac26a28 100644
 --- a/src/command/render.rs
 +++ b/src/command/render.rs
 @@ -1206,6 +1206,7 @@ impl RenderPassInfo {
@@ -69,17 +69,16 @@ index 2a6d28e..bf4ee0d 100644
          unsafe {
              encoder
                  .begin_render_pass(&hal_desc)
-@@ -2304,13 +2308,37 @@ pub(super) fn encode_render_pass(
- 
-     let mut indirect_draw_validation_batcher = crate::indirect_validation::DrawBatcher::new();
- 
+@@ -2324,6 +2328,32 @@ pub(super) fn encode_render_pass(
+             ArcRenderCommand::DrawIndirect { .. } => device.indirect_validation.is_some(),
+             _ => false,
+         });
 +    // glue5: where command buffers cannot be suspended (Vulkan), a pass
 +    // whose resources are all known before it is recorded (attachments,
 +    // bind groups, vertex and index buffers; no query, bundle or indirect
-+    // draw, no discarded surface to clear) records its barriers just before
-+    // the render pass begins, and both go on in the command buffer the
-+    // encoder has open: no command buffer of its own, none for its
-+    // barriers.
++    // draw, no discarded surface to clear) records its barriers at the
++    // start of its own command buffer, before the render pass begins: one
++    // command buffer a pass instead of two.
 +    let barriers_first = !parent_state.raw_encoder.raw.can_suspend()
 +        && timestamp_writes.is_none()
 +        && !parent_state.texture_memory_actions.has_discards()
@@ -94,41 +93,16 @@ index 2a6d28e..bf4ee0d 100644
 +                    | ArcRenderCommand::DrawIndirect { .. }
 +            )
 +        });
-+
-     // We automatically keep extending command buffers over time, and because
-     // we want to insert a command buffer _before_ what we're about to record,
-     // we need to make sure to close the previous one.
--    parent_state
--        .raw_encoder
--        .close_if_open()
--        .map_pass_err(pass_scope)?;
-+    if !barriers_first {
-+        parent_state
-+            .raw_encoder
-+            .close_if_open()
-+            .map_pass_err(pass_scope)?;
-+    }
-     // glue5: what may have to run before the pass besides barriers: clears
-     // of discarded surfaces, query resets, indirect draws' validation.
-     let only_barriers_before = parent_state.raw_encoder.raw.transitions_are_noops() && timestamp_writes.is_none()
-@@ -2324,7 +2352,15 @@ pub(super) fn encode_render_pass(
-             ArcRenderCommand::DrawIndirect { .. } => device.indirect_validation.is_some(),
-             _ => false,
-         });
--    let raw_encoder = if only_barriers_before {
 +    let mut barriers_recorded = false;
 +    let snatch_guard = parent_state.snatch_guard;
 +    let mut record_barriers = |raw: &mut dyn hal::DynCommandEncoder, tracker: &mut Tracker, attachments: &[RenderAttachment]| {
 +        barriers_recorded = barriers_before_begin(device, raw, tracker, attachments, &base.commands, snatch_guard);
 +    };
 +
-+    let raw_encoder = if barriers_first {
-+        parent_state.raw_encoder.open()
-+    } else if only_barriers_before {
+     let raw_encoder = if only_barriers_before {
          parent_state
              .raw_encoder
-             .open_pass_after(base.label.as_deref())
-@@ -2354,6 +2390,7 @@ pub(super) fn encode_render_pass(
+@@ -2354,6 +2384,7 @@ pub(super) fn encode_render_pass(
              parent_state.snatch_guard,
              parent_state.query_set_writes,
              multiview_mask,
@@ -136,23 +110,12 @@ index 2a6d28e..bf4ee0d 100644
          )
          .map_pass_err(pass_scope)?;
  
-@@ -2737,13 +2774,41 @@ pub(super) fn encode_render_pass(
- 
-         let pending_discard_init_fixups = state.pass.pending_discard_init_fixups;
- 
--        parent_state.raw_encoder.close_pass().map_pass_err(pass_scope)?;
-+        if !barriers_recorded {
-+            parent_state.raw_encoder.close_pass().map_pass_err(pass_scope)?;
-+        }
-         (trackers, pending_discard_init_fixups, pending_query_resets)
-     };
- 
+@@ -2744,6 +2775,31 @@ pub(super) fn encode_render_pass(
      let encoder = &mut parent_state.raw_encoder;
      let tracker = &mut parent_state.tracker;
  
-+    // glue5: the pass's barriers went just before it, in the command buffer
-+    // that stays open for what comes next: the tracker already holds what
-+    // the pass uses (the same usages, the scan
++    // glue5: the pass's barriers went first in its own command buffer: the
++    // tracker already holds what the pass uses (the same usages, the scan
 +    // covering them all), and applying them again would add barriers (a
 +    // write after a write needs one where usages are not ordered, as on
 +    // Vulkan) in a command buffer that runs before those.
@@ -179,7 +142,7 @@ index 2a6d28e..bf4ee0d 100644
      {
          let transit = encoder
              .open_before_pass(hal_label(
-@@ -2791,6 +2856,43 @@ pub(super) fn encode_render_pass(
+@@ -2791,6 +2847,43 @@ pub(super) fn encode_render_pass(
      Ok(())
  }
  
