@@ -754,6 +754,29 @@ imports one (its files at the top or in one folder, with a main.luau;
 a name taken gets `-2`); an imported mod does not start with the game
 until the player says so.
 
+**Mods that come with GLUE 5** (Glue Trainer) are the repository's
+`mods/`, built into the app (glue5-mods' build script embeds their files)
+and copied into the mods folder when it opens (`bundled::install`): one
+code path for every platform, nothing to package per store, and once
+there they are mods like any other, which the Studio opens and players
+can change. A note in the folder (`.glue5/bundled.json`) keeps each
+installed file's hash, so updates go as a package manager's do with
+configuration files:
+
+- no folder (never installed, or deleted): the mod is installed as built;
+- every file as installed: the new version replaces them, adds its new
+  files and deletes those it dropped;
+- a file edited or deleted (or a folder of the player's with that name):
+  nothing is touched, and the player hears once per version that a newer
+  one is there for whoever deletes the folder.
+
+`mod.json` is not compared: the new one is written with what the player
+chose in it (starts with the game, restarts on save). What the mod
+keeps (its `settings.json`, storage and database) is never one of its
+files. The alternative, running them read-only from the app, would hide
+them from the Studio and from players who want to learn from them or
+change them.
+
 The Mods page holds them: the start page's Mods button, Settings › Game ›
 Mods, F7 in the game, and on touch screens a button beside the settings
 button while a mod has a menu. Its switch turns mods on; the folder opens

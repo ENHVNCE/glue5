@@ -25,6 +25,46 @@ Mods with a menu show it on the Mods page's **MENUS** (F7, or the button
 next to ⚙ on touch screens), drawn by the app: it works with touch,
 controllers, keyboard and mouse.
 
+## Glue Trainer
+
+GLUE 5 comes with a trainer: turn mods on and it is there, in the mods'
+menus (F7, or F4 straight into it, or the Studio).
+
+| | |
+|---|---|
+| **Search, Favourites** | Every feature and action of every menu in one list that filters as you type; the ones you pick, first in the menu. A toggle there is the feature itself. |
+| **Self** | God mode, proofs (bullets, fire, explosions...), health regeneration, no fall damage, no headshots, no ragdoll, heal, clean up; never wanted, any wanted level, ignored by everyone; super jump, super run, run and swim speed, unlimited stamina and special ability, noiseless, always a parachute, invisible, on fire; night and thermal vision, drunk. |
+| **Looks** | Any ped model of the game, by kind or by search; every piece of clothing and prop your model has; saved outfits; animations, scenarios, walks, moods. |
+| **Teleport** | The waypoint (F9) or every new one, the mission's objective, 10 m ahead, into the nearest vehicle; places of the map; coordinates; your own saved spots. |
+| **Vehicle** | The one you are in: repair, flip, engine, jump, delete, seats, back in your last one; doors, windows, locks; autopilot to the waypoint or around; indestructible, repairs itself, always clean, lands on its wheels, seatbelt; horn boost, instant brake, engine power, top speed, drift tyres, no gravity, invisible, rainbow paint. **Customs**: every part the game has for it (with the game's names), wheel types, colours, neon, tyre smoke, tint, plate, livery, extras, everything upgraded or random. |
+| **Spawn a vehicle** | Every vehicle of the installed game, by the game's classes or by search, named as the game names them; get in (aircraft in the air), replace the last one, fully upgraded, indestructible, your plate. **Your garage**: vehicles saved with their parts and colours, delivered as they were. |
+| **Weapons** | Every weapon at once or one by one (by group, or by search), fill or remove; the one in your hands: tint and every attachment it takes; saved loadouts; infinite ammo, no reloading, explosive and fire rounds, explosive punches; weapon and melee damage, damage taken; teleport, explosion (any of the game's explosions), delete, force, gravity and vehicle guns. |
+| **World** | The hour, frozen time, the device's time, slow motion; the weather, wind, waves, blackout, gravity; the game's screen filters; traffic and people, no trains and boats, no police dispatch, the army base, prison and airport open, riot; clear the area, knock out or disarm everyone, blow up or launch the vehicles; bodyguards (any ped, any weapon). In GTA Online the clock and the weather change for you. |
+| **Movement** | Noclip (F6) and a free camera (F8): the movement controls, Sprint for speed, Jump and Duck up and down. |
+| **Players** | In a GTA Online session, each player: how they are, go to them or into their vehicle, mark them, watch them, wear their outfit. Name tags, friendly fire. |
+| **Misc** | Your speed and where you are over the game; hide the HUD or the radar, reveal the map, big radar; the radio on foot, any station, next song, no police scanner; skip cutscenes, no stunt jumps. |
+| **Settings** | A key for any feature or action, notifications, km/h or mph, whether what is on comes back next time. |
+
+The lists come from the installed game, as the game names them: its
+vehicles, peds and weapons, the classes of its vehicles, the parts a
+vehicle has, a weapon's attachments, a model's clothes, the radio's
+stations, the explosions. What is on, the values, the keys, the
+favourites and the settings are the trainer's `settings.json`; the saved
+spots, outfits, vehicles and loadouts its storage: they stay through
+updates.
+
+It is a mod like any other, in the mods folder (`glue-trainer`): open it
+in the Studio to see how it is made, or to make it yours. Each update of
+GLUE 5 brings its new version along, as long as you have not edited its
+files; once you have, your copy stays as it is (the app says so when a
+new version is out) and deleting the folder brings the new one back.
+Turning off "starts with the game" on its page is kept through updates.
+
+In GTA Online what a mod makes (vehicles, peds, objects) is the
+player's own: a mod's script is not one of the game's network scripts,
+so the others do not see it (`NETWORK_SET_THIS_SCRIPT_IS_NETWORK_SCRIPT`
+is refused: the game stops for a script it does not know).
+
 ## GLUE 5 Studio
 
 The Mods page's **Studio** tab starts it and shows its address, its

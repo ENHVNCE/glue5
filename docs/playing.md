@@ -37,6 +37,7 @@ boxes bring up the system keyboard.
 | GLUE 5's settings | F1 | hold Back + Start | ⚙ |
 | Friends | Home | hold Back + RB | ♡ on the start page |
 | Mods' menus | F7 | | the button next to ⚙ (when a mod has a menu) |
+| [Glue Trainer](mods.md#glue-trainer) (mods on) | F4 | in the mods' menus | in the mods' menus |
 
 In GLUE 5's pages, move with the D-pad or the arrow keys, select with A or
 Enter, go back with B or Esc.
