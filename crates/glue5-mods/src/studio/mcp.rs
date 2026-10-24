@@ -86,8 +86,9 @@ fn tools() -> Value {
         tool("list_mods", "The mods: name, state (running, stopped, error), the error, time per frame, files.", json!({}), &[]),
         tool("create_mod", "Creates a mod folder with a main.luau to start from.", json!({ "name": string("lowercase letters, digits, - and _") }), &["name"]),
         tool("read_file", "Reads a mod's file.", json!({ "path": string("<mod>/<file>, e.g. trainer/main.luau") }), &["path"]),
-        tool("write_file", "Writes a mod's file whole, and answers with the type checker's diagnostics for .luau files (none: it checks). A running mod restarts with it when its mod.json says restartOnSave (the default); the answer then has its state and first log lines.", json!({ "path": string("<mod>/<file>"), "content": string("the whole file") }), &["path", "content"]),
-        tool("delete_file", "Deletes a mod's file.", json!({ "path": string("<mod>/<file>") }), &["path"]),
+        tool("write_file", "Writes a mod's file whole (in folders too: <mod>/core/prefs.luau), and answers with the type checker's diagnostics for .luau files (none: it checks). A running mod restarts with it when its mod.json says restartOnSave (the default); the answer then has its state and first log lines.", json!({ "path": string("<mod>/<file>"), "content": string("the whole file") }), &["path", "content"]),
+        tool("delete_file", "Deletes a mod's file, or a folder of it with what it holds (folders left empty go too).", json!({ "path": string("<mod>/<file> or <mod>/<folder>") }), &["path"]),
+        tool("rename_file", "Renames or moves a mod's file or folder within the mod (the folders it goes into are made). A file in a folder is required from beside it: require(\"./name\"), require(\"../core/name\").", json!({ "from": string("<mod>/<file> or <mod>/<folder>"), "to": string("<mod>/<new path>") }), &["from", "to"]),
         tool("check", "The type checker's diagnostics for a .luau file, as saved.", json!({ "path": string("<mod>/<file>.luau") }), &["path"]),
         tool("start_mod", "Starts a mod, and answers with its state and log after about a second.", json!({ "name": string("the mod") }), &["name"]),
         tool("restart_mod", "Stops a mod if it runs and starts it again (after changing its files), and answers with its state and log after about a second.", json!({ "name": string("the mod") }), &["name"]),
@@ -140,6 +141,10 @@ fn call(name: &str, a: &Value) -> Value {
             "delete_file" => {
                 files::delete(s("path")?)?;
                 json!({ "deleted": s("path")? })
+            }
+            "rename_file" => {
+                files::rename(s("from")?, s("to")?)?;
+                json!({ "renamed": s("from")?, "to": s("to")? })
             }
             "check" => {
                 super::checker_used_by_agent();
