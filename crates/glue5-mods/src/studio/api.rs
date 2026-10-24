@@ -16,7 +16,8 @@ use crate::{Menu, MenuInput, MenuItem, MenuKind, Rgba, files, natives};
 pub const GUIDE: &str = r#"# GLUE 5 mods
 
 A mod is a folder in the mods folder: `main.luau` runs when the mod starts,
-other `.luau` files load with `require("./name")`, and `mod.json`, if there
+other `.luau` files load with `require("./name")` (beside the file that
+asks; `"../core/name"` from a folder up, within the mod), and `mod.json`, if there
 is one, says what the mod is (the Studio shows it as the mod's page):
 `{"name": "Trainer", "description": "...", "author": "...", "version":
 "1.0", "autostart": false, "restartOnSave": true}`, every key optional;

@@ -494,26 +494,62 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
     Ok((lua, deadline))
 }
 
-/// `require("./menu")`: the mod's `menu.luau`, run once.
+/// `require("./menu")`: `menu.luau` beside the file that asks, as Luau's
+/// require by string has it (and the Studio's checker): `./` that file's
+/// folder, `../` the one above, never out of the mod's folder. Each file
+/// runs once.
 fn require(lua: &Lua, name: &str, dir: &Path) -> mlua::Result<Function> {
     let loaded: RefCell<HashMap<PathBuf, Value>> = RefCell::default();
     let (name, dir) = (name.to_string(), dir.to_path_buf());
     lua.create_function(move |lua, path: String| {
-        let rel = path
-            .strip_prefix("./")
-            .filter(|r| !r.split('/').any(|p| p.is_empty() || p.starts_with('.')))
-            .ok_or_else(|| mlua::Error::runtime(format!("require(\"{path}\"): a file of the mod, as \"./name\"")))?;
+        // Where the calling function's chunk is: `@<mod>/core/bind.luau`.
+        let from = lua.inspect_stack(1, |d| d.source().source.map(|s| s.into_owned())).flatten().unwrap_or_default();
+        let rel = module_path(&name, &from, &path).map_err(|e| mlua::Error::runtime(format!("require(\"{path}\"): {e}")))?;
         let file = dir.join(format!("{rel}.luau"));
         if let Some(v) = loaded.borrow().get(&file) {
             return Ok(v.clone());
         }
         let source = std::fs::read_to_string(&file)
-            .map_err(|e| mlua::Error::runtime(format!("require(\"{path}\"): {e}")))?;
+            .map_err(|e| mlua::Error::runtime(format!("require(\"{path}\"): {rel}.luau: {e}")))?;
         let value: Value = lua.load(source).set_name(format!("@{name}/{rel}.luau")).call(())?;
         let value = if value.is_nil() { Value::Boolean(true) } else { value };
         loaded.borrow_mut().insert(file, value.clone());
         Ok(value)
     })
+}
+
+/// The file `path` names from the chunk `from` (`@<mod>/<file>.luau`; the
+/// mod's folder for another, a console's), relative to the mod's folder
+/// and without `.luau`.
+fn module_path(name: &str, from: &str, path: &str) -> Result<String, String> {
+    let mut at: Vec<&str> = match from.strip_prefix('@').and_then(|f| f.strip_prefix(name)).and_then(|f| f.strip_prefix('/')) {
+        Some(file) => file.split('/').collect(),
+        None => vec!["main.luau"],
+    };
+    // The folder of the file that asks.
+    at.pop();
+    let mut parts = path.split('/');
+    match parts.next() {
+        Some(".") => {}
+        Some("..") => {
+            at.pop().ok_or("not in the mod's folder")?;
+        }
+        _ => return Err("a file of the mod, from the file that asks: \"./name\", \"../core/name\"".into()),
+    }
+    for p in parts {
+        match p {
+            ".." => {
+                at.pop().ok_or("not in the mod's folder")?;
+            }
+            "" | "." => return Err("a path of names, as \"./core/name\"".into()),
+            p if p.starts_with('.') => return Err("names starting with a dot are not the mod's".into()),
+            p => at.push(p),
+        }
+    }
+    if at.is_empty() {
+        return Err("a file, not a folder".into());
+    }
+    Ok(at.join("/"))
 }
 
 /// An error as people read it: its message, and where in the mod's files it
@@ -719,6 +755,24 @@ mod tests {
 
     fn value(lua: &Lua, code: &str) -> Value {
         lua.load(code).eval().unwrap()
+    }
+
+    /// `require` paths go from the file that asks, as Luau's and the
+    /// checker's do, and stay in the mod's folder.
+    #[test]
+    fn require_paths() {
+        let m = |from: &str, path: &str| super::module_path("t", from, path);
+        assert_eq!(m("@t/main.luau", "./core/bind"), Ok("core/bind".into()));
+        assert_eq!(m("@t/core/bind.luau", "./prefs"), Ok("core/prefs".into()));
+        assert_eq!(m("@t/features/self.luau", "../core/bind"), Ok("core/bind".into()));
+        assert_eq!(m("@t/a/b/c.luau", "../../x"), Ok("x".into()));
+        assert_eq!(m("=eval", "./menu"), Ok("menu".into()));
+        assert!(m("@t/main.luau", "../x").unwrap_err().contains("not in the mod's folder"));
+        assert!(m("@t/a/b.luau", "./../../x").unwrap_err().contains("not in the mod's folder"));
+        assert!(m("@t/main.luau", "core/x").is_err());
+        assert!(m("@t/main.luau", "./.hidden").is_err());
+        assert!(m("@t/main.luau", "./a//b").is_err());
+        assert!(m("@t/main.luau", "./..").unwrap_err().contains("not in the mod's folder"));
     }
 
     #[test]

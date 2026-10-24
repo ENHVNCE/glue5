@@ -196,4 +196,20 @@ mod tests {
         })
         .unwrap();
     }
+
+    /// A required file's types come from beside the file that asks, as
+    /// the runtime loads it (`./`, `../`), never from out of the mod.
+    #[test]
+    fn requires_are_relative() {
+        Checker::with(|c| {
+            c.set("req/core/prefs.luau", Some("--!strict\nreturn { speed = 2 }\n"));
+            c.set("req/core/bind.luau", Some("--!strict\nlocal prefs = require(\"./prefs\")\nreturn { speed = prefs.speed }\n"));
+            c.set("req/features/self.luau", Some("--!strict\nlocal bind = require(\"../core/bind\")\nlocal n: number = bind.speed\nreturn n\n"));
+            c.set("req/main.luau", Some("--!strict\nlocal s: number = require(\"./features/self\")\nlocal x = require(\"../out\")\nprint(s, x)\n"));
+            assert_eq!(c.check("req/features/self.luau"), serde_json::json!([]));
+            let main = c.check("req/main.luau").to_string();
+            assert!(main.contains("Unknown require") && !main.contains("features/self"), "{main}");
+        })
+        .unwrap();
+    }
 }
