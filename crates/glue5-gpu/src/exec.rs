@@ -1183,9 +1183,9 @@ impl Gpu {
             }
             self.stats.decode_wait += t0.elapsed();
         }
-        // Memory goes right after the next submit: batches handed over
-        // earlier may still be waiting for theirs. Cached bind groups must
-        // not keep it.
+        // Handed to the submit thread with this batch, which lets it go
+        // after submitting it (see submit.rs): batches handed over earlier
+        // may still be waiting for theirs.
         match self.objs.remove(id) {
             Some(Obj::Texture(t)) => {
                 self.srv_object_changed(id);
