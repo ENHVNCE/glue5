@@ -155,6 +155,10 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
 .file-acts { display: none; gap: 2px; }
 .file-acts .icon-btn { width: 24px; height: 24px; }
 .file:hover .file-acts { display: flex; }
+.file.folder { color: var(--text-2); }
+.file .fold { font-style: normal; color: var(--muted); }
+/* Where a dragged file or folder would drop. */
+.file.drop, .mod.drop { background: var(--active); box-shadow: inset 0 0 0 1px var(--line-strong); }
 .file.new { color: var(--faint); }
 .file.new:hover { color: var(--text-2); }
 /* A mod's page (its mod.json), over the editor. */

@@ -117,6 +117,12 @@ pub(crate) struct S {
     pub(crate) tabs: RwSignal<Vec<Tab>>,
     pub(crate) active: RwSignal<Option<String>>,
     pub(crate) expanded: RwSignal<Vec<String>>,
+    /// The folders of mods' files the person closed (`<mod>/<dir>`).
+    pub(crate) folded: RwSignal<Vec<String>>,
+    /// A file or folder being dragged in the tree, and the folder (or mod) it
+    /// would drop into.
+    pub(crate) dragging: RwSignal<Option<String>>,
+    pub(crate) drop_at: RwSignal<Option<String>>,
     pub(crate) side: RwSignal<Side>,
     pub(crate) panel: RwSignal<Panel>,
     pub(crate) screen: RwSignal<Screen>,
