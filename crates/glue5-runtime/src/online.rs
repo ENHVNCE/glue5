@@ -17,13 +17,13 @@
 //! ONLINE and FRIENDS tabs and a friend's invite or join to lead into GTA
 //! Online. The story stays offline all the same: its scripts and the
 //! engine see a player online (`online_here`) only in GTA Online, and in
-//! what leads there (the menus, the transition).
+//! what leads there (the menus, the transition, an invite accepted).
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use glue5_game::{Env, orig};
+use glue5_game::{Env, exports, orig};
 
 use crate::memory::Mem;
 
@@ -89,14 +89,28 @@ static IN_GTA_ONLINE: AtomicBool = AtomicBool::new(false);
 const LEADING_ONLINE: &[&[u8]] = &[b"PauseMenu_Multiplayer", b"MainTransition"];
 /// `GtaThread`'s script name.
 const THREAD_NAME: u64 = 428;
+/// The invite manager's accepted invite (its session's info): valid from
+/// the invite accepted (a friend's session joined, an invite) until the
+/// scripts take it or turn it down (`InviteMgr::ClearInvite`).
+const ACCEPTED_INVITE: u64 = 29260624;
 
 /// Whether the local player is online for what asks now: in GTA Online,
 /// and in the story only for what leads there (the scripts above, the
-/// pause menu's lists of players and friends) and for its privileges. The story's own scripts see
+/// pause menu's lists of players and friends, an invite accepted) and for its privileges. The story's own scripts see
 /// it offline, as they did without the network: online, they would wait
 /// for Rockstar's services (the stock market, the cloud, the newswire...).
+///
+/// An invite accepted in the story is the story's scripts' to take: the
+/// game holds it (its processing suppressed since the start) while
+/// InGameHud loads the GTA Online character's stats (only then, in the
+/// story), and main_persistent turns it down unless they loaded and the
+/// cloud is there. Online for them while it is pending, as for a player
+/// online on PC (`tell_online` tells them so).
 pub(crate) unsafe fn online_here(env: *mut Env) -> bool {
     if IN_GTA_ONLINE.load(Ordering::Relaxed) || REFRESHING_PRIVILEGES.get() || crate::friends::game::in_player_menus() {
+        return true;
+    }
+    if unsafe { orig::session_info_valid(env, ACCEPTED_INVITE) } != 0 {
         return true;
     }
     let thread = unsafe { orig::script_active_thread(env) };
@@ -243,10 +257,55 @@ pub(crate) unsafe extern "C" fn live_manager_init(env: *mut Env, mode: u32) {
 /// friends (friends/game.rs).
 pub(crate) unsafe extern "C" fn live_manager_update(env: *mut Env, mode: u32) {
     unsafe { crate::friends::game::update(env) };
+    unsafe { tell_online(env) };
     crate::vnet::network_up(unsafe { Mem::of(env) });
     unsafe { tunables_requested(env) };
     unsafe { orig::live_manager_update(env, mode) };
     crate::vnet::network_up(unsafe { Mem::of(env) });
+}
+
+/// The story's scripts were told the player is online (`tell_online`).
+static TOLD_ONLINE: AtomicBool = AtomicBool::new(false);
+
+/// `CEventNetworkSignInStateChanged` (the scripts'
+/// EVENT_NETWORK_SIGN_IN_STATE_CHANGED): its vtable, its size, and its data
+/// at +32 (the script's struct: the gamer's index, then whether it is the
+/// active user, was signed in, was online, is signed in, is online, signed
+/// in twice), 8 bytes a field.
+const SIGN_IN_EVENT: u64 = 6212240;
+const SIGN_IN_EVENT_SIZE: u64 = 88;
+const SIGN_IN_DATA: u64 = 32;
+
+/// The story's scripts work out at their start whether the player may play
+/// online, signed in online (main_persistent's privileges; offline there, as
+/// the story is), and again when told the sign-in state changed. InGameHud
+/// loads the stats for an invite only with them. So when an invite accepted
+/// in the story makes the player online for them (`online_here`), they are
+/// told, once, as the engine tells them a player signed in online.
+unsafe fn tell_online(env: *mut Env) {
+    if IN_GTA_ONLINE.load(Ordering::Relaxed)
+        || TOLD_ONLINE.load(Ordering::Relaxed)
+        || unsafe { orig::session_info_valid(env, ACCEPTED_INVITE) } == 0
+    {
+        return;
+    }
+    TOLD_ONLINE.store(true, Ordering::Relaxed);
+    let m = unsafe { Mem::of(env) };
+    let Ok(top) = (unsafe { exports::emscripten_stack_get_current(env) }) else { return };
+    let Ok(event) = (unsafe { exports::_emscripten_stack_alloc(env, SIGN_IN_EVENT_SIZE) }) else { return };
+    m.bytes_mut(event, SIGN_IN_EVENT_SIZE as usize).fill(0);
+    m.set_u64(event, SIGN_IN_EVENT);
+    // Index 0, the active user, signed in before and now, online now.
+    for (field, value) in [(1, 1), (2, 1), (4, 1), (5, 1)] {
+        m.set_u32(event + SIGN_IN_DATA + field * 8, value);
+    }
+    unsafe {
+        let group = orig::event_network_group(env);
+        orig::event_network_add(env, group, event);
+        orig::ref_aware_drop(env, event);
+        let _ = exports::_emscripten_stack_restore(env, top);
+    }
+    log::info!("online: the story's scripts told the player is online, for an invite");
 }
 
 /// Rockstar's cloud tunables never come: their request counts as over

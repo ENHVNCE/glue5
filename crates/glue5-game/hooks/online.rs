@@ -23,6 +23,14 @@
     ("presence_online", "rage::rlPresence::IsOnline(int)"),
     ("local_player_online", "NetworkInterface::IsLocalPlayerOnline(bool)"),
     ("ros_credentials_held", "NetworkInterface::HasValidRosCredentials(int)"),
+    // An invite the player accepted (a friend's session joined, an invite),
+    // pending until the scripts take it: from the story, that leads there.
+    ("session_info_valid", "rage::rlSessionInfo::IsValid() const"),
+    // The scripts' network events (the sign-in state changed: the story's
+    // scripts told the player is online, for that invite).
+    ("event_network_group", "GetEventScriptNetworkGroup()"),
+    ("event_network_add", "CEventGroupScriptNetwork::Add(rage::fwEvent const&)"),
+    ("ref_aware_drop", "rage::fwRefAwareBaseImpl<rage::datBase>::~fwRefAwareBaseImpl()"),
     ("switch_to_multiplayer", "streaming_commands::SetupScriptCommands()::scrWrapped_SWITCH_TO_MULTI_FIRSTPART::Call(rage::scrThread::Info&)"),
     ("return_to_story", "CNetworkSession::OnReturnToSinglePlayer()"),
     // The checks on the way into freemode that Rockstar's services would
