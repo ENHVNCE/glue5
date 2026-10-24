@@ -494,6 +494,8 @@ pub struct Menu {
     pub title: String,
     /// A top-level menu's line under its title in the list of menus.
     pub note: Option<String>,
+    /// Players filter its rows by what they type (a long list's).
+    pub search: bool,
     pub items: Vec<MenuItem>,
     /// Bumped by every change to the menu or its items (structure or value).
     pub rev: u64,

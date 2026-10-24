@@ -14,7 +14,7 @@ fn item(id: u32, label: &str, kind: MenuKind) -> MenuItem {
 }
 
 fn menu(id: u32, module: &str, parent: Option<u32>, title: &str, items: Vec<MenuItem>) -> Menu {
-    Menu { module: module.into(), instance: 1, id, parent, title: title.into(), note: None, items, rev: 1 }
+    Menu { module: module.into(), instance: 1, id, parent, title: title.into(), note: None, search: false, items, rev: 1 }
 }
 
 fn menus() -> Vec<Menu> {

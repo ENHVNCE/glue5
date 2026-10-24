@@ -94,7 +94,7 @@ fn tools() -> Value {
         tool("stop_mod", "Stops a mod; what it created goes with it.", json!({ "name": string("the mod") }), &["name"]),
         tool("logs", "Log lines (prints, starts, errors with file:line) after a cursor; answers with the next cursor.", json!({ "since": { "type": "integer", "description": "cursor from the last call (0: all kept)" }, "mod": string("only this mod's lines") }), &[]),
         tool("eval", "Runs Luau in the game now (in a script thread, natives available) and answers with the values: e.g. entity.getEntityCoords(player.playerPedId(), true).", json!({ "code": string("an expression, or statements") }), &["code"]),
-        tool("menus", "The running mods' menus (ui.menu), all flat, submenus too: {mod, id, parent, title, note, rev, items}; \
+        tool("menus", "The running mods' menus (ui.menu), all flat, submenus too: {mod, id, parent, title, note, search (players filter its rows), rev, items}; \
             each item's id, kind (button, toggle, slider, number, choice, multi, text, color, label, separator, progress, submenu), \
             label, note, enabled, visible and value (indices from 1, colours #rrggbb[aa]); a submenu row's menu is the menu it opens.",
             json!({ "mod": string("only this mod's menus") }), &[]),

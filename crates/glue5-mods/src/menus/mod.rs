@@ -156,9 +156,10 @@ pub(crate) fn add_item(menu: u32, item: MenuItem) -> bool {
 pub(crate) enum MenuField {
     Title(String),
     Note(Option<String>),
+    Search(bool),
 }
 
-/// A mod changed menu `id`'s title or note.
+/// A mod changed menu `id`'s title, note or search.
 pub(crate) fn edit_menu(id: u32, field: MenuField) {
     let mut s = store();
     let Some(m) = s.menu_index(id) else { return };
@@ -166,11 +167,13 @@ pub(crate) fn edit_menu(id: u32, field: MenuField) {
     let same = match &field {
         MenuField::Title(t) => menu.title == *t,
         MenuField::Note(n) => menu.note == *n,
+        MenuField::Search(on) => menu.search == *on,
     };
     if !same {
         s.edit(m, |m| match field {
             MenuField::Title(t) => m.title = t,
             MenuField::Note(n) => m.note = n,
+            MenuField::Search(on) => m.search = on,
         });
     }
 }

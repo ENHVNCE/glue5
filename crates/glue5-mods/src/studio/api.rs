@@ -307,13 +307,14 @@ fn menu_json(m: &Menu) -> Value {
         "parent": m.parent,
         "title": m.title,
         "note": m.note,
+        "search": m.search,
         "rev": m.rev,
         "items": m.items.iter().map(item_json).collect::<Vec<_>>(),
     })
 }
 
 /// The mods' menus, all of them flat (top-level and submenus, in creation
-/// order): `{mod, id, parent, title, note, rev, items}`; the tree is
+/// order): `{mod, id, parent, title, note, search, rev, items}`; the tree is
 /// `parent` and the submenu rows' `menu`.
 pub fn menus() -> Value {
     Value::Array(crate::menus().iter().map(menu_json).collect())
