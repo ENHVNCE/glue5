@@ -219,8 +219,9 @@ pub(crate) unsafe fn update(env: *mut Env) {
         }
     }
     // Friends' sessions the player chose to join: the game asks whether to
-    // leave this one (kept until it is in one).
-    if let Some((ours, _)) = state.session {
+    // leave this one, or the story (kept while it is between sessions).
+    let ours = state.session.map(|(id, _)| id).or_else(|| (!super::in_gta_online()).then_some(0));
+    if let Some(ours) = ours {
         for id in super::take_joins() {
             unsafe { join(env, ours, id, true, false) };
         }
