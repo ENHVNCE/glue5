@@ -51,6 +51,7 @@ Enter, go back with B or Esc.
 | | **Frame rate** | Display (or Unlimited without VSync), 60, 40 (120 Hz screens) or 30. On Apple devices each frame is shown for the same time. |
 | | **VSync** | Waits for the display: no tearing. |
 | | **Performance overlay** | Frame times, CPU and GPU time, memory; Metal HUD on Apple devices. |
+| | **GPU driver** | Android phones with a Snapdragon (Adreno GPU): the phone's own driver, or one added with **GPU drivers › Add…** — an Adreno Tools package (`.zip`), such as Mesa's Turnip or a newer Qualcomm build, the kind emulators use. It applies from the next launch. |
 | Controls | **Touch controls** | Auto, On or Off; their size, opacity and camera speed. |
 | | **Aim assist** | Lock-on, Snap, Slow-down or Off, for touch aiming. |
 | | **Haptics** | The controller's rumble on the phone, while playing by touch. |
@@ -96,4 +97,5 @@ To make it smoother:
 | The app closes itself on a phone | The system ran out of memory: turn on **Low memory** in Settings › Game. |
 | iPhone: the app does not open after a week | With a free Apple ID, install it again every 7 days. |
 | Stutter after a while on a phone | The phone is hot: see [Performance](#performance). |
+| Android: worse with an added GPU driver | Choose **Phone's** in Settings › Video › GPU driver and open the app again. If a driver stops the app before its start page, the next launch goes back to the phone's driver by itself. |
 | Something else | The engine's log is `game.log` in the [user folder](getting-started.md#where-your-data-is). |

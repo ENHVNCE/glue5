@@ -12,9 +12,8 @@ use std::time::{Duration, Instant};
 
 use mlua::{Function, Lua, LuaOptions, MultiValue, StdLib, Table, Thread, Value, VmState};
 
-use crate::world::Pool;
 use crate::storage::Storage;
-use crate::{EvalResult, json, menus, natives};
+use crate::{EvalResult, input, json, menus, natives};
 
 /// How long a mod may run before it yields to the game for this frame.
 pub const SLICE: Duration = Duration::from_millis(2);
@@ -43,6 +42,8 @@ pub struct Vm {
     main_first: Cell<bool>,
     /// The mod's `storage` (none for the REPL).
     storage: Option<Rc<Storage>>,
+    /// Its database (none for the REPL).
+    db: Option<Rc<crate::db::Db>>,
 }
 
 /// What `task.*` and the menus share with the VM.
@@ -52,10 +53,14 @@ struct Sched {
     /// The game time of the current turn, ms.
     now: Rc<Cell<u64>>,
     handlers: menus::Handlers,
+    /// What the mod sees of the keyboard, the mouse and the pad.
+    keys: input::Keys,
     /// This run of the mod (its menus are its own).
     instance: u64,
     /// The coroutine the scheduler is running (`Thread::to_pointer`).
     resumed: Rc<Cell<*const std::ffi::c_void>>,
+    /// `mod.onStop`'s functions, for the mod's last turn.
+    stop: Rc<RefCell<Vec<Function>>>,
 }
 
 struct Task {
@@ -91,6 +96,10 @@ impl Vm {
         lua.globals().set("require", require(&lua, name, dir)?)?;
         let storage = Storage::open(name);
         storage.install(&lua)?;
+        let db = crate::db::Db::new(name);
+        db.install(&lua)?;
+        crate::folder::install(&lua, name, dir)?;
+        crate::draw::set_folder(&lua, name);
         // The mod's code starts once the player is in the game (not on
         // the loading screens, where the player's ped is a stand-in).
         let ready: Function = lua
@@ -121,6 +130,7 @@ impl Vm {
             turn_end: Cell::new(Instant::now()),
             main_first: Cell::new(false),
             storage: Some(storage),
+            db: Some(db),
         })
     }
 
@@ -181,7 +191,7 @@ impl Vm {
             .call((take, reply))?;
         lua.sandbox(true)?;
         let main = lua.create_thread(main)?;
-        Ok(Vm { lua, module: "eval".into(), main: Some(main), main_wake: 0, main_busy: Duration::ZERO, sched, deadline, turn_end: Cell::new(Instant::now()), main_first: Cell::new(false), storage: None })
+        Ok(Vm { lua, module: "eval".into(), main: Some(main), main_wake: 0, main_busy: Duration::ZERO, sched, deadline, turn_end: Cell::new(Instant::now()), main_first: Cell::new(false), storage: None, db: None })
     }
 
     /// A turn at game time `now` (ms): what the player did with the menus
@@ -194,15 +204,32 @@ impl Vm {
         if let Some(storage) = &self.storage {
             storage.flush(false);
         }
-        for (item, input) in menus::take_inputs(&self.module) {
-            match menus::apply(&self.lua, &self.sched.handlers, item, input) {
-                Ok(Some((f, args))) => match self.lua.create_thread(f) {
-                    Ok(thread) => self.sched.tasks.borrow_mut().push(Task { thread, wake: now, args: Some(args), busy: Duration::ZERO }),
-                    Err(e) => crate::log_line(&self.module, crate::LogLevel::Error, &error_text(&e)),
-                },
-                Ok(None) => {}
-                Err(e) => crate::log_line(&self.module, crate::LogLevel::Error, &error_text(&e)),
+        // Keys since the last turn: the handlers' calls become tasks.
+        match self.sched.keys.take(&self.lua) {
+            Ok(calls) => {
+                let mut tasks = self.sched.tasks.borrow_mut();
+                for (f, args) in calls {
+                    match self.lua.create_thread(f) {
+                        Ok(thread) => tasks.push(Task { thread, wake: now, args: Some(args), busy: Duration::ZERO }),
+                        Err(e) => crate::log_line(&self.module, crate::LogLevel::Error, &error_text(&e)),
+                    }
+                }
             }
+            Err(e) => crate::log_line(&self.module, crate::LogLevel::Error, &error_text(&e)),
+        }
+        // The players' inputs (the items' values change first) and menus
+        // opened or closed: their callbacks become tasks.
+        match menus::take_calls(&self.lua, &self.sched.handlers, self.sched.instance) {
+            Ok(calls) => {
+                let mut tasks = self.sched.tasks.borrow_mut();
+                for (f, args) in calls {
+                    match self.lua.create_thread(f) {
+                        Ok(thread) => tasks.push(Task { thread, wake: now, args: Some(args), busy: Duration::ZERO }),
+                        Err(e) => crate::log_line(&self.module, crate::LogLevel::Error, &error_text(&e)),
+                    }
+                }
+            }
+            Err(e) => crate::log_line(&self.module, crate::LogLevel::Error, &error_text(&e)),
         }
         if self.main_first.get() {
             if let Some(failed) = self.run_main(now) {
@@ -215,13 +242,15 @@ impl Vm {
                 return failed;
             }
         }
-        let menus = menus::has_menus(self.sched.instance);
+        // What it drew shows, unless its time ran out before it was done.
+        crate::draw::end_turn(&self.lua, Instant::now() < self.turn_end.get());
+        // A menu may be used, a key pressed any time: every frame then.
+        let player = menus::has_menus(self.sched.instance) || self.sched.keys.listening();
         let tasks = self.sched.tasks.borrow();
-        if self.main.is_none() && tasks.is_empty() && !menus {
+        if self.main.is_none() && tasks.is_empty() && !player {
             return Step::Finished;
         }
-        // A menu may be used any time: every frame then.
-        if menus {
+        if player {
             return Step::Wait(0);
         }
         let next = tasks.iter().map(|t| t.wake).chain(self.main.as_ref().map(|_| self.main_wake)).min().unwrap_or(now);
@@ -316,9 +345,39 @@ impl Vm {
         (outcome, spent)
     }
 
+    /// Whether the mod has a last turn to take before it ends: functions
+    /// it gave `mod.onStop`.
+    pub fn wants_last_turn(&self) -> bool {
+        !self.sched.stop.borrow().is_empty()
+    }
+
+    /// The mod's last turn, at game time `now` (ms), on its thread: its
+    /// `mod.onStop` functions run, once, in one slice; one that waits or
+    /// runs out of time ends there.
+    pub fn last_turn(&mut self, now: u64) {
+        let stop = std::mem::take(&mut *self.sched.stop.borrow_mut());
+        self.sched.now.set(now);
+        self.turn_end.set(Instant::now() + SLICE);
+        for f in stop {
+            let problem = match self.lua.create_thread(f).map(|thread| self.run(&thread, MultiValue::new()).0) {
+                Ok(Outcome::Finished) => continue,
+                Ok(Outcome::Failed(e)) => e,
+                Ok(Outcome::Wait(_)) => "mod.onStop: a stopping mod does not wait; what came after wait() did not run".into(),
+                Ok(Outcome::Preempted) => format!("mod.onStop: cut short, out of time ({} ms)", SLICE.as_millis()),
+                Err(e) => error_text(&e),
+            };
+            crate::log_line(&self.module, crate::LogLevel::Error, &problem);
+        }
+    }
+
     /// Memory the VM uses, in bytes.
     pub fn memory(&self) -> usize {
         self.lua.used_memory()
+    }
+
+    /// What the mod draws (draw.rs).
+    pub(crate) fn canvas(&self) -> Option<std::rc::Rc<crate::draw::Canvas>> {
+        crate::draw::canvas(&self.lua)
     }
 }
 
@@ -382,55 +441,36 @@ fn base(name: &str, log: Rc<dyn Fn(&str)>, sched: &Sched) -> mlua::Result<(Lua, 
         })?,
     )?;
     menus::install(&lua, name, sched.instance, sched.handlers.clone())?;
+    input::install(&lua, &sched.keys)?;
+    crate::draw::install(&lua)?;
     json::install(&lua)?;
-    // `world.vehicles()`..., the catalog's lists.
-    let world = lua.create_table()?;
-    for (key, pool) in [("vehicles", Pool::Vehicles), ("peds", Pool::Peds), ("objects", Pool::Objects)] {
-        world.set(
-            key,
-            lua.create_function(move |_, max: Option<usize>| {
-                let env = natives::env().ok_or_else(|| mlua::Error::runtime(format!("world.{key}: only in a mod's script")))?;
-                Ok(unsafe { crate::world::handles(env, pool, max.unwrap_or(1024).min(4096)) })
-            })?,
-        )?;
-    }
-    world.set("vehicleModels", lua.create_function(|_, ()| Ok(crate::world::catalog().map(|c| c.vehicles).unwrap_or_default()))?)?;
-    world.set("pedModels", lua.create_function(|_, ()| Ok(crate::world::catalog().map(|c| c.peds).unwrap_or_default()))?)?;
-    world.set("weapons", lua.create_function(|_, ()| Ok(crate::world::catalog().map(|c| c.weapons).unwrap_or_default()))?)?;
-    g.set("world", world)?;
+    crate::net::install(&lua)?;
+    crate::world::install(&lua)?;
     g.set("joaat", lua.create_function(|_, s: mlua::LuaString| Ok(natives::joaat(&s.to_str()?)))?)?;
     let m = lua.create_table()?;
     m.set("name", name)?;
+    let stop = sched.stop.clone();
+    m.set(
+        "onStop",
+        lua.create_function(move |_, f: Function| {
+            stop.borrow_mut().push(f);
+            Ok(())
+        })?,
+    )?;
     g.set("mod", m)?;
 
-    // A table per namespace; a native's function is made the first time it
-    // is looked up.
-    for (ns, space) in natives::NAMESPACES.iter().enumerate() {
-        let cache: RefCell<HashMap<String, Function>> = RefCell::default();
-        let table = lua.create_table()?;
-        let meta = lua.create_table()?;
-        meta.set(
-            "__index",
-            lua.create_function(move |lua, (_, key): (Table, String)| {
-                if let Some(f) = cache.borrow().get(&key) {
-                    return Ok(Value::Function(f.clone()));
-                }
-                let Some(index) = natives::find(ns, &key) else { return Ok(Value::Nil) };
-                let f = lua.create_function(move |lua, args: MultiValue| natives::call(lua, index, args))?;
-                cache.borrow_mut().insert(key, f.clone());
-                Ok(Value::Function(f))
-            })?,
-        )?;
-        table.set_metatable(Some(meta))?;
-        if *space == "task" {
-            // The scheduler shares the table with the TASK_ natives.
-            for pair in task.pairs::<Value, Value>() {
-                let (k, v) = pair?;
-                table.raw_set(k, v)?;
-            }
-        }
-        g.set(*space, table)?;
-    }
+    // The natives' tables (the scheduler shares `task` with the TASK_
+    // natives) and `native.invoke`; the scripts' globals, the game's version;
+    // the game's memory.
+    natives::install(&lua, &task)?;
+    crate::globals::install(&lua)?;
+    crate::memory::install(&lua, sched.instance)?;
+    crate::offsets::install(&lua)?;
+    crate::handling::install(&lua)?;
+    // The standard library, Luau over the natives and the tables above.
+    crate::stdlib::install(&lua)?;
+    // Natives that fill structures, as tables (events, DLC data, nearby peds).
+    crate::structs::install(&lua)?;
 
     let deadline = Rc::new(Cell::new(Instant::now() + SLICE));
     let interrupt_deadline = deadline.clone();
@@ -646,10 +686,13 @@ impl Vm {
         }
     }
 
-    /// Empties the mod's storage.
+    /// Empties the mod's storage and deletes its database.
     pub fn clear_storage(&self) {
         if let Some(storage) = &self.storage {
             storage.clear_now();
+        }
+        if let Some(db) = &self.db {
+            db.clear();
         }
     }
 }

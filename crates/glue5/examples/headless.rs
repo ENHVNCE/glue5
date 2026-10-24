@@ -31,7 +31,8 @@ struct Args {
     #[arg(long, num_args = 2, value_names = ["S", "BUTTON"])]
     press: Vec<String>,
     /// Press a key at S seconds: esc, enter, tab, backspace, space, grave,
-    /// shift, up, down, left, right, a letter or a digit.
+    /// shift, up, down, left, right, a letter or a digit, or another key
+    /// by the mods' name for it (f5, leftshift, keypad8).
     #[arg(long, num_args = 2, value_names = ["S", "KEY"])]
     key: Vec<String>,
     /// Also take commands from standard input, one per line: press
@@ -74,6 +75,10 @@ struct Args {
     /// the game hosts or looks for a session).
     #[arg(long, value_name = "NAME", requires = "online", default_value = "")]
     lobby: String,
+    /// With --online: the story, GTA Online a choice of its pause menu away
+    /// (as the app's story mode), instead of straight into freemode.
+    #[arg(long, requires = "online")]
+    story: bool,
     /// The game's benchmark (a fly-through of the map; the run ends with
     /// it, results in the user directory).
     #[arg(long)]
@@ -262,7 +267,7 @@ fn main() -> Result<()> {
             low_memory: low,
             max_fps: args.fps,
             benchmark: args.benchmark,
-            online: args.online.map(|name| glue5_runtime::Online { name, lobby: args.lobby }),
+            online: args.online.map(|name| glue5_runtime::Online { name, lobby: args.lobby, freemode: !args.story }),
             language: None,
         },
         gpu,
@@ -311,6 +316,8 @@ fn main() -> Result<()> {
                 let held = (*at..*at + *hold).contains(&t);
                 if held != *down {
                     input.key(*vk, held);
+                    // As the app reports them (no-op without mods).
+                    glue5_mods::input::key(*vk, held);
                     *down = held;
                 }
             }
@@ -361,11 +368,12 @@ fn command(line: &str, t: f64, game: &Game, presses: &mut Vec<(f64, u16)>, keys:
             let input = match (what, rest) {
                 ("press", []) => MenuInput::Press,
                 ("toggle", [v]) => MenuInput::Toggle(*v == "on"),
-                ("value", [v]) => MenuInput::Value(v.parse()?),
+                ("value", [v]) => MenuInput::Number(v.parse()?),
                 ("choose", [v]) => MenuInput::Choose(v.parse()?),
-                _ => bail!("mods input <mod> <item> press|toggle on/off|value <n>|choose <i>"),
+                ("text", [v]) => MenuInput::Text(v.to_string()),
+                _ => bail!("mods input <mod> <item> press|toggle on/off|value <n>|choose <i>|text <t>"),
             };
-            glue5_mods::menu_input(module, item.parse()?, input);
+            glue5_mods::menu_input(module, item.parse()?, input).map_err(anyhow::Error::msg)?;
         }
         _ => bail!(
             "expected `press <button>`, `key <key>`, `hold <key> <s>`, `text <text>`, `size <w>x<h>` or \
@@ -444,6 +452,7 @@ fn parse_key(name: &str) -> Result<u8> {
         "right" => 0x27,
         "down" => 0x28,
         s if s.len() == 1 && s.as_bytes()[0].is_ascii_alphanumeric() => s.as_bytes()[0].to_ascii_uppercase(),
-        other => bail!("unknown key {other}"),
+        // The mods' names for the others (f5, leftshift, keypad8).
+        other => glue5_mods::input::vk(other).with_context(|| format!("unknown key {other}"))?,
     })
 }

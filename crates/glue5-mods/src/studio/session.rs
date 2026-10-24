@@ -3,7 +3,8 @@
 //! when a mod's state changes, `{method: "menus"}` when the mods' menus do,
 //! `{method: "log"}` with new log lines, and `{method: "hello"}` first.
 
-use std::sync::mpsc;
+use std::collections::HashSet;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -11,9 +12,26 @@ use serde_json::{Value, json};
 use super::{Socket, api, receive, send};
 use crate::files;
 
+/// The mods' menus are sent at most this often (a dragged slider, a mod
+/// changing a value each frame).
+const MENUS_EVERY: Duration = Duration::from_millis(100);
+
+/// The menus a page looks at (`menus.view`), as (mod, menu): each is one
+/// viewer of it (its `onOpen` / `onClose`), until the page closes it or goes.
+type Viewing = HashSet<(String, u32)>;
+
 /// Serves one page until it goes or `stop` (the server stopped: the code
 /// changed, the Studio was turned off).
-pub fn run(mut ws: Socket, stop: &std::sync::atomic::AtomicBool) -> std::io::Result<()> {
+pub fn run(ws: Socket, stop: &std::sync::atomic::AtomicBool) -> std::io::Result<()> {
+    let mut viewing = Viewing::new();
+    let result = serve(ws, stop, &mut viewing);
+    for (module, menu) in viewing {
+        crate::menu_viewer(&module, menu, false);
+    }
+    result
+}
+
+fn serve(mut ws: Socket, stop: &std::sync::atomic::AtomicBool, viewing: &mut Viewing) -> std::io::Result<()> {
     let hello = json!({
         "method": "hello",
         "params": {
@@ -37,6 +55,8 @@ pub fn run(mut ws: Socket, stop: &std::sync::atomic::AtomicBool) -> std::io::Res
     let (_, mut changes) = crate::changes(u64::MAX);
     let mut figures = Instant::now();
     let mut menus = Value::Null;
+    let mut menus_seen: Option<Arc<Vec<crate::Menu>>> = None;
+    let mut menus_at = Instant::now() - MENUS_EVERY;
     // Evaluations run on their own threads; their answers come back here.
     let (done_tx, done_rx) = mpsc::channel::<Value>();
     // Evaluations running for this page (a few at a time).
@@ -70,7 +90,7 @@ pub fn run(mut ws: Socket, stop: &std::sync::atomic::AtomicBool) -> std::io::Res
                     });
                     continue;
                 }
-                let reply = match handle(&method, &msg["params"]) {
+                let reply = match handle(&method, &msg["params"], viewing) {
                     Ok(result) => json!({ "id": id, "result": result }),
                     Err(e) => json!({ "id": id, "error": e }),
                 };
@@ -98,12 +118,21 @@ pub fn run(mut ws: Socket, stop: &std::sync::atomic::AtomicBool) -> std::io::Res
             if send(&mut ws, &json!({ "method": "mods", "params": api::mods() })).is_err() {
                 return Ok(());
             }
-            let now = api::menus();
-            if now != menus {
-                if send(&mut ws, &json!({ "method": "menus", "params": now })).is_err() {
-                    return Ok(());
+        }
+        // The menus: when their snapshot is a new one (it is made again
+        // only after a change), and what it says changed.
+        if menus_at.elapsed() >= MENUS_EVERY {
+            let snapshot = crate::menus();
+            if menus_seen.as_ref().is_none_or(|seen| !Arc::ptr_eq(seen, &snapshot)) {
+                menus_at = Instant::now();
+                menus_seen = Some(snapshot);
+                let now = api::menus();
+                if now != menus {
+                    if send(&mut ws, &json!({ "method": "menus", "params": now })).is_err() {
+                        return Ok(());
+                    }
+                    menus = now;
                 }
-                menus = now;
             }
         }
         let (paths, next) = crate::changes(changes);
@@ -119,7 +148,7 @@ pub fn run(mut ws: Socket, stop: &std::sync::atomic::AtomicBool) -> std::io::Res
     }
 }
 
-fn handle(method: &str, p: &Value) -> Result<Value, String> {
+fn handle(method: &str, p: &Value, viewing: &mut Viewing) -> Result<Value, String> {
     let s = |k: &str| p[k].as_str().ok_or_else(|| format!("{method}: missing {k}"));
     Ok(match method {
         "mods.list" => api::mods(),
@@ -215,6 +244,16 @@ fn handle(method: &str, p: &Value) -> Result<Value, String> {
         "menus.input" => {
             let item = p["item"].as_u64().ok_or("menus.input: missing item")? as u32;
             api::menu_input(s("mod")?, item, &p["value"])?;
+            Value::Null
+        }
+        // The page shows (open) or no longer shows a menu.
+        "menus.view" => {
+            let key = (s("mod")?.to_string(), p["menu"].as_u64().ok_or("menus.view: missing menu")? as u32);
+            let open = p["open"].as_bool().unwrap_or(false);
+            let changed = if open { viewing.insert(key.clone()) } else { viewing.remove(&key) };
+            if changed {
+                crate::menu_viewer(&key.0, key.1, open);
+            }
             Value::Null
         }
         "natives.search" => Value::Array(api::search(s("query")?, p["limit"].as_u64().unwrap_or(30) as usize)),

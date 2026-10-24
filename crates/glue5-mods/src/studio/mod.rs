@@ -8,7 +8,7 @@
 //! and WebSockets must come from the page's own origin (a page elsewhere in
 //! the same browser could otherwise drive the game through localhost).
 
-mod api;
+pub(crate) mod api;
 mod assets;
 mod lsp;
 mod mcp;
@@ -300,7 +300,7 @@ impl Server {
                 }
                 ("GET", "/natives.d.luau") => {
                     if self.authorized(&request) {
-                        let defs = format!("{}{}", crate::world::definitions(), crate::natives::DEFINITIONS);
+                        let defs = crate::definitions();
                         respond(&mut out, 200, "text/plain; charset=utf-8", defs.as_bytes(), &[])?;
                     } else {
                         respond(&mut out, 401, "text/plain", b"pair with the game first", &[])?;

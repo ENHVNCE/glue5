@@ -40,6 +40,7 @@ mod shader_settings;
 mod shadow_reveal;
 mod script_assets;
 mod skin;
+pub mod sprites;
 mod stats;
 mod stream;
 mod texts;
@@ -148,7 +149,8 @@ pub struct Config {
     /// game; the engine writes the results in the user directory
     /// (`Documents/Rockstar Games/GTA V/Benchmarks`) and asks to quit.
     pub benchmark: bool,
-    /// GTA Online in a lobby, instead of story mode or the sandbox.
+    /// GTA Online: straight into it, or from the story's pause menu (the
+    /// network up all the same). `None`: the sandbox, the benchmark.
     pub online: Option<Online>,
     /// The game's language, as a tag like `it-IT` (the engine matches the
     /// whole tag, then the language alone). `None`: `$LANG`, else English.
@@ -160,10 +162,15 @@ pub struct Config {
 pub struct Online {
     /// The player's name, as the others see it (16 characters at most).
     pub name: String,
-    /// The lobby to start in: empty, everyone's, where the game's
-    /// matchmaking puts the player in a session; a friend's, to join it
-    /// there. The session's kind moves the player on (`online.rs`).
+    /// The lobby to start in (or to go to from the story): empty,
+    /// everyone's, where the game's matchmaking puts the player in a
+    /// session; a friend's, to join it there. The session's kind moves the
+    /// player on (`online.rs`).
     pub lobby: String,
+    /// Straight into freemode (the start page's GTA Online); otherwise the
+    /// story, with GTA Online a choice of its pause menu, a friend's join
+    /// or invite away.
+    pub freemode: bool,
 }
 
 impl Config {
@@ -219,9 +226,12 @@ impl Config {
             args.push("-FrameQueueLimit=2".into());
         }
         args.extend(extra);
-        if self.online.is_some() {
+        if let Some(online) = &self.online {
             args.retain(|a| a != "-nonetwork");
             args.extend(online::ENGINE_ARGS.iter().map(|a| a.to_string()));
+            if online.freemode {
+                args.push("-StraightIntoFreemode".into());
+            }
         }
         args
     }
@@ -345,10 +355,10 @@ pub fn start(config: Config, gpu: gpu::GpuBackend) -> Result<Game> {
     for set in EXTRA_HOOKS.lock().unwrap().iter() {
         set(&mut hooks);
     }
+    friends::set_playing(friends::Playing::Story);
     if let Some(online) = &rt().config.online {
         online::start(online, &mut hooks);
     }
-    friends::set_playing(if rt().config.online.is_some() { friends::Playing::Online } else { friends::Playing::Story });
     glue5_game::install(glue5_game::imports_from!(imports), hooks);
     let engine = threads::spawn_main()?;
     Ok(Game { engine })

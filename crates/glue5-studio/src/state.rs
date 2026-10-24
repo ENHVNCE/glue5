@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::editor::StudioEditor;
-use crate::menus::MenuInfo;
+use crate::menus::{Level, MenuInfo};
 
 #[derive(Clone, Deserialize, PartialEq, Debug)]
 pub(crate) struct ModInfo {
@@ -109,6 +109,10 @@ pub(crate) struct S {
     /// The game told which mods it has (until then the list is unknown, not empty).
     pub(crate) listed: RwSignal<bool>,
     pub(crate) menus: RwSignal<Vec<MenuInfo>>,
+    /// What is open in each top-level menu's card (submenus, pickers).
+    pub(crate) menu_stacks: RwSignal<HashMap<u32, Vec<Level>>>,
+    /// The page has the phone's layout (one screen at a time).
+    pub(crate) phone: RwSignal<bool>,
     pub(crate) rows: RwSignal<Vec<(u64, Row)>>,
     pub(crate) tabs: RwSignal<Vec<Tab>>,
     pub(crate) active: RwSignal<Option<String>>,

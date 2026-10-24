@@ -11,6 +11,8 @@ use crate::state::*;
 #[component]
 pub(crate) fn BottomPanel(s: S) -> impl IntoView {
     let errors = move || s.diags.with(|d| d.values().flatten().filter(|d| d.severity == "error").count());
+    // The cards: submenus open inside them.
+    let top_menus = move || s.menus.with(|m| m.iter().filter(|m| m.parent.is_none()).count());
     view! {
         <div class="panel">
             <div class="ptabs">
@@ -19,7 +21,7 @@ pub(crate) fn BottomPanel(s: S) -> impl IntoView {
                     "PROBLEMS" <Show when=move || errors() != 0><span class="cnt">{errors}</span></Show>
                 </button>
                 <button class=move || if s.panel.get() == Panel::Menus { "ptab on" } else { "ptab" } on:click=move |_| s.panel.set(Panel::Menus)>
-                    "MENUS" <Show when=move || s.menus.with(|m| !m.is_empty())><span class="cnt n">{move || s.menus.with(Vec::len)}</span></Show>
+                    "MENUS" <Show when=move || top_menus() != 0><span class="cnt n">{top_menus}</span></Show>
                 </button>
                 <div class="grow"></div>
                 <Show when=move || s.panel.get() == Panel::Console>

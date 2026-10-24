@@ -38,7 +38,7 @@ pub fn handle(request: &Request) -> (u16, String, Vec<(&'static str, String)>) {
                 "instructions": "Mods for GTA V running in GLUE 5. Read the resource glue5://guide first. \
                     Write files with write_file (it answers with type errors), run with start_mod or restart_mod \
                     (they answer with the first log lines), try natives live with eval, look them up with \
-                    search_natives, and use a mod's menus with menus and menu_input.",
+                    search_natives, and use a mod's menus with menus, menu_open and menu_input.",
             }))
         }
         "ping" => Ok(json!({})),
@@ -52,7 +52,8 @@ pub fn handle(request: &Request) -> (u16, String, Vec<(&'static str, String)>) {
         "resources/read" => match p["uri"].as_str() {
             Some(uri @ "glue5://guide") => Ok(json!({ "contents": [{ "uri": uri, "mimeType": "text/markdown", "text": api::GUIDE }] })),
             Some(uri @ "glue5://natives.d.luau") => {
-                Ok(json!({ "contents": [{ "uri": uri, "mimeType": "text/plain", "text": crate::natives::DEFINITIONS }] }))
+                let text = [crate::COMMON, crate::natives::DEFINITIONS, crate::menus::DEFINITIONS, &crate::input::definitions(), crate::draw::DEFINITIONS, crate::db::DEFINITIONS, crate::net::DEFINITIONS, crate::stdlib::DEFINITIONS].concat();
+                Ok(json!({ "contents": [{ "uri": uri, "mimeType": "text/plain", "text": text }] }))
             }
             Some(uri @ "glue5://world.d.luau") => {
                 Ok(json!({ "contents": [{ "uri": uri, "mimeType": "text/plain", "text": crate::world::definitions() }] }))
@@ -93,9 +94,17 @@ fn tools() -> Value {
         tool("stop_mod", "Stops a mod; what it created goes with it.", json!({ "name": string("the mod") }), &["name"]),
         tool("logs", "Log lines (prints, starts, errors with file:line) after a cursor; answers with the next cursor.", json!({ "since": { "type": "integer", "description": "cursor from the last call (0: all kept)" }, "mod": string("only this mod's lines") }), &[]),
         tool("eval", "Runs Luau in the game now (in a script thread, natives available) and answers with the values: e.g. entity.getEntityCoords(player.playerPedId(), true).", json!({ "code": string("an expression, or statements") }), &["code"]),
-        tool("menus", "The running mods' menus (ui.menu): each item's id, kind and value.", json!({}), &[]),
-        tool("menu_input", "Does what a player would to a mod's menu item, and answers with the mod's log after half a second: \
-            value true/false sets a toggle (none flips it), a number a slider, 1-based or the option's text a choice; none presses a button.",
+        tool("menus", "The running mods' menus (ui.menu), all flat, submenus too: {mod, id, parent, title, note, rev, items}; \
+            each item's id, kind (button, toggle, slider, number, choice, multi, text, color, label, separator, progress, submenu), \
+            label, note, enabled, visible and value (indices from 1, colours #rrggbb[aa]); a submenu row's menu is the menu it opens.",
+            json!({ "mod": string("only this mod's menus") }), &[]),
+        tool("menu_open", "Looks at a menu as a player opening it would (its onOpen runs, which may fill it), and answers after \
+            half a second with {menu, submenus, log}; then stops looking (its onClose runs).",
+            json!({ "mod": string("the mod"), "menu": { "type": "integer", "description": "the menu's id (from menus)" } }), &["mod", "menu"]),
+        tool("menu_input", "Does what a player would to a mod's menu item, and answers with the mod's log after half a second. \
+            value: a toggle true or false (none flips it); a slider or number a number (clamped, on the step); a choice the option's \
+            number from 1 or its text; a multi a list of those (the whole selection); a text a string; a color \"#rrggbb\", \
+            \"#rrggbbaa\" or {r, g, b, a} (0-255); a button none (it is pressed). Disabled or hidden items refuse input.",
             json!({ "mod": string("the mod"), "item": { "type": "integer", "description": "the item's id (from menus)" }, "value": { "description": "see above; leave out for buttons" } }), &["mod", "item"]),
         tool("search_natives", "Finds natives by words of their name or notes; answers with signatures.", json!({ "query": string("e.g. vehicle colour"), "limit": { "type": "integer", "description": "at most this many (20)" } }), &["query"]),
         tool("native_doc", "A native's signature and notes.", json!({ "name": string("namespace.name (vehicle.createVehicle) or the game's name (CREATE_VEHICLE)") }), &["name"]),
@@ -164,7 +173,26 @@ fn call(name: &str, a: &Value) -> Value {
                 Ok(v) => Value::String(v),
                 Err(e) => return Err(e),
             },
-            "menus" => api::menus(),
+            "menus" => match a["mod"].as_str() {
+                Some(only) => Value::Array(api::menus().as_array().into_iter().flatten().filter(|m| m["mod"] == only).cloned().collect()),
+                None => api::menus(),
+            },
+            "menu_open" => {
+                let module = s("mod")?;
+                let menu = a["menu"].as_u64().ok_or("missing argument menu")? as u32;
+                // There (an error otherwise) before it is looked at.
+                api::menu_open(module, menu)?;
+                let (_, cursor) = crate::logs(u64::MAX);
+                crate::menu_viewer(module, menu, true);
+                std::thread::sleep(Duration::from_millis(500));
+                let now = api::menu_open(module, menu);
+                crate::menu_viewer(module, menu, false);
+                let mut out = now?;
+                let (lines, next) = api::logs(cursor, Some(module));
+                out["log"] = json!(lines.iter().map(line).collect::<Vec<_>>());
+                out["next"] = json!(next);
+                out
+            }
             "menu_input" => {
                 let module = s("mod")?;
                 let item = a["item"].as_u64().ok_or("missing argument item")? as u32;

@@ -188,6 +188,8 @@ impl Engine {
             self.frame = frame;
             self.spent = Duration::ZERO;
             self.skipped = std::mem::take(&mut self.skipping);
+            // What the mods show, for the renderer (when one drew anew).
+            crate::draw::publish(self.running.iter().filter(|r| !r.ending).filter_map(|r| r.vm.canvas()));
             for r in self.running.iter_mut().filter(|r| !r.ending) {
                 r.vm.flush_storage_due();
                 if unsafe { orig::script_get_thread(env, r.thread_id) } != r.thread {
@@ -198,15 +200,17 @@ impl Engine {
                 }
             }
         }
-        // Ended mods' threads, from outside them.
+        // Ended mods' threads, from outside them, once they had their last
+        // turn.
         let mut i = 0;
         while i < self.running.len() {
             let r = &self.running[i];
-            if r.ending && r.thread != active {
+            if r.ending && r.thread != active && (r.gone || !r.vm.wants_last_turn()) {
                 if !r.gone {
                     unsafe { orig::script_kill_thread(env, r.thread_id) };
                 }
                 crate::menus::remove_instance(r.vm.instance());
+                unsafe { crate::memory::release(env, r.vm.instance()) };
                 let r = self.running.remove(i);
                 THREADS.with_borrow_mut(|t| t.retain(|&id| id != r.thread_id));
                 // Snippets still queued get an answer (unless a new console
@@ -229,9 +233,20 @@ impl Engine {
         else {
             return false;
         };
+        // An ended mod's last turn (`mod.onStop`), on its thread, whether
+        // it waits or not.
+        if r.ending {
+            if r.vm.wants_last_turn() {
+                let now = unsafe { natives::call_int(env, "GET_GAME_TIMER") }.unwrap_or(0) as u32 as u64;
+                *crate::lock(&crate::RUNNING_MOD) = r.name.clone();
+                natives::with_env(env, || r.vm.last_turn(now));
+                crate::lock(&crate::RUNNING_MOD).clear();
+            }
+            return false;
+        }
         // WAIT runs every frame while the thread waits; the mod runs when
         // it is about to start one.
-        if r.ending || mem.u32(active + THREAD_STATE) == STATE_WAITING {
+        if mem.u32(active + THREAD_STATE) == STATE_WAITING {
             return false;
         }
         // The frame's budget, shared by the mods.

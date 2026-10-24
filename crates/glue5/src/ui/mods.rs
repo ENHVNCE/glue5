@@ -6,8 +6,9 @@
 use egui::{Color32, CornerRadius, RichText, Sense, vec2};
 use glue5_mods::ModState;
 
+use super::menus::{MenusView, Out};
 use super::pages::{card_title, sheet, small};
-use super::widgets::{Control, action_button, action_buttons, choice, inline_button, segmented, setting, slider, toggle};
+use super::widgets::{Control, action_button, action_buttons, inline_button, segmented, setting, toggle};
 use super::{Status, WARN, theme};
 use crate::settings::Settings;
 
@@ -24,12 +25,47 @@ pub enum Tab {
 #[derive(Default)]
 pub struct ModsPage {
     tab: Tab,
+    menus: MenusView,
 }
 
 impl ModsPage {
-    /// Opens on the mods' menus.
+    /// Opens on the mods' menus (where the player was in them).
     pub fn show_menus(&mut self) {
         self.tab = Tab::Menus;
+    }
+
+    /// Opens at menu `menu` of mod `module` (`menu:show()`). False when
+    /// there is no such menu.
+    pub fn show_menu(&mut self, module: &str, menu: u32) -> bool {
+        let shown = self.menus.open_at(&glue5_mods::menus(), module, menu);
+        if shown {
+            self.tab = Tab::Menus;
+        }
+        shown
+    }
+
+    /// Back (B, Esc) inside the page: false when the page should close.
+    pub fn back(&mut self, ctx: &egui::Context) -> bool {
+        self.tab == Tab::Menus && self.menus.back(ctx)
+    }
+
+    /// The page closed: its menus are no longer looked at.
+    pub fn closed(&mut self) {
+        send(self.menus.hidden());
+    }
+}
+
+/// What the player did with the menus, to the runtime.
+fn send(outs: Vec<Out>) {
+    for out in outs {
+        match out {
+            Out::Input { module, item, input } => {
+                if let Err(e) = glue5_mods::menu_input(&module, item, input) {
+                    log::debug!("mods: menu input: {e}");
+                }
+            }
+            Out::Viewer { module, menu, open } => glue5_mods::menu_viewer(&module, menu, open),
+        }
     }
 }
 
@@ -128,6 +164,17 @@ pub(super) fn mods_page(ctx: &egui::Context, page: &mut ModsPage, settings: &mut
     ctx.request_repaint_after(std::time::Duration::from_millis(500));
     sheet(ctx, "mods-window", "MODS", |ui| {
         let scale = theme::density(ui);
+        // Inside a menu, its nav bar takes the place of the switch and the
+        // tabs.
+        let menus = (status.mods && page.tab == Tab::Menus).then(glue5_mods::menus);
+        match &menus {
+            Some(menus) => page.menus.prune(menus),
+            None => send(page.menus.hidden()),
+        }
+        if let Some(menus) = menus.as_ref().filter(|_| page.menus.inside()) {
+            menus_tab(ui, &mut page.menus, menus);
+            return;
+        }
         let running_with = status.started.as_ref().map(|s| s.mods);
         let note = match running_with {
             Some(with) if with != settings.mods => {
@@ -163,7 +210,7 @@ pub(super) fn mods_page(ctx: &egui::Context, page: &mut ModsPage, settings: &mut
         segmented(ui, &mut page.tab, &tabs, 40.0 * scale);
         ui.add_space(10.0 * scale);
         match page.tab {
-            Tab::Menus => menus_tab(ui),
+            Tab::Menus => menus_tab(ui, &mut page.menus, menus.as_deref().map_or(&[], |m| m.as_slice())),
             Tab::Mods => mods_tab(ui, page, status),
             Tab::Studio => studio_tab(ui, settings, status),
             Tab::Log => log_tab(ui),
@@ -171,68 +218,11 @@ pub(super) fn mods_page(ctx: &egui::Context, page: &mut ModsPage, settings: &mut
     })
 }
 
-/// The mods' menus, each under its title: their items with the app's own
-/// widgets; what the player does goes to the mod.
-fn menus_tab(ui: &mut egui::Ui) {
-    let scale = theme::density(ui);
-    let menus = glue5_mods::menus();
-    if menus.is_empty() {
-        muted(ui, "No menus. A mod makes one with ui.menu(\"Title\"); F7 opens them during the game.");
-        return;
-    }
-    for menu in &menus {
-        ui.add_space(4.0 * scale);
-        ui.horizontal(|ui| {
-            ui.label(theme::heading(&menu.title.to_uppercase(), 17.0 * scale).color(Color32::WHITE));
-            ui.label(RichText::new(&menu.module).size(12.0 * scale).color(theme::MUTED));
-        });
-        ui.push_id(menu.id, |ui| {
-            for item in &menu.items {
-                ui.push_id(item.id, |ui| menu_item(ui, &menu.module, item));
-            }
-        });
-    }
-}
-
-fn menu_item(ui: &mut egui::Ui, module: &str, item: &glue5_mods::MenuItem) {
-    use glue5_mods::{MenuInput, MenuKind};
-    let note = item.note.as_deref();
-    match &item.kind {
-        MenuKind::Toggle(on) => {
-            let mut v = *on;
-            setting(ui, &item.label, Control::Toggle, note, |ui| {
-                if toggle(ui, &mut v).changed() {
-                    glue5_mods::menu_input(module, item.id, MenuInput::Toggle(v));
-                }
-            });
-        }
-        MenuKind::Slider { value, min, max, step } => {
-            let mut v = *value as f32;
-            let decimals = if step.fract() == 0.0 { 0 } else { 2 };
-            setting(ui, &item.label, Control::Slider, note, |ui| {
-                if slider(ui, &mut v, *min as f32..=*max as f32, *step, "", decimals).changed() {
-                    glue5_mods::menu_input(module, item.id, MenuInput::Value(f64::from(v)));
-                }
-            });
-        }
-        MenuKind::Choice { options, index } => {
-            let mut i = *index;
-            let labelled: Vec<(usize, &str)> = options.iter().enumerate().map(|(n, o)| (n, o.as_str())).collect();
-            setting(ui, &item.label, Control::Choice, note, |ui| {
-                if choice(ui, &mut i, &labelled).changed() {
-                    glue5_mods::menu_input(module, item.id, MenuInput::Choose(i));
-                }
-            });
-        }
-        MenuKind::Button => {
-            setting(ui, &item.label, Control::Action, note, |ui| {
-                if action_button(ui, "Run").clicked() {
-                    glue5_mods::menu_input(module, item.id, MenuInput::Press);
-                }
-            });
-        }
-        MenuKind::Label => muted(ui, &item.label),
-    }
+/// The mods' menus: the list of them, or the level open in one.
+fn menus_tab(ui: &mut egui::Ui, view: &mut MenusView, menus: &[glue5_mods::Menu]) {
+    let mods = glue5_mods::mods();
+    let names: Vec<(&str, &str)> = mods.iter().map(|m| (m.name.as_str(), m.info.title.as_str())).collect();
+    send(view.view(ui, menus, &names));
 }
 
 fn mods_tab(ui: &mut egui::Ui, page: &mut ModsPage, status: &Status) {
