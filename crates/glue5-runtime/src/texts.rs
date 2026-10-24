@@ -10,8 +10,15 @@ use glue5_game::{Env, orig};
 
 use crate::memory::Mem;
 
+/// The pause menu's friends list with no friend in it (friends/game.rs):
+/// its warning's text and title.
+pub(crate) const NO_FRIENDS: &str = "GLUE5_NO_FRIENDS";
+pub(crate) const NO_FRIENDS_TITLE: &str = "NOFRIENDS_TITLE";
+
 /// Labels and their texts.
 const TEXTS: &[(&str, &str)] = &[
+    (NO_FRIENDS, "You have no friends yet. Add them on the Friends page: share your friend code, or ask a player you have played with."),
+    (NO_FRIENDS_TITLE, "No Friends"),
     ("FACES_WARNH2", "Alert"),
     ("QM_NO_1", "No session of this Job was found to join. Would you like to host it?"),
     ("COR_YOUR_CHAR", "Your Character"),
