@@ -122,6 +122,16 @@ end)
 }
 ```
 
+A larger mod splits into files and folders: `require("./garage")` runs
+`garage.luau` beside the file that asks (once; it gives what that file
+returns), `require("./core/prefs")` one in a folder there,
+`require("../core/prefs")` one from the folder above, within the mod's
+folder (five folders deep at most). The Studio shows them as a tree: a
+folder's row makes a file in it, renames or moves it, deletes it with
+what it holds; renaming a file to `core/prefs.luau` moves it into `core`.
+[Glue Trainer](../mods/glue-trainer) is made that way: `core/` for what
+its parts share, `features/` one file per menu, `data/` its tables.
+
 It is in [examples/garage](examples/garage), next to
 [examples/menu-gallery](examples/menu-gallery), which shows every kind of
 menu item: copy a folder into the mods folder to try it.
@@ -140,7 +150,7 @@ menu item: copy a folder into the mods folder to try it.
 | `wait(ms)` | Back to the game for `ms` milliseconds (none: until the next frame). |
 | `ui.menu(title)` | A menu on the Mods page, with buttons, toggles, sliders, numbers, choices, text, colours and submenus: see [Menus](#menus). `ui.notify(text)` shows a notification. |
 | `task.spawn`, `task.delay` | Coroutines on the game's clock (they stop while the game is paused). |
-| `input` | The keyboard, the mouse and the player's pad as the game gets them: `input.isDown("F5")`, `input.pressed("PadSouth")` (since the mod's last turn), `input.onKey(function(key, down, mods) ... end)`, `input.mousePosition()`. Keys are named as on a US keyboard by position: `"A"`, `"F5"`, `"LeftShift"`, `"MouseLeft"`. |
+| `input` | The keyboard, the mouse and the player's pad as the game gets them: `input.isDown("F5")`, `input.pressed("PadSouth")` (since the mod's last turn), `input.onKey(function(key, down, mods) ... end)`, `input.mousePosition()`, `input.keys()` (every key's name, for a mod's key bindings). Keys are named as on a US keyboard by position: `"A"`, `"F5"`, `"LeftShift"`, `"MouseLeft"`. |
 | `world` | The vehicles, peds, objects and pickups around and the projectiles in flight, as handles: `world.vehicles()`, or only some, the closest first: `world.peds({ near = pos, radius = 50, model = "a_c_cat_01", max = 5 })`. And the installed game's model names. |
 | `events` | The game's script events of this frame, by group (`"ai"`, `"network"`, `"errors"`): `events.count("network")`, `events.at("network", i)` (its name, `"EVENT_NETWORK_DAMAGE_ENTITY"`), `events.data("network", i)`, the data as a table (`d.victim`, `d.damage`, `d.weapon`...) for the common types: entity damaged or destroyed, damage, dead ped seen, pickups collected, weapon dropped, vehicle undrivable, vehicle entered. |
 | Structures | Natives that fill a structure or an array give a table or a list: `extrametadata.getDlcVehicleData(i)` (`lockHash`, `model`, `cost`), `getDlcWeaponData`, `getDlcWeaponComponentData` (and their `Sp` ones; text labels as strings), `ped.getPedNearbyVehicles(ped, max)`, `ped.getPedNearbyPeds(ped, ignore, max)`. The same natives raw, ScriptHookV's way: `native.invoke` with `memory.alloc`. |
@@ -230,12 +240,15 @@ god.note = "No damage"    -- the line under the label
   `:remove()`, and the ones of its kind: `value`, `options`, `min`,
   `max`... `item:set(v)` is `item.value = v`. A mistyped name is an error
   (`Toggle has no field 'valeu'`).
+- **Showing the game's state**: a mod may set its items every frame
+  (`god.value = player.getPlayerInvincible(me)`); a value that does not
+  change costs the app, the Studio and agents nothing.
 - **Callbacks** run when a player changes the item, not when the mod does,
   as tasks: they can call natives and `wait`. `value` changes with them:
   a dragged slider gives one callback a frame, with its latest value.
   A text's callback runs when the player is done typing (Enter, Done).
 - **Menus** have `title`, `note` (under the title in the list of menus),
-  `enabled` and `visible` (a submenu's row), and:
+  `search`, `enabled` and `visible` (a submenu's row), and:
   - `:clear()` removes the items, and the submenus they open, to build the
     menu again;
   - `:onOpen(f)` and `:onClose(f)` run `f` when a player starts and stops
@@ -243,6 +256,11 @@ god.note = "No damage"    -- the line under the label
     agent): to fill a list when it is needed;
   - `:show()` opens the Mods page at this menu, for a key of the mod's
     (not over another page, nor while text is typed);
+  - `search = true` (`ui.menu(title, { search = true })`,
+    `m:submenu(label, { search = true })`, or set later) puts a search
+    field over its rows: players filter them by label and note as they
+    type, headings and texts aside. For long lists: every vehicle, every
+    player;
   - `:remove()`.
 
 The Mods page's MENUS lists the menus, each with its mod's name. Tap one

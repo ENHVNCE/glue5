@@ -742,7 +742,10 @@ commands (natives). Each mod is a folder in the mods folder with a
 `main.luau` and an optional `mod.json`: its name as shown, description,
 author, version, whether it starts with the game and restarts when a
 file is saved. The Studio shows mod.json as the mod's page, not as a
-file. The mods folder is the user directory's `mods` on computers and
+file. Its other files may be in folders: `require` takes a path from
+the file that asks (`./name`, `../core/name`), as Luau's require by
+string does and as the Studio's type checker resolves it, and stays in
+the mod's folder. The mods folder is the user directory's `mods` on computers and
 beside the game's folder on phones (`Documents/mods` on iOS, where the
 Files app reaches it); one from before is moved there.
 
@@ -858,7 +861,12 @@ playing.
     turn the mod takes the queue: each handle's cached `value` changes and
     the callback runs as a task, so `value` and the callbacks agree. A
     mod's own assignment drops a pending value for that item and calls
-    nothing: the last write wins.
+    nothing: the last write wins. One that changes nothing leaves the
+    snapshot and its revision as they were, so a mod can show the game's
+    state by setting its items every frame.
+  - A menu's `search` is the viewers' own: each filters the rows it
+    draws by what its player typed (the app keeps it with the level, so
+    going into a row it found and back keeps it); the mod hears nothing.
   - Viewers: the app, each Studio session and MCP's `menu_open` count as
     looking at a menu; the first opens it (`onOpen` runs), the last one
     leaving closes it (`onClose`). `menu:show()` asks the app to open the
@@ -878,7 +886,8 @@ playing.
   The mod's script thread waits as long as the earliest of them, or one
   frame while it has menus. The `task` table is the TASK_ natives' one too.
 - **Input** (input.rs): `input.isDown`, `pressed`, `released`, `onKey`,
-  `mousePosition`, for what ScriptHookV's keyboard handler gave mods.
+  `mousePosition`, for what ScriptHookV's keyboard handler gave mods, and
+  `keys` (every name), for mods' key bindings.
   - The app reports keys and mouse buttons where it hands them to the
     game (the game's input block takes the same keys, plus generic
     modifier codes and aliases the mods do not see): events in a bounded
@@ -1074,6 +1083,11 @@ whose own browser is no place to write mods).
   whoever saves it: the Studio or an agent's write_file, which then
   answers with the new run's first log lines. Each run of a mod owns
   its menus, so the old run's going does not take the new run's.
+- A mod's files show as a tree of its folders. Folders hold files: a new
+  one is made with its first file; renaming moves a file or a folder
+  within its mod (making the folders it goes into), deleting takes a
+  folder with what it holds, and folders left empty go. Tabs follow what
+  moved.
 - The pairing code is kept in the settings: a browser (and Claude Code's
   MCP entry) paired once stays paired when the game starts again; the
   Mods page makes a new one, which also closes the connections made with
