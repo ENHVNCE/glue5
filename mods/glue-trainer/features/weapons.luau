@@ -340,6 +340,71 @@ local function guns(menu: Menu)
 			holding = nil
 		end,
 	})
+	bind.feature(menu, "weapons.pedGun", "People gun", "Shoot people of the city", {
+		tick = function()
+			if not ped.isPedShooting(me()) then
+				return
+			end
+			local all = catalog.peds()
+			if #all == 0 then
+				return
+			end
+			local pick = joaat(all[math.random(1, #all)])
+			task.spawn(function()
+				if not streaming.load(pick) then
+					return
+				end
+				local dir = geo.direction(camera.getGameplayCamRot(2))
+				local p = ped.createPed(26, pick, camera.getGameplayCamCoord() + dir * 4, entity.getEntityHeading(me()), false, false)
+				streaming.setModelAsNoLongerNeeded(pick)
+				if p then
+					ped.setPedToRagdoll(p, 4000, 4000, 0, false, false, false)
+					entity.setEntityVelocity(p, dir * 40)
+					entity.setPedAsNoLongerNeeded(p)
+				end
+			end)
+		end,
+	})
+	-- Things to throw (those this game has: checked when shot).
+	local THINGS = { "prop_beachball_02", "prop_bowling_ball", "prop_toilet_01", "prop_barrel_02a", "prop_roadcone02a", "prop_byard_floatpile" }
+	bind.feature(menu, "weapons.objectGun", "Object gun", "Shoot balls, barrels, toilets", {
+		tick = function()
+			if not ped.isPedShooting(me()) then
+				return
+			end
+			local pick = THINGS[math.random(1, #THINGS)]
+			if not streaming.isModelInCdimage(pick) then
+				return
+			end
+			task.spawn(function()
+				if not streaming.load(pick) then
+					return
+				end
+				local dir = geo.direction(camera.getGameplayCamRot(2))
+				local thing = object.createObject(pick, camera.getGameplayCamCoord() + dir * 4, false, false, true)
+				streaming.setModelAsNoLongerNeeded(pick)
+				if thing then
+					entity.setEntityVelocity(thing, dir * 50)
+					entity.setObjectAsNoLongerNeeded(thing)
+				end
+			end)
+		end,
+	})
+	bind.feature(menu, "weapons.reviveGun", "Revive gun", "The dead you shoot get up again", {
+		tick = function()
+			if not ped.isPedShooting(me()) then
+				return
+			end
+			local target = aimed()
+			if target and entity.isEntityAPed(target) and entity.isEntityDead(target, false) and not ped.isPedAPlayer(target :: Ped) then
+				local p = target :: Ped
+				ped.resurrectPed(p)
+				ped.reviveInjuredPed(p)
+				entity.setEntityHealth(p, 200, nil)
+				task.clearPedTasksImmediately(p)
+			end
+		end,
+	})
 	bind.feature(menu, "weapons.vehicleGun", "Vehicle gun", "Shoot cars", {
 		tick = function()
 			if not ped.isPedShooting(me()) then
@@ -367,14 +432,85 @@ local function guns(menu: Menu)
 	})
 end
 
+-- What the player's gun points at: from its muzzle (or the camera) along the camera's look.
+local function aimLine(): (vector, vector)
+	local dir = geo.direction(camera.getGameplayCamRot(2))
+	local gun = weapon.getCurrentPedWeaponEntityIndex(game.me(), true)
+	local from = if gun then entity.getEntityCoords(gun, true) else camera.getGameplayCamCoord()
+	return from, camera.getGameplayCamCoord() + dir * 300
+end
+
+local function aiming(menu: Menu)
+	menu:separator("Aiming")
+	local SNIPERS = joaat("GROUP_SNIPER")
+	bind.feature(menu, "weapons.laser", "Laser sight", "A red line where you aim", {
+		tick = function()
+			if not player.isPlayerFreeAiming(game.player()) then
+				return
+			end
+			local from, to = aimLine()
+			graphics.drawLine(from.x, from.y, from.z, to.x, to.y, to.z, 255, 0, 0, 200)
+		end,
+	})
+	-- On only while a sniper rifle aims (and off again after: Thermal vision is Self's).
+	local seeing = false
+	bind.feature(menu, "weapons.thermal", "Thermal scope", "Snipers see heat when aiming", {
+		tick = function()
+			local now = player.isPlayerFreeAiming(game.player()) and weapon.getWeapontypeGroup(weapon.getSelectedPedWeapon(game.me())) == SNIPERS
+			if now ~= seeing then
+				graphics.setSeethrough(now)
+				seeing = now
+			end
+		end,
+		off = function()
+			if seeing then
+				graphics.setSeethrough(false)
+				seeing = false
+			end
+		end,
+	})
+	bind.feature(menu, "weapons.rapid", "Rapid fire", "A shot every frame while you shoot", {
+		tick = function()
+			local me = game.me()
+			if not player.isPlayerFreeAiming(game.player()) or not pad.isControlPressed(0, Control.ATTACK) or ped.isPedInAnyVehicle(me, false) then
+				return
+			end
+			local from, to = aimLine()
+			misc.shootSingleBulletBetweenCoords(from, to, 30, true, weapon.getSelectedPedWeapon(me), me, true, false, -1)
+		end,
+	})
+end
+
+local function parachute(menu: Menu)
+	menu:separator("Parachute")
+	menu:number("Canopy", player.getPlayerParachuteTintIndex(game.player()), { min = 0, max = 7, note = "Its colours" }, bind.safe("Canopy", function(v)
+		player.setPlayerParachuteTintIndex(game.player(), v)
+	end))
+	local smoke = menu:color("Smoke colour", { r = 255, g = 255, b = 255 }, bind.safe("Smoke colour", function(c)
+		player.setPlayerParachuteSmokeTrailColor(game.player(), c.r, c.g, c.b)
+	end))
+	bind.feature(menu, "weapons.smoke", "Smoke trail", "Behind you while you fly the parachute", {
+		on = function()
+			local c = smoke.value
+			player.setPlayerParachuteSmokeTrailColor(game.player(), c.r, c.g, c.b)
+			player.setPlayerCanLeaveParachuteSmokeTrail(game.player(), true)
+		end,
+		off = function()
+			player.setPlayerCanLeaveParachuteSmokeTrail(game.player(), false)
+		end,
+	})
+end
+
 function M.build(root: Menu)
-	local menu = root:submenu("Weapons", "Every weapon, attachments, loadouts, ammo, damage, trick guns")
+	local menu = root:submenu("Weapons", "Every weapon, attachments, loadouts, ammo, damage, aiming, trick guns, parachute")
 	arsenal(menu)
 	inHand(menu)
 	loadouts(menu)
 	ammo(menu)
 	damage(menu)
+	aiming(menu)
 	guns(menu)
+	parachute(menu)
 end
 
 return M
