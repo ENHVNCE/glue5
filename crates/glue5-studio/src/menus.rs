@@ -1,7 +1,7 @@
 //! The mods' menus (`ui.menu` in Luau), usable from the browser as in the
-//! game: what is done here goes to the mod, which hears it at its next turn.
-//! One card per top-level menu; a submenu, or a long list's picker, opens
-//! inside its card, with a way back.
+//! game (the control page shows them): what is done here goes to the mod,
+//! which hears it at its next turn. One card per top-level menu; a submenu,
+//! or a long list's picker, opens inside its card, with a way back.
 
 mod model;
 mod rows;
@@ -46,14 +46,14 @@ pub(super) fn find_item(s: S, menu: u32, item: u32) -> Option<Item> {
     s.menus.with(|m| m.iter().find(|m| m.id == menu).and_then(|m| m.items.iter().find(|i| i.id == item).cloned()))
 }
 
+/// Mod `module`'s menus, a card each.
 #[component]
-pub(crate) fn Menus(s: S) -> impl IntoView {
-    let top = move || s.menus.with(|m| m.iter().filter(|m| m.parent.is_none()).map(|m| (m.id, m.module.clone())).collect::<Vec<_>>());
+pub(crate) fn Menus(s: S, module: String) -> impl IntoView {
+    let top = move || {
+        s.menus.with(|m| m.iter().filter(|m| m.parent.is_none() && m.module == module).map(|m| (m.id, m.module.clone())).collect::<Vec<_>>())
+    };
     view! {
         <div class="menus">
-            <Show when=move || s.menus.with(|m| !m.iter().any(|m| m.parent.is_none()))>
-                <p class="empty">"No menus. A mod makes one with ui.menu(\"Title\"): it shows here and in the game (F7)."</p>
-            </Show>
             <For each=top key=|m| m.0 let((id, module))>
                 <MenuCard s=s root=id module=module/>
             </For>
@@ -123,7 +123,8 @@ fn MenuCard(s: S, root: u32, module: String) -> impl IntoView {
     {
         let (opened, module) = (opened.clone(), module.clone());
         Effect::new(move |_| {
-            let looking = s.connected.get() && (!s.phone.get() || s.screen.get() == Screen::Menus);
+            // A card is on the page only where it shows (the control page).
+            let looking = s.connected.get();
             let want: Vec<u32> = if looking {
                 std::iter::once(root)
                     .chain(stack.get().into_iter().filter_map(|l| match l {

@@ -1,6 +1,7 @@
 //! The sidebar: the mods and their files, the natives' search.
 
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 use serde_json::{Value, json};
 
 use crate::actions::{delete_file, import, insert_code, move_path, new_file, new_folder, open_file, open_mod_page, rename_file};
@@ -83,6 +84,10 @@ pub(crate) fn ModsView(s: S) -> impl IntoView {
                 let top = name.clone();
                 view! {
                     <div class=move || match (selected(), dropping(s, &top)) { (true, _) => "mod sel", (_, true) => "mod drop", _ => "mod" } role="button" tabindex="0" on:click=page
+                        on:contextmenu={ let n = name.clone(); move |ev: leptos::ev::MouseEvent| {
+                            ev.prevent_default();
+                            s.context.set(Some((n.clone(), ev.client_x(), ev.client_y())));
+                        } }
                         on:dragover=drag_over(s, name.clone()) on:dragleave=drag_leave(s, name.clone()) on:drop=dropped(s, name.clone())
                         on:keydown={ let n = name.clone(); move |ev| if ev.key() == "Enter" { open_mod_page(s, &n) } }
                         title=m.error.clone().unwrap_or_else(|| m.description.clone())>
@@ -142,6 +147,75 @@ pub(crate) fn ModsView(s: S) -> impl IntoView {
             <span class="ico small" inner_html=icons::BOOK></span>
             <span>{move || s.hello.with(|h| format!("{} natives · {} namespaces", h["natives"], h["namespaces"]))}</span>
         </div>
+    }
+}
+
+/// The control page at mod `name`'s menus, in a tab of its own.
+pub(crate) fn open_control(name: &str) {
+    if let Some(w) = web_sys::window() {
+        let _ = w.open_with_url_and_target(&format!("/control?mod={}", js_sys::encode_uri_component(name)), "_blank");
+    }
+}
+
+/// A mod's context menu (a right click on its row): what can be done to it.
+/// A press anywhere else, Escape or a scroll closes it.
+#[component]
+pub(crate) fn ContextMenu(s: S) -> impl IntoView {
+    let pressed = window_event_listener(leptos::ev::pointerdown, move |ev| {
+        let inside = ev
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            .and_then(|e| e.closest(".ctx").ok().flatten())
+            .is_some();
+        if !inside {
+            s.context.set(None);
+        }
+    });
+    let keys = window_event_listener(leptos::ev::keydown, move |ev| {
+        if ev.key() == "Escape" {
+            s.context.set(None);
+        }
+    });
+    let wheel = window_event_listener(leptos::ev::wheel, move |_| s.context.set(None));
+    on_cleanup(move || {
+        pressed.remove();
+        keys.remove();
+        wheel.remove();
+    });
+    move || {
+        s.context.get().map(|(name, x, y)| {
+            let running = s.mods.with(|m| m.iter().any(|m| m.name == name && m.state == "running"));
+            // Inside the window.
+            let (w, h) = web_sys::window()
+                .map(|w| (w.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(1e4), w.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(1e4)))
+                .unwrap_or((1e4, 1e4));
+            let (left, top) = ((x as f64).min(w - 230.0).max(4.0), (y as f64).min(h - 300.0).max(4.0));
+            let item = move |label: &'static str, f: Box<dyn Fn()>| {
+                view! {
+                    <button class="ctx-item" role="menuitem" on:click=move |_| { s.context.set(None); f(); }>{label}</button>
+                }
+            };
+            let n = name.clone();
+            let start = {
+                let n = n.clone();
+                Box::new(move || request(if running { "mods.stop" } else { "mods.start" }, json!({ "name": n }), move |r| if let Err(e) = r { s.notice.set(Some(e)) }))
+            };
+            let token = TOKEN.with(|t| t.borrow().clone());
+            let export = format!("/export?mod={n}&token={token}");
+            view! {
+                <div class="ctx" role="menu" aria-label=format!("{n}") style=format!("left:{left}px;top:{top}px")>
+                    {item("Open control page", { let n = n.clone(); Box::new(move || open_control(&n)) })}
+                    {item("Mod page", { let n = n.clone(); Box::new(move || open_mod_page(s, &n)) })}
+                    <div class="ctx-sep"></div>
+                    {item(if running { "Stop" } else { "Start" }, start)}
+                    {running.then(|| item("Restart", { let n = n.clone(); Box::new(move || request("mods.restart", json!({ "name": n }), move |r| if let Err(e) = r { s.notice.set(Some(e)) })) }))}
+                    <div class="ctx-sep"></div>
+                    {item("New file…", { let n = n.clone(); Box::new(move || new_file(s, &n)) })}
+                    {item("New folder…", { let n = n.clone(); Box::new(move || new_folder(s, &n)) })}
+                    {item("Export as .zip", Box::new(move || { if let Some(w) = web_sys::window() { let _ = w.location().set_href(&export); } }))}
+                </div>
+            }
+        })
     }
 }
 

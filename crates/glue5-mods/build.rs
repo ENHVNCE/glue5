@@ -444,9 +444,12 @@ fn studio_files(root: &Path, out: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     };
     add_tree(&bindgen, "", &mut files)?;
     add_tree(&codemirror, "/cm", &mut files)?;
-    for f in ["style.css", "bg.jpg", "logo.png"] {
+    for f in ["style.css", "bg.jpg", "logo.png", "control.webmanifest"] {
         files.push((format!("/{f}"), fs::read(studio.join("web").join(f))?));
     }
+    // The editor's module, loaded by the Studio when it needs it (the
+    // control page never does).
+    files.push(("/editor.js".into(), fs::read(studio.join("js/editor.js"))?));
     let fonts = root.join("crates/glue5/assets/ui");
     for f in ["Barlow-SemiBold.ttf", "BarlowCondensed-Bold.ttf"] {
         println!("cargo:rerun-if-changed={}", fonts.join(f).display());
@@ -463,6 +466,7 @@ fn studio_files(root: &Path, out: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     let map = serde_json::json!({ "imports": imports }).to_string();
     let page = fs::read_to_string(studio.join("web/index.html"))?.replace("<!--IMPORTMAP-->", &map);
     files.push(("/index.html".into(), page.into_bytes()));
+    files.push(("/control.html".into(), fs::read(studio.join("web/control.html"))?));
     files.retain(|(p, _)| !p.ends_with("LICENSE") && !p.ends_with(".d.ts"));
     Ok(files)
 }
@@ -495,6 +499,7 @@ fn assets(out: &Path, files: &[(String, Vec<u8>)]) -> Result<()> {
             "css" => "text/css; charset=utf-8",
             "wasm" => "application/wasm",
             "json" => "application/json",
+            "webmanifest" => "application/manifest+json",
             "svg" => "image/svg+xml",
             "png" => "image/png",
             "jpg" => "image/jpeg",
