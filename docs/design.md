@@ -844,6 +844,28 @@ natives:
 - entities the mod creates belong to its handler;
 - `scrThread::KillThread` cleans them up when the mod stops.
 
+**In GTA Online a mod runs as the session's script.** A mod's thread is not
+a network script: CREATE_VEHICLE with isNetwork returns 0 from it, and
+NETWORK_SET_THIS_SCRIPT_IS_NETWORK_SCRIPT quits the game for a script that
+is not in its allowlist of 378. So while freemode runs (the session script
+every player runs), each mod turn runs with freemode's `GtaThread` as the
+active thread (`tls + 3088`, swapped for the turn and restored after, a
+panic too):
+
+- what the mod makes with isNetwork is networked, as freemode's own: every
+  player sees it, with or without the mod, and sees the player in it;
+  natives that need a network script (explosive rounds...) work too;
+- natives about the running script (`*THIS_SCRIPT*`, `*THIS_THREAD*`,
+  `PARTICIPANT_ID*`) run with the mod's own thread active: its name, id
+  and host are the mod's;
+- what it made as freemode (handles returned by `CREATE_*`, `CLONE_*`,
+  `ADD_BLIP_*`) is given back when it stops: entities no longer needed,
+  blips and pickups removed, as the engine does for a script that ends;
+- no list of natives to keep: the rule is the turn, and the cost is two
+  stores per turn and finding freemode once a frame.
+
+In a job (no freemode) and in story mode the mod runs as itself.
+
 Starting and stopping happen in the same hook, from whichever thread waits
 next, so all of it stays on the engine's script update. A mod's code starts
 once the player is in the game: no loading screen, screen faded in, player

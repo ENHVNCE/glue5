@@ -61,12 +61,15 @@ files; once you have, your copy stays as it is (the app says so when a
 new version is out) and deleting the folder brings the new one back.
 Turning off "starts with the game" on its page is kept through updates.
 
-In GTA Online what a mod makes (vehicles, peds, objects) is the
-player's own: a mod's script is not one of the game's network scripts,
-so the others do not see it (`NETWORK_SET_THIS_SCRIPT_IS_NETWORK_SCRIPT`
-is refused: the game stops for a script it does not know). A player
-inside such a vehicle vanishes for the others, so the trainer's spawner
-and garage are off in GTA Online for now.
+In GTA Online a mod runs as the session's own script (freemode, which
+every player runs): what it makes with `isNetwork` (`vehicle.createVehicle(
+model, pos, heading, true, ...)`) is networked, and every player sees it,
+with the mod or without. What it made goes back to the game when it
+stops, as a script's own does. Made without `isNetwork`, a vehicle is the
+player's own: the others do not see it, nor the player inside it. In a
+job, mods run as themselves: what they make there is the player's own.
+(`NETWORK_SET_THIS_SCRIPT_IS_NETWORK_SCRIPT` is refused: the game stops
+for a script it does not know.)
 
 ## GLUE 5 Studio
 
