@@ -198,7 +198,7 @@ fn Shell(s: S) -> impl IntoView {
                         Side::Natives => view! { <NativesView s=s/> }.into_any(),
                     }}
                 </aside>
-                <section class=move || if s.tabs.with(|t| t.is_empty()) { "work empty" } else { "work" }>
+                <section class=move || if s.tabs.with(|t| t.is_empty()) { "work idle" } else { "work" }>
                     <Tabs s=s/>
                     <Toolbar s=s/>
                     <div class=move || if s.active.get().is_some_and(|p| mod_page(&p).is_some()) { "code page" } else { "code" }>

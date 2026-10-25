@@ -214,8 +214,8 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
 /* editor column */
 .work { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 40px 40px minmax(0, 1fr) 230px; min-width: 0; min-height: 0; }
 /* Nothing open: no tab bar or toolbar over the welcome page. */
-.work.empty { grid-template-rows: minmax(0, 1fr) 230px; }
-.work.empty .tabs, .work.empty .toolbar { display: none; }
+.work.idle { grid-template-rows: minmax(0, 1fr) 230px; }
+.work.idle .tabs, .work.idle .toolbar { display: none; }
 .tabs { display: flex; align-items: flex-end; gap: 2px; padding: 0 8px; overflow-x: auto; scrollbar-width: none; background: var(--glass); border-bottom: 1px solid var(--line); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); }
 .tab { position: relative; flex: none; display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 6px 0 12px; border-radius: 9px 9px 0 0; color: var(--muted); cursor: pointer; white-space: nowrap; }
 .tab:hover { background: var(--hover); }
@@ -390,7 +390,7 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
   .sidebar { display: none; position: absolute; z-index: 20; left: 56px; top: 0; bottom: 0; width: 300px; background: rgba(16,17,19,.95); box-shadow: 24px 0 60px rgba(0,0,0,.5); }
   .app.drawer .sidebar { display: flex; }
   .work { grid-template-rows: 42px 42px minmax(0, 1fr) 200px; }
-  .work.empty { grid-template-rows: minmax(0, 1fr) 200px; }
+  .work.idle { grid-template-rows: minmax(0, 1fr) 200px; }
   .act { width: 44px; height: 44px; }
   .btn { height: 32px; padding: 0 12px; }
 }
@@ -410,7 +410,7 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
   .activity { display: none; }
   .sidebar { position: static; display: none; width: auto; box-shadow: none; background: var(--glass); border: 0; }
   .work { grid-template-rows: 42px 44px minmax(0, 1fr); }
-  .work.empty { grid-template-rows: minmax(0, 1fr); }
+  .work.idle { grid-template-rows: minmax(0, 1fr); }
   .panel { display: none; }
   .app.screen-mods .sidebar { display: flex; }
   .app.screen-mods .work { display: none; }
