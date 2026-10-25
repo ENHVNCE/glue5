@@ -1,10 +1,13 @@
 --!strict
--- Going places: the waypoint (now or whenever one is set), the mission's objective, the
--- places of data/places.luau, the player's own saved spots, coordinates, the nearest vehicle.
+-- Going places: the waypoint (now or whenever one is set), the mission's objective, the map's
+-- icons, the places of data/places.luau, interiors (data/interiors.luau), the player's own
+-- saved spots, coordinates, the nearest vehicle.
 
 local bind = require("../core/bind")
 local game = require("../core/game")
 local places = require("../data/places")
+local interiors = require("../data/interiors")
+local blips = require("../data/blips")
 
 type Spot = { name: string, x: number, y: number, z: number, heading: number }
 
@@ -119,8 +122,58 @@ local function coordinates(root: Menu)
 	end)
 end
 
+-- To an interior: what it needs loaded first, then there.
+local function interiorsMenu(root: Menu)
+	local menu = root:submenu("Interiors", "Rooms and places the game keeps hidden until a mission")
+	for _, room in interiors do
+		bind.action(menu, room.name, { action = "Go" }, function(): string?
+			for _, ipl in room.ipls do
+				if not streaming.isIplActive(ipl) then
+					streaming.requestIpl(ipl)
+				end
+			end
+			game.teleport(vector.create(room.x, room.y, room.z), false, room.heading)
+			return nil
+		end)
+	end
+end
+
+-- The map's icons there are now, by kind (sprite), to the nearest of each kind.
+local function icons(root: Menu)
+	local menu = root:submenu("Map icons", "The nearest of any icon on the map")
+	local function build()
+		menu:clear()
+		local found = 0
+		for sprite = 1, 600 do
+			local first = hud.getFirstBlipInfoId(sprite)
+			if first and hud.doesBlipExist(first) then
+				local count = 0
+				local b: Blip? = first
+				while b and hud.doesBlipExist(b) do
+					count += 1
+					b = hud.getNextBlipInfoId(sprite)
+				end
+				found += 1
+				local name = blips[sprite] or `Icon {sprite}`
+				bind.action(menu, name, { note = `{count} on the map`, action = "Go" }, function(): string?
+					local nearest = hud.getClosestBlipInfoId(sprite)
+					if not nearest or not hud.doesBlipExist(nearest) then
+						return "It is no longer on the map"
+					end
+					game.teleport(hud.getBlipInfoIdCoord(nearest), true)
+					return nil
+				end)
+			end
+		end
+		if found == 0 then
+			menu:label("No icons on the map now.")
+		end
+	end
+	menu:onOpen(bind.safe("Map icons", build))
+end
+
 function M.build(root: Menu)
-	local menu = root:submenu("Teleport", "Waypoint, objective, places, your saved spots")
+	local menu = root:submenu("Teleport", "Waypoint, objective, map icons, places, interiors, your saved spots")
 	bind.command(menu, "teleport.waypoint", "To the waypoint", { note = "The map's marker", action = "Go" }, toWaypoint)
 	bind.command(menu, "teleport.objective", "To the objective", { note = "Where the mission wants you", action = "Go" }, function(): string?
 		local at = objective()
@@ -164,6 +217,8 @@ function M.build(root: Menu)
 	end)
 	spots(menu)
 	coordinates(menu)
+	icons(menu)
+	interiorsMenu(menu)
 	menu:separator("Places")
 	for _, kind in places do
 		local sub = menu:submenu(kind.name, `{#kind.places} places`)
