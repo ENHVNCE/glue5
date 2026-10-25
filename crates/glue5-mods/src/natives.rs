@@ -99,10 +99,6 @@ include!(concat!(env!("OUT_DIR"), "/natives.rs"));
 /// The natives' Luau definitions, for the type checker.
 pub const DEFINITIONS: &str = include_str!(concat!(env!("OUT_DIR"), "/natives.d.luau"));
 
-/// The natives under their game names (`VEHICLE.CREATE_VEHICLE`), typed as
-/// their Luau-named ones: for the checker, after [`DEFINITIONS`].
-pub const ALIASES: &str = include_str!(concat!(env!("OUT_DIR"), "/aliases.d.luau"));
-
 /// What the build found: how many natives there are, which were left out.
 pub const SUMMARY: &str = env!("GLUE5_MODS_NATIVES_SUMMARY");
 
@@ -115,14 +111,6 @@ pub fn reserved_handler(name: &str) -> Option<u64> {
 pub fn find(ns: usize, lua: &str) -> Option<usize> {
     let ns = ns as u16;
     NATIVES.binary_search_by(|n| (n.ns, n.lua).cmp(&(ns, lua))).ok()
-}
-
-/// The native of namespace `ns` with the game's name `name` (`CREATE_VEHICLE`).
-pub fn find_name(ns: usize, name: &str) -> Option<usize> {
-    match LOOKUP.names.get(name) {
-        Some(&Target::Native(i)) if NATIVES[i].ns as usize == ns => Some(i),
-        _ => None,
-    }
 }
 
 /// What a name or a hash stands for: a native, one only `native.invoke`
@@ -216,10 +204,10 @@ fn resolve(target: &Value) -> Result<&'static Native, String> {
     }
 }
 
-/// The natives' tables: one per namespace (`vehicle.createVehicle`), the
-/// same under the game's names (`VEHICLE.CREATE_VEHICLE`), and
-/// `native.invoke`. `task`'s functions (the scheduler) go in the TASK_
-/// natives' table.
+/// The natives' tables, one per namespace (`vehicle.createVehicle`: each
+/// native once, by its Luau name), and `native.invoke` (by a hash or the
+/// game's name, for natives the tables leave out). `task`'s functions (the
+/// scheduler) go in the TASK_ natives' table.
 pub fn install(lua: &Lua, task: &Table) -> mlua::Result<()> {
     let g = lua.globals();
     for (ns, space) in NAMESPACES.iter().enumerate() {
@@ -231,7 +219,6 @@ pub fn install(lua: &Lua, task: &Table) -> mlua::Result<()> {
             }
         }
         g.set(*space, table)?;
-        g.set(space.to_ascii_uppercase(), namespace(lua, move |key| find_name(ns, key))?)?;
     }
     let native = lua.create_table()?;
     native.set(
@@ -809,23 +796,17 @@ mod tests {
         assert!(RAW.iter().any(|n| n.name == "PLAYSTATS_MISSION_ENDED"));
     }
 
-    /// `VEHICLE.CREATE_VEHICLE` is `vehicle.createVehicle`, and only that.
+    /// Each native once, by its Luau name (`vehicle.createVehicle`); the
+    /// game's names only through `native.invoke`.
     #[test]
-    fn game_names() {
+    fn luau_names_only() {
         let lua = Lua::new();
         install(&lua, &lua.create_table().unwrap()).unwrap();
         let kind = |code: &str| lua.load(code).eval::<String>().unwrap();
-        assert_eq!(kind("return type(VEHICLE.CREATE_VEHICLE)"), "function");
         assert_eq!(kind("return type(vehicle.createVehicle)"), "function");
-        assert_eq!(kind("return type(VEHICLE.createVehicle)"), "nil");
+        assert_eq!(kind("return type(VEHICLE)"), "nil");
         assert_eq!(kind("return type(vehicle.CREATE_VEHICLE)"), "nil");
-        // In its own namespace only, as the definitions have it.
-        assert_eq!(kind("return type(PED.CREATE_VEHICLE)"), "nil");
-        assert_eq!(kind("return type(BUILTIN.WAIT)"), "nil");
-        let e = lua
-            .load("VEHICLE.CREATE_VEHICLE('adder', vector.create(0, 0, 0), 0, false, false, false)")
-            .exec()
-            .unwrap_err();
+        let e = lua.load("vehicle.createVehicle('adder', vector.create(0, 0, 0), 0, false, false, false)").exec().unwrap_err();
         assert!(e.to_string().contains("vehicle.createVehicle: natives can only run in a mod's script"), "{e}");
         let e = lua.load("native.invoke(0xAF35D0D2583051B0, 'adder', 0, 0, 0, 0, false, false, false)").exec().unwrap_err();
         assert!(e.to_string().contains("natives can only run"), "{e}");
@@ -833,16 +814,18 @@ mod tests {
         assert!(e.to_string().contains("not available"), "{e}");
     }
 
-    /// The checker knows the game names (as their Luau ones) and the
-    /// ScriptHookV-style globals.
+    /// The checker types the natives by their Luau names (the game's are
+    /// unknown globals) and the ScriptHookV-style globals.
     #[test]
-    fn game_names_typed() {
+    fn natives_typed() {
         crate::checker::Checker::with(|c| {
             let file = "shv-test/main.luau";
-            c.set(file, Some("--!strict\nlocal me = PLAYER.PLAYER_PED_ID()\nVEHICLE.SET_VEHICLE_FIXED(me)\n"));
+            c.set(file, Some("--!strict\nlocal me = player.playerPedId()\nvehicle.setVehicleFixed(me)\n"));
             let text = c.check(file).to_string();
             assert!(text.contains("Ped") && text.contains("Vehicle"), "{text}");
-            let ok = "--!strict\nlocal car: Vehicle? = VEHICLE.CREATE_VEHICLE('adder', vector.create(0, 0, 0), 0, false, false, false)\n\
+            c.set(file, Some("--!strict\nVEHICLE.SET_VEHICLE_FIXED(nil)\n"));
+            assert!(c.check(file).to_string().contains("VEHICLE"));
+            let ok = "--!strict\nlocal car: Vehicle? = vehicle.createVehicle('adder', vector.create(0, 0, 0), 0, false, false, false)\n\
                       local r = native.invoke('0xAF35D0D2583051B0', 'adder', 0, 0, 0, 0, false, false, false)\n\
                       local n: number = globals.int(262145) + memory.readInt(memory.alloc(8))\n\
                       local v: string = game.version()\n\
@@ -854,8 +837,6 @@ mod tests {
             c.set(file, None);
         })
         .unwrap();
-        assert!(
-            crate::checker::documentation("@glue5/global/VEHICLE.CREATE_VEHICLE").unwrap().contains("CREATE_VEHICLE")
-        );
+        assert!(crate::checker::documentation("@glue5/global/vehicle.createVehicle").unwrap().contains("CREATE_VEHICLE"));
     }
 }
