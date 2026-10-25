@@ -352,6 +352,7 @@ pub fn start(config: Config, gpu: gpu::GpuBackend) -> Result<Game> {
     stream::hooks(&mut hooks);
     prompts::hooks(&mut hooks);
     draw_lists::hooks(&mut hooks);
+    texts::hooks(&mut hooks);
     for set in EXTRA_HOOKS.lock().unwrap().iter() {
         set(&mut hooks);
     }

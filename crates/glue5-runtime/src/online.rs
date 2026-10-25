@@ -163,7 +163,6 @@ pub(crate) fn start(online: &crate::Online, hooks: &mut glue5_game::Hooks) {
     crate::cloud::hooks(hooks);
     crate::jobs::hooks(hooks);
     crate::friends::game::hooks(hooks);
-    crate::texts::hooks(hooks);
     crate::stats::hooks(hooks);
     // The stand-ins' methods, host functions the game calls through their
     // vtables (`glue5_game::host_function`): QueryInterface, a method doing
