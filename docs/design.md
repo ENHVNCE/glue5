@@ -1144,6 +1144,20 @@ whose own browser is no place to write mods).
   would override the menu at each start. App settings control back buffer
   size (`-forceResolution`), frame rate (`-frameLimit`), memory pools and
   touch controls.
+- The menu's data is older than the engine. The game ships the base
+  `pausemenu.xml` and texts, without the PC release's later menu, so
+  Settings › Graphics lacked Population Variety, Reflection MSAA,
+  Particles Quality, Grass Quality, Motion Blur Strength and In-Game Depth
+  Of Field Effects, and there was no Advanced Graphics screen. The engine
+  still handles all of them: it reads, applies and saves them, and asks for
+  a restart where the PC game does (grass, particles, variety). The
+  overlay of `pausemenu.xml` adds those items and the Advanced Graphics
+  screen (long and high-resolution shadows, high detail streaming while
+  flying, extended distance scaling and shadow distance), and `texts.rs`
+  gives their names in English, which the texts lack. Frame Scaling Mode is
+  left out because the app sizes the frame, and TXAA because it is NVIDIA's.
+  Before this, grass, particles and variety kept whatever `settings.xml`
+  held, such as the low-memory preset's values.
 - MSAA stays off, whatever the game's menu says. The game's shaders are
   its DirectX 10 set (`win32_40`), whose multisampled effects are an older
   revision than the code that drives them: a depth resolve pass and ten

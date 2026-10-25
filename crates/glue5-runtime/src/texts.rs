@@ -1,7 +1,8 @@
 //! Texts the game data lacks: its scripts are newer and name labels of
 //! later DLC packs, which show as "<LABEL> missing". The ones GTA Online's
 //! jobs and activities show on the way (hosting, coronas, the job lists),
-//! and the pause menu's sessions, are given here, in English.
+//! the pause menu's sessions, and the graphics settings the menu's data
+//! lacks (`overlay.rs`), are given here, in English.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -59,6 +60,19 @@ const TEXTS: &[(&str, &str)] = &[
     ("FMMC_OWR", "Open Wheel Race"),
     ("MATC_DPADRIGHT", "Press ~INPUT_CONTEXT~ to start."),
     ("PM_JOIN_AREN", "Join Arena War"),
+    // Settings › Graphics and Advanced Graphics, as the PC game names them.
+    ("GFX_POP_VARIETY", "Population Variety"),
+    ("GFX_REFLECTION_MSAA", "Reflection MSAA"),
+    ("GFX_PARTICLEQ", "Particles Quality"),
+    ("GFX_GRASSQ", "Grass Quality"),
+    ("GFX_MB_STRENGTH", "Motion Blur Strength"),
+    ("GFX_DOF", "In-Game Depth Of Field Effects"),
+    ("PM_PANE_ADVGFX", "Advanced Graphics"),
+    ("GFX_LONG_SHADOWS", "Long Shadows"),
+    ("GFX_ULTRA_SHADOWS", "High Resolution Shadows"),
+    ("GFX_HD_FLIGHT", "High Detail Streaming While Flying"),
+    ("GFX_MAX_LOD", "Extended Distance Scaling"),
+    ("GFX_SHADOWS_DIST", "Extended Shadows Distance"),
 ];
 
 /// The engine's label hash (`rage::atStringHash`): Jenkins' one-at-a-time,
