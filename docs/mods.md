@@ -256,7 +256,7 @@ typed in the editor like the natives. Functions that wait for the game
 | `ui` | The game's own text: `ui.notify(text, { icon = "CHAR_LESTER", title, subtitle })` in the feed (plain `ui.notify(text)` stays the app's), `ui.subtitle(text, ms?)`, `ui.help(text)` (`~INPUT_CONTEXT~` shows the button; each frame it stays), `ui.loading(text)` / `ui.loading()`, `ui.hideHud(HudComponent.CASH)` (this frame), `ui.prompt(title?, default?, max?)` (the game's keyboard; `nil` if cancelled), `ui.buttons({ { control = Control.JUMP, label = "Jump" } })` (instructional buttons until changed, `nil` hides them). |
 | `scaleform.load(name)` | A scaleform movie: `sf:call("SHOW_SHARD_WASTED_MP_MESSAGE", "Wasted", "", 5)`, then each frame `sf:draw()` (or `sf:draw(x, y, w, h)`, `sf:draw3d(pos, rot, scale)`); `sf:release()`. |
 | `task.every(ms, f)` | `f` every `ms` of game time; the function it returns stops it. |
-| `mod.onStop(f)` | `f` runs when the mod stops (stopped, restarted on save, failed or done), on its script, in one last turn of 2 ms: delete what it made, put back what it changed. It cannot wait. Not when the game ends the mod's script itself. |
+| `mod.onStop(f)` | `f` runs when the mod stops (stopped, restarted on save, failed or done), on its script, in one last turn of 20 ms (all of them together): delete what it made, put back what it changed. It cannot wait. Not when the game ends the mod's script itself. |
 | `geo` | Rotations as the game has them (degrees: pitch, roll, yaw): `geo.direction(rot)`, `geo.rotation(dir)`, `geo.fromHeading(h)`, `geo.heading(dir)`, `geo.distance(a, b, flat?)`, `geo.quaternion(rot)`, `geo.fromQuaternion(x, y, z, w)`. Luau's `vector` has `lerp`, `angle`, `dot`, `cross`. |
 
 ## Menus
