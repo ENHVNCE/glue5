@@ -446,7 +446,7 @@ struct App {
     studio: Option<(glue5_mods::studio::Studio, ui::StudioInfo)>,
     /// The Studio could not start (both ports taken): when, and as what; not
     /// tried again for a while.
-    studio_failed: Option<(Instant, (bool, String))>,
+    studio_failed: Option<(Instant, bool)>,
     /// Servers found on the network by the last search, and whether one runs.
     servers: Arc<Mutex<(bool, Vec<ui::FoundServer>)>>,
     /// Engine reads have waited for the server since then.
@@ -1384,19 +1384,26 @@ impl App {
                 self.settings.studio_code.clone()
             }
         };
-        let wanted = (self.settings.mods && glue5_mods::dir().is_some() && self.settings.studio)
-            .then(|| (self.settings.studio_lan, code.clone()));
-        if self.studio.as_ref().map(|(s, _)| (s.lan(), s.token().to_string())) == wanted {
+        let wanted = (self.settings.mods && glue5_mods::dir().is_some() && self.settings.studio).then_some(self.settings.studio_lan);
+        if let Some((studio, info)) = &mut self.studio
+            && Some(studio.lan()) == wanted
+        {
+            // A new code: what is paired stays paired, the server serves on.
+            if studio.code() != code {
+                studio.set_code(&code);
+                info.code = studio.pairing_code();
+                self.ui.repaint();
+            }
             return;
         }
-        if let (Some((at, tried)), Some(w)) = (&self.studio_failed, &wanted)
-            && tried == w
+        if let (Some((at, tried)), Some(lan)) = (&self.studio_failed, wanted)
+            && *tried == lan
             && at.elapsed() < Duration::from_secs(10)
         {
             return;
         }
         self.studio = None;
-        if let Some((lan, code)) = wanted {
+        if let Some(lan) = wanted {
             // The usual port, else any (another app has it).
             let started = glue5_mods::studio::Studio::start(glue5_mods::studio::PORT, lan, &code)
                 .or_else(|_| glue5_mods::studio::Studio::start(0, lan, &code));
@@ -1409,6 +1416,7 @@ impl App {
                     };
                     let info = ui::StudioInfo {
                         url: studio.url(&host),
+                        control: studio.control_url(&host),
                         code: studio.pairing_code(),
                         lan,
                     };
@@ -1417,7 +1425,7 @@ impl App {
                 }
                 Err(e) => {
                     log::warn!("studio: {e}");
-                    self.studio_failed = Some((Instant::now(), (lan, code)));
+                    self.studio_failed = Some((Instant::now(), lan));
                 }
             }
         }
