@@ -102,7 +102,7 @@ pub(crate) fn TitleBar(s: S) -> impl IntoView {
                 </Show>
             </div>
             <div class="tb-right">
-                <a class="btn ghost small hide-t" href="/control" target="_blank" rel="noopener" title="The mods and their menus, on a page of their own (for a phone too)">
+                <a class="btn ghost small" href="/control" target="_blank" rel="noopener" title="The mods and their menus, on a page of their own (for a phone too)">
                     <span class="ico" inner_html=icons::SLIDERS></span>"Control page"
                 </a>
                 <div class=move || if s.connected.get() { "device" } else { "device off" }>

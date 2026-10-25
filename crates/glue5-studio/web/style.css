@@ -468,8 +468,10 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
 }
 
 /* ---- the Studio's extras: links to the control page, the mods' context
-   menu, the agents' command ---- */
-.tb-right a.btn { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; color: var(--text-2); }
+   menu ---- */
+.tb-right a.btn { text-decoration: none; color: var(--text-2); }
+/* A phone has it in its bottom bar. */
+@media (max-width: 700px) { .tb-right a.btn { display: none; } }
 .ctx {
   position: fixed; z-index: 60; min-width: 210px; padding: 6px; border-radius: 10px;
   background: rgba(22,23,26,.98); border: 1px solid var(--line-strong); box-shadow: 0 16px 40px rgba(0,0,0,.5);
