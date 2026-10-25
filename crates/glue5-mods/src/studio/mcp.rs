@@ -3,7 +3,8 @@
 //! coding agent can write a mod, check it, run it, read its log and try
 //! natives live:
 //!
-//! `claude mcp add --transport http glue5 http://<address>:47110/mcp --header "Authorization: Bearer <code>"`
+//! `claude mcp add --transport http glue5 http://<address>:47110/mcp --header "Authorization: Bearer <token>"`
+//! (a pairing's token, from the Studio's welcome page, or the pairing code).
 
 use std::time::{Duration, Instant};
 
