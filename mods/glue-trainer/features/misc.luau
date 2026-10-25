@@ -161,6 +161,69 @@ local function tv(menu: Menu)
 	})
 end
 
+-- A camera above the player, looking down, as the first GTA games.
+local function topDown(menu: Menu)
+	local cam: Cam? = nil
+	bind.feature(menu, "misc.topDown", "Top-down camera", "Seen from above, as the first GTA games", {
+		on = function()
+			cam = camera.createCamWithParams("DEFAULT_SCRIPTED_CAMERA", game.position() + vector.create(0, 0, 30), vector.create(-89, 0, 0), 60, true, 2)
+			camera.renderScriptCams(true, false, 0, true, true, 0)
+		end,
+		tick = function()
+			if cam then
+				local at = entity.getEntityCoords(game.mover(), true)
+				camera.setCamCoord(cam, at + vector.create(0, 0, 25 + entity.getEntitySpeed(game.mover()) * 0.6))
+				camera.setCamRot(cam, vector.create(-89, 0, 0), 2)
+			end
+		end,
+		off = function()
+			camera.renderScriptCams(false, false, 0, true, true, 0)
+			if cam and camera.doesCamExist(cam) then
+				camera.destroyCam(cam, false)
+			end
+			cam = nil
+		end,
+	})
+end
+
+-- The story's characters: their money and skills (the save's stats; SP0 Michael, SP1
+-- Franklin, SP2 Trevor).
+local CHARACTERS = { [joaat("player_zero")] = "SP0", [joaat("player_one")] = "SP1", [joaat("player_two")] = "SP2" }
+local SKILLS = {
+	{ "Stamina", "STAMINA" },
+	{ "Shooting", "SHOOTING_ABILITY" },
+	{ "Strength", "STRENGTH" },
+	{ "Stealth", "STEALTH_ABILITY" },
+	{ "Flying", "FLYING_ABILITY" },
+	{ "Driving", "WHEELIE_ABILITY" },
+	{ "Lung capacity", "LUNG_CAPACITY" },
+	{ "Special ability", "SPECIAL_ABILITY_UNLOCKED" },
+}
+
+local function character(root: Menu)
+	local menu = root:submenu("Character", "Story mode: the character's money and skills")
+	menu:onOpen(bind.safe("Character", function()
+		menu:clear()
+		local who = CHARACTERS[entity.getEntityModel(game.me())]
+		if not who or game.online() then
+			menu:label("For Michael, Franklin and Trevor, in story mode.")
+			return
+		end
+		local _, cash = stats.statGetInt(joaat(`{who}_TOTAL_CASH`), 0, -1)
+		menu:number("Money", cash, { min = 0, max = 2000000000, step = 100000, note = "$" }, bind.safe("Money", function(v)
+			stats.statSetInt(joaat(`{who}_TOTAL_CASH`), v, true)
+		end))
+		menu:separator("Skills")
+		for _, skill in SKILLS do
+			local stat = joaat(`{who}_{skill[2]}`)
+			local _, now = stats.statGetInt(stat, 0, -1)
+			menu:slider(skill[1], now, 0, 100, { step = 5, unit = "%" }, bind.safe(skill[1], function(v)
+				stats.statSetInt(stat, v, true)
+			end))
+		end
+	end))
+end
+
 local function story(menu: Menu)
 	menu:separator("Story")
 	bind.command(menu, "misc.skipCutscene", "Skip the cutscene", { action = "Skip" }, function(): string?
@@ -173,6 +236,16 @@ local function story(menu: Menu)
 	bind.feature(menu, "misc.noPhone", "No phone", "It does not come out", {
 		tick = function()
 			pad.disableControlAction(0, Control.PHONE, true)
+		end,
+	})
+	bind.feature(menu, "misc.noMusic", "No flight or wanted music", "The score that starts in the air and with the police", {
+		on = function()
+			audio.setAudioFlag("DisableFlightMusic", true)
+			audio.setAudioFlag("WantedMusicDisabled", true)
+		end,
+		off = function()
+			audio.setAudioFlag("DisableFlightMusic", false)
+			audio.setAudioFlag("WantedMusicDisabled", false)
 		end,
 	})
 	bind.feature(menu, "misc.noStuntJumps", "No stunt jumps", "No slow motion over ramps", {
@@ -193,6 +266,8 @@ function M.build(root: Menu)
 	radio(menu)
 	tv(menu)
 	story(menu)
+	topDown(menu)
+	character(menu)
 end
 
 return M

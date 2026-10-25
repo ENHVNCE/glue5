@@ -346,6 +346,64 @@ local function body(root: Menu)
 			next = 0
 		end,
 	})
+	bind.slider(root, "self.alpha", "See-through", 255, 0, 255, { step = 15, note = "255: solid; less to fade, as a ghost" }, function(v)
+		if v >= 255 then
+			entity.resetEntityAlpha(game.me())
+		else
+			entity.setEntityAlpha(game.me(), v, false)
+		end
+	end)
+	-- Fire from the mouth, as long as it is on (and fireproof meanwhile).
+	local flame: number? = nil
+	bind.feature(root, "self.breatheFire", "Breathe fire", "Flames from your mouth", {
+		on = function()
+			if not streaming.load("core", "ptfx") then
+				error("the flames did not load", 0)
+			end
+			local me = game.me()
+			entity.setEntityProofs(me, false, true, false, false, false, false, false, false)
+			graphics.useParticleFxAsset("core")
+			flame = graphics.startParticleFxLoopedOnEntityBone("ent_sht_flame", me, 0, 0.12, 0, 90, 0, 0, ped.getPedBoneIndex(me, Bone.HEAD), 1, false, false, false)
+		end,
+		off = function()
+			if flame then
+				graphics.stopParticleFxLooped(flame, false)
+				flame = nil
+			end
+			entity.setEntityProofs(game.me(), false, false, false, false, false, false, false, false)
+		end,
+	})
+	bind.command(root, "self.clone", "Clone yourself", { note = "A copy of you, standing there", action = "Clone" }, function(): string?
+		local copy = ped.clonePed(game.me(), game.online(), false, true)
+		if copy then
+			entity.setPedAsNoLongerNeeded(copy)
+		end
+		return nil
+	end)
+	bind.command(root, "self.ragdoll", "Fall over", { action = "Fall" }, function(): string?
+		ped.setPedToRagdoll(game.me(), 3000, 3000, 0, false, false, false)
+		return nil
+	end)
+	-- The game's damage looks: name, pack.
+	local packs = {
+		{ "Hit by a car", "BigHitByVehicle" },
+		{ "Run over", "BigRunOverByVehicle" },
+		{ "Explosion", "Explosion_Large" },
+		{ "Burnt", "Burnt_Ped_0" },
+		{ "Fell", "Fall" },
+		{ "Beaten", "Skin_Melee_0" },
+		{ "Tortured", "SCR_Torture" },
+		{ "Dumpster", "SCR_Dumpster" },
+	}
+	local packNames = {}
+	for _, pk in packs do
+		table.insert(packNames, pk[1])
+	end
+	local pack = bind.choice(root, "self.damagePack", "Wounds", packNames, packNames[1], "What Look hurt puts on you")
+	bind.command(root, "self.hurt", "Look hurt", { note = "Blood and bruises, no harm (Clean up takes them off)", action = "Apply" }, function(): string?
+		ped.applyPedDamagePack(game.me(), packs[pack.value][2], 0, 1)
+		return nil
+	end)
 	bind.slider(root, "self.wet", "Wet", 0, 0, 2, { step = 0.1, unit = "m", note = "How high the water came up" }, function(v)
 		if v > 0 then
 			ped.setPedWetnessHeight(game.me(), v)

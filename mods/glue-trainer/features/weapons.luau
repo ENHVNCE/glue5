@@ -405,6 +405,77 @@ local function guns(menu: Menu)
 			end
 		end,
 	})
+	bind.feature(menu, "weapons.magnetGun", "Magnet gun", "Aim to pull what is near your aim to it", {
+		tick = function()
+			if not player.isPlayerFreeAiming(game.player()) then
+				return
+			end
+			local point = camera.getGameplayCamCoord() + geo.direction(camera.getGameplayCamRot(2)) * 15
+			local near: { Entity } = {}
+			local mine = game.vehicle()
+			for _, v in world.nearby("vehicles", point, 12) do
+				if v ~= mine then
+					table.insert(near, v)
+				end
+			end
+			for _, p in world.nearby("peds", point, 12) do
+				if not ped.isPedAPlayer(p) then
+					table.insert(near, p)
+				end
+			end
+			for _, o in world.nearby("objects", point, 12) do
+				table.insert(near, o)
+			end
+			for _, e in near do
+				entity.setEntityVelocity(e, (point - entity.getEntityCoords(e, true)) * 3)
+			end
+		end,
+	})
+	bind.feature(menu, "weapons.paintGun", "Paint gun", "Vehicles you shoot get a new colour", {
+		tick = function()
+			if not ped.isPedShooting(me()) then
+				return
+			end
+			local target = aimed()
+			if target and entity.isEntityAVehicle(target) then
+				local car = target :: Vehicle
+				local r, g, b = math.random(0, 255), math.random(0, 255), math.random(0, 255)
+				vehicle.setVehicleCustomPrimaryColour(car, r, g, b)
+				vehicle.setVehicleCustomSecondaryColour(car, r, g, b)
+			end
+		end,
+	})
+	bind.feature(menu, "weapons.driveGun", "Drive-it gun", "Shoot a vehicle and you are at its wheel", {
+		tick = function()
+			if not ped.isPedShooting(me()) then
+				return
+			end
+			local target = aimed()
+			if not target or not entity.isEntityAVehicle(target) then
+				return
+			end
+			local car = target :: Vehicle
+			local driver = vehicle.getPedInVehicleSeat(car, VehicleSeat.DRIVER, false)
+			if driver and ped.isPedAPlayer(driver) then
+				return
+			end
+			if driver then
+				task.clearPedTasksImmediately(driver)
+			end
+			ped.setPedIntoVehicle(me(), car, VehicleSeat.DRIVER)
+		end,
+	})
+	bind.feature(menu, "weapons.swapGun", "Body-swap gun", "Story mode: become the person you shoot", bind.storyOnly({
+		tick = function()
+			if not ped.isPedShooting(me()) then
+				return
+			end
+			local target = aimed()
+			if target and entity.isEntityAPed(target) and not ped.isPedAPlayer(target :: Ped) and not entity.isEntityDead(target, false) then
+				player.changePlayerPed(game.player(), target :: Ped, true, false)
+			end
+		end,
+	}))
 	bind.feature(menu, "weapons.vehicleGun", "Vehicle gun", "Shoot cars", bind.storyOnly({
 		tick = function()
 			if not ped.isPedShooting(me()) then
@@ -479,6 +550,53 @@ local function aiming(menu: Menu)
 			misc.shootSingleBulletBetweenCoords(from, to, 30, true, weapon.getSelectedPedWeapon(me), me, true, false, -1)
 		end,
 	})
+	-- Slow while aiming; the game's speed again after (only what this feature set).
+	local slowed = false
+	bind.feature(menu, "weapons.slowAim", "Slow motion when aiming", "Time slows down while you aim", {
+		tick = function()
+			local now = player.isPlayerFreeAiming(game.player())
+			if now ~= slowed then
+				misc.setTimeScale(if now then 0.35 else 1)
+				slowed = now
+			end
+		end,
+		off = function()
+			if slowed then
+				misc.setTimeScale(1)
+				slowed = false
+			end
+		end,
+	})
+	bind.feature(menu, "weapons.shotgun", "Shotgun bullets", "Each shot is eight, spread", {
+		tick = function()
+			local me = game.me()
+			if not ped.isPedShooting(me) then
+				return
+			end
+			local from, to = aimLine()
+			for _ = 1, 7 do
+				local spread = vector.create(math.random(-8, 8), math.random(-8, 8), math.random(-8, 8))
+				misc.shootSingleBulletBetweenCoords(from, to + spread, 30, true, weapon.getSelectedPedWeapon(me), me, true, false, -1)
+			end
+		end,
+	})
+	bind.feature(menu, "weapons.cartoon", "Cartoon gun", "A clown's puff at the muzzle", {
+		tick = function()
+			local me = game.me()
+			if not ped.isPedShooting(me) or not streaming.load("scr_rcbarry2", "ptfx", 0) then
+				return
+			end
+			local gun = weapon.getCurrentPedWeaponEntityIndex(me, true)
+			if gun then
+				graphics.useParticleFxAsset("scr_rcbarry2")
+				graphics.startParticleFxNonLoopedOnEntity("muz_clown", gun, vector.create(0.9, 0, 0), vector.zero, 1, false, false, false)
+			end
+		end,
+	})
+	-- The game's targeting: SET_PLAYER_TARGETING_MODE's 0-3.
+	menu:choice("Targeting", { "Assisted", "Assisted partial", "Assisted free aim", "Free aim" }, 1, "How aiming picks targets", bind.safe("Targeting", function(i: number)
+		player.setPlayerTargetingMode(i - 1)
+	end))
 end
 
 local function parachute(menu: Menu)

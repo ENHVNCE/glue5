@@ -238,6 +238,35 @@ local function around(menu: Menu)
 	end)
 end
 
+-- The sky's clouds (clouds.xml's cloud hats), a light around you, the ocean's waves, the
+-- interior you are in redrawn.
+local function sky(menu: Menu)
+	menu:separator("Sky and light")
+	local hats = { "Clear sky", "Cloudy 01", "Rain", "Horizon", "Horizonband1", "Snowy 01", "Stormy 01", "Overcast", "Shower", "Stripey", "Wispy", "Altostratus", "Cirrus", "Cirrocumulus", "Nimbus", "Puffs", "Contrails" }
+	menu:choice("Clouds", hats, 1, "The sky's clouds now", bind.safe("Clouds", function(i: number, name: string)
+		misc.unloadAllCloudHats()
+		if i > 1 then
+			misc.loadCloudHat(name, 2)
+		end
+	end))
+	bind.feature(menu, "world.torch", "Light around you", "A lamp that follows you at night", {
+		tick = function()
+			graphics.drawLightWithRange(game.position() + vector.create(0, 0, 1.5), 255, 240, 220, 12, 2)
+		end,
+	})
+	bind.slider(menu, "world.ocean", "Ocean waves", 1, 0, 3, { step = 0.1, unit = "×", note = "The open sea's" }, function(v)
+		water.setDeepOceanScaler(v)
+	end)
+	bind.command(menu, "world.refreshInterior", "Redraw this interior", { note = "Fixes one that loaded wrong", action = "Redraw" }, function(): string?
+		local room = interior.getInteriorFromEntity(game.me())
+		if not room then
+			return "You are not inside"
+		end
+		interior.refreshInterior(room)
+		return nil
+	end)
+end
+
 -- Trains: get on one, set its speed.
 local function trains(menu: Menu)
 	menu:separator("Trains")
@@ -493,6 +522,7 @@ function M.build(root: Menu)
 	fun(menu)
 	streets(menu)
 	around(menu)
+	sky(menu)
 	trains(menu)
 end
 

@@ -312,6 +312,56 @@ local function lights(root: Menu)
 	end))
 end
 
+-- Stunts, and a few touches: flips, a blip, frozen in place, tyres, the lights' brightness, a
+-- light under it.
+local function tricks(root: Menu)
+	local menu = root:submenu("Tricks", "Flips, hops, a blip on it, frozen, under-glow")
+	-- A push at a point of the vehicle (its own axes), up and around.
+	local function flip(push: vector, at: vector): () -> string?
+		return withVehicle(function(car: Vehicle): string?
+			entity.applyForceToEntity(car, 1, push, at, 0, true, true, true, false, true)
+			return nil
+		end)
+	end
+	bind.command(menu, "vehicle.hop", "Bunny hop", { action = "Hop" }, flip(vector.create(0, 0, 7), vector.zero))
+	bind.command(menu, "vehicle.kickflip", "Kickflip", { action = "Flip" }, flip(vector.create(0, 0, 10.5), vector.create(2, 0, 0)))
+	bind.command(menu, "vehicle.frontFlip", "Front flip", { action = "Flip" }, flip(vector.create(0, 0, 12), vector.create(0, -3.5, 0)))
+	bind.command(menu, "vehicle.backFlip", "Back flip", { action = "Flip" }, flip(vector.create(0, 0, 12), vector.create(0, 3.5, 0)))
+	local blip: Blip? = nil
+	bind.feature(menu, "vehicle.blip", "On the map", "A blip on the vehicle you are in", perVehicle(function(car)
+		if not blip then
+			blip = hud.addBlipForEntity(car)
+		end
+	end, function()
+		if blip and hud.doesBlipExist(blip) then
+			hud.removeBlip(blip)
+		end
+		blip = nil
+	end))
+	bind.feature(menu, "vehicle.freeze", "Frozen in place", "It does not move, whatever pushes it", perVehicle(function(car)
+		entity.freezeEntityPosition(car, true)
+	end, function(car)
+		entity.freezeEntityPosition(car, false)
+	end))
+	bind.command(menu, "vehicle.tyres", "Fix the tyres", { action = "Fix" }, withVehicle(function(car: Vehicle): string?
+		for tyre = 0, 7 do
+			vehicle.setVehicleTyreFixed(car, tyre)
+		end
+		return nil
+	end))
+	bind.slider(menu, "vehicle.lightPower", "Headlight brightness", 1, 1, 20, { step = 1, unit = "×" }, function(v)
+		local car = game.vehicle()
+		if car then
+			vehicle.setVehicleLightMultiplier(car, v)
+		end
+	end)
+	local glow = menu:color("Under-glow colour", { r = 0, g = 160, b = 255 }, nil)
+	bind.feature(menu, "vehicle.underGlow", "Under-glow", "A light on the road under the vehicle", perVehicle(function(car)
+		local c = glow.value
+		graphics.drawLightWithRange(entity.getEntityCoords(car, true) - vector.create(0, 0, 0.5), c.r, c.g, c.b, 4, 4)
+	end))
+end
+
 -- Its weapons: shot from the front with the vehicle attack control (a choice of the game's).
 local GUNS = {
 	{ "Rockets", "WEAPON_VEHICLE_ROCKET" },
@@ -543,6 +593,7 @@ function M.build(root: Menu)
 	tuning(menu)
 	doors(menu)
 	lights(menu)
+	tricks(menu)
 	autopilot(menu)
 	protection(menu)
 	driving(menu)
