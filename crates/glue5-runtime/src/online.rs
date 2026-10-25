@@ -687,13 +687,17 @@ pub(crate) unsafe extern "C" fn script_program_loaded(env: *mut Env, this: u64, 
 /// - Host blocks: freemode's own arrays (GSBD_*) hold most of the large
 ///   ones, so a job's controller has none left for its arrays: a 1v1
 ///   deathmatch's 10760-byte array found every handler of 15008 bytes or
-///   more taken. The three largest sizes go from 2 to 4 instances.
+///   more taken, one of them by freemode's 4584-byte GSBD_FM_events for
+///   want of an 8000-byte one. The 8000-byte handlers go from 4 to 6 and
+///   the 15008-byte ones from 2 to 3 (+31 KB). They come out of the network
+///   heap, 13 MiB in all and nearly full once a session runs: doubling the
+///   three largest sizes (+214 KB) left it short as two players met.
 ///
 /// A smaller block takes a larger one when its size has none left. Each
 /// longer number costs a tab of its line's indentation, so the file keeps
 /// its length.
 pub(crate) fn more_broadcast_data(text: String) -> Option<String> {
-    let text = more_instances(text, "HostBroadcastData", &[(35000, 4), (11000, 4), (7500, 4)])?;
+    let text = more_instances(text, "HostBroadcastData", &[(7500, 3), (4000, 6)])?;
     more_instances(text, "PlayerBroadcastData", &[(3600, 3), (2500, 4), (150, 12), (80, 12), (40, 16)])
 }
 
@@ -885,9 +889,9 @@ fn broadcast_data_keeps_the_length() {
     );
     let patched = more_broadcast_data(text.clone()).unwrap();
     assert_eq!(patched.len(), text.len());
-    assert!(patched.contains("<SizeOfData value=\"35000\"/>\r\n\t\t\t<NumInstances value=\"4\"/>"));
-    assert!(patched.contains("<SizeOfData value=\"7500\"/>\r\n\t\t\t<NumInstances value=\"4\"/>"));
-    assert!(patched.contains(&item(4000, 4)));
+    assert!(patched.contains(&item(35000, 2)));
+    assert!(patched.contains("<SizeOfData value=\"7500\"/>\r\n\t\t\t<NumInstances value=\"3\"/>"));
+    assert!(patched.contains("<SizeOfData value=\"4000\"/>\r\n\t\t\t<NumInstances value=\"6\"/>"));
     assert!(patched.contains("<SizeOfData value=\"3600\"/>\r\n\t\t\t<NumInstances value=\"3\"/>"));
     assert!(patched.contains("<SizeOfData value=\"150\"/>\r\n\t\t<NumInstances value=\"12\"/>"));
     assert!(patched.contains("<SizeOfData value=\"40\"/>\r\n\t\t<NumInstances value=\"16\"/>"));
