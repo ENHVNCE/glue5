@@ -117,10 +117,30 @@ local function freecam(menu: Menu)
 	end)
 end
 
+-- The game's camera distances behind the player on foot (CAM_VIEW_MODE), and first person.
+local VIEWS = { "Near", "Middle", "Far", "Cinematic", "First person" }
+
+local function view(menu: Menu)
+	menu:separator("View")
+	menu:choice("Camera", VIEWS, math.clamp(camera.getFollowPedCamViewMode() + 1, 1, #VIEWS), "How far behind you the camera is", bind.safe("Camera", function(i: number)
+		camera.setFollowPedCamViewMode(i - 1)
+	end))
+	bind.feature(menu, "move.noBoundary", "No edge of the world", "Fly or sail as far as you like", {
+		on = function()
+			player.extendWorldBoundaryForPlayer(vector.create(100000, 100000, 0))
+			player.extendWorldBoundaryForPlayer(vector.create(-100000, -100000, 0))
+		end,
+		off = function()
+			player.resetWorldBoundaryForPlayer()
+		end,
+	})
+end
+
 function M.build(root: Menu)
-	local menu = root:submenu("Movement", "Noclip and a free camera")
+	local menu = root:submenu("Movement", "Noclip, a free camera, the view, the edge of the world")
 	noclip(menu)
 	freecam(menu)
+	view(menu)
 end
 
 return M

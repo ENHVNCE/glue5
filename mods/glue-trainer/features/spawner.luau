@@ -1,7 +1,8 @@
 --!strict
 -- Vehicles of the game, by class or by search, delivered with the options the player keeps;
 -- and the garage: vehicles saved with their parts and colours, delivered again as they were.
--- In GTA Online they are the player's own: the others do not see them (see spawnAt).
+-- Not in GTA Online, for now: there they would be the player's own, unseen by the others (see
+-- spawnAt).
 
 local bind = require("../core/bind")
 local game = require("../core/game")
@@ -21,10 +22,16 @@ local options: Options
 -- The vehicle the trainer spawned last (replaced by the next, when asked).
 local last: Vehicle? = nil
 
+local ONLINE = "Not in GTA Online yet: the other players would not see it, and you would vanish for them inside it"
+
 -- A vehicle of model `hash` at `pos`, facing `heading`, engine running; nil and why if it could
--- not. A mod's script is no network script of the game's: in GTA Online the vehicle is this
--- player's own (the others do not see it).
+-- not. A mod's script is no network script of the game's: in GTA Online the vehicle would be
+-- this player's own, which the others do not see, and the player in it would vanish for them.
+-- Refused there, until mods can make networked vehicles.
 function M.spawnAt(hash: number, pos: vector, heading: number?): (Vehicle?, string?)
+	if network.networkIsSessionStarted() then
+		return nil, ONLINE
+	end
 	if not streaming.load(hash) then
 		return nil, "That vehicle did not load"
 	end
@@ -42,6 +49,9 @@ end
 
 -- A vehicle of model `hash` where the player is, with the options.
 function M.spawn(hash: number, name: string): (Vehicle?, string?)
+	if network.networkIsSessionStarted() then
+		return nil, ONLINE
+	end
 	local me = game.me()
 	if options.replace.value and last and entity.doesEntityExist(last) then
 		local old = last :: Vehicle
