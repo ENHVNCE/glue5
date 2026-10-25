@@ -30,6 +30,23 @@ pub(crate) fn close_mod(s: S, name: &str) {
     }
 }
 
+/// A new mod, asked for by name; its main.luau opens.
+pub(crate) fn new_mod(s: S) {
+    let Some(name) = web_sys::window().and_then(|w| w.prompt_with_message("New mod's name (lowercase, digits, - and _):").ok().flatten()) else { return };
+    let name = name.trim().to_lowercase();
+    if name.is_empty() {
+        return;
+    }
+    let n = name.clone();
+    request("mods.create", json!({ "name": name }), move |r| match r {
+        Ok(_) => {
+            s.expanded.update(|e| e.push(n.clone()));
+            open_file(s, format!("{n}/main.luau"));
+        }
+        Err(e) => s.notice.set(Some(e)),
+    });
+}
+
 /// A new file in `name` (a mod, or a folder of one: `<mod>/<dir>`), asked
 /// for by name (`core/prefs.luau` makes it in a folder), then opened.
 pub(crate) fn new_file(s: S, name: &str) {

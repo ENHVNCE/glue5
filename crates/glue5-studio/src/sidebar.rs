@@ -4,7 +4,7 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use serde_json::{Value, json};
 
-use crate::actions::{delete_file, import, insert_code, move_path, new_file, new_folder, open_file, open_mod_page, rename_file};
+use crate::actions::{delete_file, import, insert_code, move_path, new_file, new_folder, new_mod, open_file, open_mod_page, rename_file};
 use crate::icons;
 use crate::net::request;
 use crate::state::*;
@@ -29,18 +29,7 @@ pub(crate) fn meta(m: &ModInfo) -> String {
 
 #[component]
 pub(crate) fn ModsView(s: S) -> impl IntoView {
-    let new_mod = move |_| {
-        let Some(name) = web_sys::window().and_then(|w| w.prompt_with_message("New mod's name (lowercase, digits, - and _):").ok().flatten()) else { return };
-        let name = name.trim().to_lowercase();
-        let n = name.clone();
-        request("mods.create", json!({ "name": name }), move |r| match r {
-            Ok(_) => {
-                s.expanded.update(|e| e.push(n.clone()));
-                open_file(s, format!("{n}/main.luau"));
-            }
-            Err(e) => s.notice.set(Some(e)),
-        });
-    };
+    let new_mod = move |_| new_mod(s);
     let running = move || s.mods.get().into_iter().filter(|m| m.state == "running").collect::<Vec<_>>();
     view! {
         <div class="side-head">
@@ -111,7 +100,7 @@ pub(crate) fn ModsView(s: S) -> impl IntoView {
                 }
             }}</For>
             <Show when=move || s.listed.get() && s.mods.with(Vec::is_empty)>
-                <p class="empty">"No mods yet. Make one with +, or have Claude Code make one through MCP."</p>
+                <p class="empty">"No mods yet. Make one with +, or have an AI agent make one (the welcome page connects it)."</p>
             </Show>
         </div>
         <Show when=move || !running().is_empty()>

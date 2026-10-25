@@ -7,9 +7,11 @@
 //! and their menus, for a phone or another screen, without the editor.
 
 mod actions;
+mod agents;
 mod chrome;
 mod control;
 mod editor;
+mod highlight;
 mod icons;
 mod menus;
 mod modpage;
