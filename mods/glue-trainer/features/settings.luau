@@ -73,6 +73,10 @@ function M.build(root: Menu)
 		prefs.data.remember = on
 		prefs.save()
 	end)
+	menu:toggle("Fly to teleports", prefs.data.flyTeleports, "Far teleports go through the sky, as the game's character switch", function(on)
+		prefs.data.flyTeleports = on
+		prefs.save()
+	end)
 	menu:choice("Speed in", { "km/h", "mph" }, prefs.data.speedUnit, function(_, unit)
 		prefs.data.speedUnit = unit
 		prefs.save()
