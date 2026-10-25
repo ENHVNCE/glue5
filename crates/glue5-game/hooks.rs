@@ -47,6 +47,7 @@ pub const HOOKS: &[&[(&str, &str)]] = &[
     include!("hooks/stream.rs"),
     include!("hooks/prompts.rs"),
     include!("hooks/draw_lists.rs"),
+    include!("hooks/fades.rs"),
     include!("hooks/mods.rs"),
 ];
 

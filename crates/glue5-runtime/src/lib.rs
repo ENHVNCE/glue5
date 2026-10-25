@@ -14,6 +14,7 @@ mod cloud;
 pub mod cpu;
 mod device_reset;
 mod draw_lists;
+mod fades;
 mod dht;
 pub mod exit;
 mod files;
@@ -354,6 +355,7 @@ pub fn start(config: Config, gpu: gpu::GpuBackend) -> Result<Game> {
     stream::hooks(&mut hooks);
     prompts::hooks(&mut hooks);
     draw_lists::hooks(&mut hooks);
+    fades::hooks(&mut hooks);
     texts::hooks(&mut hooks);
     for set in EXTRA_HOOKS.lock().unwrap().iter() {
         set(&mut hooks);
