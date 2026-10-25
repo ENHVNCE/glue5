@@ -238,6 +238,187 @@ local function around(menu: Menu)
 	end)
 end
 
+-- Trains: get on one, set its speed.
+local function trains(menu: Menu)
+	menu:separator("Trains")
+	bind.command(menu, "world.train", "Get on the nearest train", { note = "Within 500 m, in the driver's cab", action = "Get on" }, function(): string?
+		for _, car in world.nearby("vehicles", game.me(), 500) do
+			if vehicle.isThisModelATrain(entity.getEntityModel(car)) and vehicle.isVehicleSeatFree(car, VehicleSeat.DRIVER, false) then
+				ped.setPedIntoVehicle(game.me(), car, VehicleSeat.DRIVER)
+				return nil
+			end
+		end
+		return "No train nearby"
+	end)
+	bind.slider(menu, "world.trainSpeed", "Train speed", 15, 0, 60, { step = 5, unit = "m/s", note = "The train you are on" }, function(v)
+		local me = game.me()
+		if ped.isPedInAnyTrain(me) then
+			local train = ped.getVehiclePedIsIn(me, false)
+			vehicle.setTrainCruiseSpeed(train, v)
+			vehicle.setTrainSpeed(train, v)
+		end
+	end)
+end
+
+-- What falls from the sky: rocks that burst into flames, fireworks, vehicles, people; and a
+-- black hole that swallows what is near it. All here, on this game only.
+local function fun(root: Menu)
+	local menu = root:submenu("Mayhem", "Meteors, fireworks, a black hole, vehicles and people from the sky")
+	-- A random point within `r` of the player, `up` metres high.
+	local function above(r: number, up: number): vector
+		local at = game.position()
+		return vector.create(at.x + math.random(-r, r), at.y + math.random(-r, r), at.z + up)
+	end
+	-- The meteors falling, each to burst when it lands.
+	local falling: { Object } = {}
+	local ROCK = "prop_rock_4_big2"
+	local nextRock = 0
+	bind.feature(menu, "world.meteors", "Meteor shower", "Burning rocks fall around you", {
+		tick = function()
+			for i = #falling, 1, -1 do
+				local rock = falling[i]
+				if not entity.doesEntityExist(rock) or not entity.isEntityInAir(rock) then
+					if entity.doesEntityExist(rock) then
+						fire.addExplosion(entity.getEntityCoords(rock, true), ExplosionType.GRENADE, 1, true, false, 0.5, false)
+						entity.setEntityAsMissionEntity(rock, true, true)
+						object.deleteObject(rock)
+					end
+					table.remove(falling, i)
+				end
+			end
+			if os.clock() < nextRock or #falling >= 12 then
+				return
+			end
+			nextRock = os.clock() + 0.6
+			task.spawn(function()
+				if not streaming.load(ROCK) then
+					return
+				end
+				local rock = object.createObject(ROCK, above(60, 80), false, false, true)
+				streaming.setModelAsNoLongerNeeded(ROCK)
+				if rock then
+					entity.setEntityVelocity(rock, vector.create(math.random(-10, 10), math.random(-10, 10), -40))
+					fire.startEntityFire(rock)
+					table.insert(falling, rock)
+				end
+			end)
+		end,
+		off = function()
+			for _, rock in falling do
+				if entity.doesEntityExist(rock) then
+					entity.setEntityAsMissionEntity(rock, true, true)
+					object.deleteObject(rock)
+				end
+			end
+			falling = {}
+		end,
+	})
+	local nextFirework = 0
+	bind.feature(menu, "world.fireworks", "Fireworks", "Over your head", {
+		tick = function()
+			if os.clock() < nextFirework then
+				return
+			end
+			nextFirework = os.clock() + 0.7
+			local asset = "scr_indep_fireworks"
+			streaming.requestNamedPtfxAsset(asset)
+			if not streaming.hasNamedPtfxAssetLoaded(asset) then
+				return
+			end
+			graphics.useParticleFxAsset(asset)
+			local burst = if math.random() < 0.5 then "scr_indep_firework_starburst" else "scr_indep_firework_trailburst"
+			graphics.startParticleFxNonLoopedAtCoord(burst, above(40, 50), vector.zero, 2, false, false, false)
+		end,
+	})
+	-- Pulls what is within 80 m to a point 40 m ahead of where it was made, and swallows it.
+	local hole: vector? = nil
+	bind.feature(menu, "world.blackHole", "Black hole", "Everything near it is pulled in", {
+		on = function()
+			local me = game.me()
+			hole = entity.getEntityCoords(me, true) + entity.getEntityForwardVector(me) * 40 + vector.create(0, 0, 15)
+		end,
+		tick = function()
+			local at = hole
+			if not at then
+				return
+			end
+			local mine = game.vehicle()
+			local function pull(e: Entity)
+				local to = at - entity.getEntityCoords(e, true)
+				local d = vector.magnitude(to)
+				if d < 3 then
+					entity.setEntityVelocity(e, vector.zero)
+				else
+					entity.setEntityVelocity(e, vector.normalize(to) * math.min(40, 400 / d + 8))
+				end
+			end
+			for _, v in world.nearby("vehicles", at, 80) do
+				if v ~= mine then
+					pull(v)
+				end
+			end
+			for _, p in world.nearby("peds", at, 80) do
+				if not ped.isPedAPlayer(p) and not ped.isPedInAnyVehicle(p, false) then
+					pull(p)
+				end
+			end
+		end,
+		off = function()
+			hole = nil
+		end,
+	})
+	-- Vehicles or people from the sky, a few a second, the oldest let go after 30.
+	local rain = bind.choice(menu, "world.rainOf", "Rain of", { "Vehicles", "People" }, "Vehicles", "What Raining down drops")
+	local dropped: { Entity } = {}
+	local nextDrop = 0
+	bind.feature(menu, "world.rain", "Raining down", "From the sky, around you", {
+		tick = function()
+			if os.clock() < nextDrop then
+				return
+			end
+			nextDrop = os.clock() + 0.4
+			local cars = rain.value == 1
+			local hash
+			if cars then
+				local all = catalog.vehicles()
+				if #all == 0 then
+					return
+				end
+				hash = all[math.random(1, #all)].hash
+			else
+				local all = catalog.peds()
+				if #all == 0 then
+					return
+				end
+				hash = joaat(all[math.random(1, #all)])
+			end
+			task.spawn(function()
+				if not streaming.load(hash) then
+					return
+				end
+				local at = above(40, 40)
+				local e: Entity? = if cars then vehicle.createVehicle(hash, at, math.random(0, 359), false, false, false) else ped.createPed(26, hash, at, 0, false, false)
+				streaming.setModelAsNoLongerNeeded(hash)
+				if not e then
+					return
+				end
+				table.insert(dropped, e)
+				if #dropped > 30 then
+					entity.setEntityAsNoLongerNeeded(table.remove(dropped, 1) :: Entity)
+				end
+			end)
+		end,
+		off = function()
+			for _, e in dropped do
+				if entity.doesEntityExist(e) then
+					entity.setEntityAsNoLongerNeeded(e)
+				end
+			end
+			dropped = {}
+		end,
+	})
+end
+
 -- People who follow and protect you: any ped of the game, with any weapon.
 local function bodyguards(root: Menu)
 	local menu = root:submenu("Bodyguards", "Any ped of the game, armed, by your side")
@@ -298,13 +479,15 @@ local function bodyguards(root: Menu)
 end
 
 function M.build(root: Menu)
-	local menu = root:submenu("World", "Time, weather, filters, traffic, police, the area around, bodyguards")
+	local menu = root:submenu("World", "Time, weather, filters, traffic, police, the area around, trains, bodyguards, mayhem")
 	time(menu)
 	weather(menu)
 	filters(menu)
 	bodyguards(menu)
+	fun(menu)
 	streets(menu)
 	around(menu)
+	trains(menu)
 end
 
 return M
