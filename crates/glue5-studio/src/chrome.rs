@@ -105,9 +105,10 @@ pub(crate) fn TitleBar(s: S) -> impl IntoView {
                 <a class="btn ghost small" href="/control" target="_blank" rel="noopener" title="The mods and their menus, on a page of their own (for a phone too)">
                     <span class="ico" inner_html=icons::SLIDERS></span>"Control page"
                 </a>
-                <div class=move || if s.connected.get() { "device" } else { "device off" }>
+                <div class=move || if s.connected.get() { "device" } else { "device off" }
+                    title=move || s.hello.with(|h| format!("The game runs on {}", h["device"].as_str().unwrap_or("this device")))>
                     <span class="dot"></span>
-                    {move || s.hello.with(|h| h["device"].as_str().unwrap_or("Game").to_string())}
+                    <span class="name">{move || s.hello.with(|h| h["device"].as_str().unwrap_or("Game").to_string())}</span>
                 </div>
             </div>
         </header>

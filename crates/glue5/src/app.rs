@@ -237,6 +237,7 @@ pub fn run() -> Result<()> {
         sharing: None,
         studio: None,
         studio_failed: None,
+        device: crate::device::name(),
         servers: Arc::default(),
         stream_waiting: None,
         last_failure: None,
@@ -447,6 +448,9 @@ struct App {
     /// The Studio could not start (both ports taken): when, and as what; not
     /// tried again for a while.
     studio_failed: Option<(Instant, bool)>,
+    /// This device's name, which the Studio's pages show (read once: UIKit
+    /// wants the main thread).
+    device: String,
     /// Servers found on the network by the last search, and whether one runs.
     servers: Arc<Mutex<(bool, Vec<ui::FoundServer>)>>,
     /// Engine reads have waited for the server since then.
@@ -1405,8 +1409,8 @@ impl App {
         self.studio = None;
         if let Some(lan) = wanted {
             // The usual port, else any (another app has it).
-            let started = glue5_mods::studio::Studio::start(glue5_mods::studio::PORT, lan, &code)
-                .or_else(|_| glue5_mods::studio::Studio::start(0, lan, &code));
+            let started = glue5_mods::studio::Studio::start(glue5_mods::studio::PORT, lan, &code, &self.device)
+                .or_else(|_| glue5_mods::studio::Studio::start(0, lan, &code, &self.device));
             match started {
                 Ok(studio) => {
                     let host = if lan {

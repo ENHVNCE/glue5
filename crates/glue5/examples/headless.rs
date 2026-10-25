@@ -257,7 +257,7 @@ fn main() -> Result<()> {
     }
     let _studio = match args.studio {
         Some(port) => {
-            let studio = glue5_mods::studio::Studio::start(port, false, args.studio_code.as_deref().unwrap_or(""))?;
+            let studio = glue5_mods::studio::Studio::start(port, false, args.studio_code.as_deref().unwrap_or(""), &glue5::device_name())?;
             let code = studio.pairing_code();
             log::info!("studio: {}?pair={code} (code {code}; control page {})", studio.url("127.0.0.1"), studio.control_url("127.0.0.1"));
             Some(studio)

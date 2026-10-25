@@ -97,7 +97,10 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
 .device {
   display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px 0 10px; border-radius: 15px; white-space: nowrap;
   background: rgba(120,205,145,.10); border: 1px solid rgba(120,205,145,.25); color: var(--text); overflow: hidden;
+  min-width: 0; max-width: 260px;
 }
+/* The device's name, as long as its owner made it. */
+.device .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .device small { color: var(--muted); font-size: 12px; }
 .device.off { background: rgba(240,180,100,.10); border-color: rgba(240,180,100,.25); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
@@ -455,7 +458,7 @@ kbd { font: 600 11px/1 var(--ui); color: var(--muted); padding: 3px 6px; border-
   .toast { bottom: calc(72px + env(safe-area-inset-bottom)); }
   .titlebar { grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; padding-top: env(safe-area-inset-top); }
   .brand span, .device small { display: none; }
-  .device { padding: 0 10px; }
+  .device { padding: 0 10px; max-width: 42vw; }
   .status { display: none; }
   .main { grid-template-columns: minmax(0, 1fr); }
   .activity { display: none; }

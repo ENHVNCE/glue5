@@ -41,14 +41,15 @@ pub struct Studio {
 
 impl Studio {
     /// Serves on `port` (0: any), on every interface when `lan`, else only
-    /// for this device; `code` is the pairing code (see [`new_code`]).
-    pub fn start(port: u16, lan: bool, code: &str) -> std::io::Result<Studio> {
+    /// for this device; `code` is the pairing code (see [`new_code`]),
+    /// `device` this device's name, which the pages show.
+    pub fn start(port: u16, lan: bool, code: &str, device: &str) -> std::io::Result<Studio> {
         let ip = if lan { Ipv4Addr::UNSPECIFIED } else { Ipv4Addr::LOCALHOST };
         let listener = TcpListener::bind(SocketAddr::from((ip, port)))?;
         let port = listener.local_addr()?.port();
         let code = normalize(code).unwrap_or_else(new_code);
         let stop = Arc::new(AtomicBool::new(false));
-        let shared = Arc::new(Server { code: Mutex::new(code), stop: stop.clone(), clients: AtomicU32::new(0) });
+        let shared = Arc::new(Server { code: Mutex::new(code), device: device.to_string(), stop: stop.clone(), clients: AtomicU32::new(0) });
         let server = shared.clone();
         let stopping = stop.clone();
         let thread = std::thread::Builder::new().name("studio".into()).spawn(move || {
@@ -194,6 +195,8 @@ fn checker_used_by_agent() {
 struct Server {
     /// The pairing code.
     code: Mutex<String>,
+    /// This device's name, for the pages' title bars.
+    device: String,
     /// The server stopped (the Studio was turned off, or its code changed):
     /// connections still open end too.
     stop: Arc<AtomicBool>,
@@ -297,7 +300,7 @@ impl Server {
                         let _user = User;
                         return lsp::run(ws, &self.stop);
                     }
-                    return session::run(ws, &self.stop, &credential);
+                    return session::run(ws, &self.stop, &credential, &self.device);
                 }
                 ("POST", "/mcp") => {
                     if !self.authorized(&request, Scope::Studio) || request.header("origin").is_some_and(|_| !same_origin(&request)) {

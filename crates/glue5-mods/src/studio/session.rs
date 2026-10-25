@@ -31,17 +31,17 @@ const CONTROL: &[&str] = &["mods.list", "mods.start", "mods.stop", "mods.restart
 const RECHECK: Duration = Duration::from_secs(1);
 
 /// Serves one page until it goes, its pairing is removed, or `stop` (the
-/// Studio was turned off).
-pub fn run(ws: Socket, stop: &std::sync::atomic::AtomicBool, credential: &Credential) -> std::io::Result<()> {
+/// Studio was turned off). `device` names this device to the page.
+pub fn run(ws: Socket, stop: &std::sync::atomic::AtomicBool, credential: &Credential, device: &str) -> std::io::Result<()> {
     let mut viewing = Viewing::new();
-    let result = serve(ws, stop, credential, &mut viewing);
+    let result = serve(ws, stop, credential, device, &mut viewing);
     for (module, menu) in viewing {
         crate::menu_viewer(&module, menu, false);
     }
     result
 }
 
-fn serve(mut ws: Socket, stop: &std::sync::atomic::AtomicBool, credential: &Credential, viewing: &mut Viewing) -> std::io::Result<()> {
+fn serve(mut ws: Socket, stop: &std::sync::atomic::AtomicBool, credential: &Credential, device: &str, viewing: &mut Viewing) -> std::io::Result<()> {
     let studio = credential.scope == Scope::Studio;
     let hello = json!({
         "method": "hello",
@@ -49,7 +49,7 @@ fn serve(mut ws: Socket, stop: &std::sync::atomic::AtomicBool, credential: &Cred
             "build": glue5_runtime::GAME_BUILD,
             "natives": crate::natives::NATIVES.len(),
             "namespaces": crate::natives::NAMESPACES.len(),
-            "device": device(),
+            "device": device,
             "tainted": crate::tainted(),
             "scope": credential.scope.name(),
         }
@@ -303,18 +303,4 @@ fn handle(method: &str, p: &Value, viewing: &mut Viewing) -> Result<Value, Strin
         "natives.doc" => api::find(s("name")?).map(|n| api::describe(n, true)).ok_or("no such native")?,
         _ => return Err(format!("unknown method {method}")),
     })
-}
-
-/// What the device is, for the Studio's title bar.
-fn device() -> String {
-    let os = match std::env::consts::OS {
-        "macos" => "Mac",
-        "ios" => "iPhone or iPad",
-        "tvos" => "Apple TV",
-        "android" => "Android",
-        "windows" => "Windows PC",
-        "linux" => "Linux PC",
-        other => other,
-    };
-    std::env::var("GLUE5_DEVICE_NAME").unwrap_or_else(|_| os.to_string())
 }

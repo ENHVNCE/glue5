@@ -3,6 +3,7 @@ package local.glue5;
 import android.content.Context;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.view.WindowManager;
@@ -28,6 +29,19 @@ public class Glue5Activity extends SDLActivity {
                         // Left unset.
                     }
                 }
+            }
+        }
+        // The device's name as its owner set it (Settings › About phone),
+        // for the Studio's pages (device.rs), unless the intent named one.
+        if (Os.getenv("GLUE5_DEVICE_NAME") == null) {
+            String name = Settings.Global.getString(getContentResolver(), Settings.Global.DEVICE_NAME);
+            if (name == null || name.isEmpty()) {
+                name = Build.MODEL;
+            }
+            try {
+                Os.setenv("GLUE5_DEVICE_NAME", name, true);
+            } catch (ErrnoException e) {
+                // The kind of device, then.
             }
         }
         super.onCreate(savedInstanceState);

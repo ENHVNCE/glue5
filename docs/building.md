@@ -148,6 +148,7 @@ and `GLUE5_*` variables on to the device.
 | `RUST_LOG` | Log filter (default `info`): renderer statistics every 10 s (frame times, CPU time per stage, memory). |
 | `GLUE5_ENGINE_LOG=stdout` | The engine's log on the terminal too (it is always in `game.log` in the user folder). |
 | `GLUE5_ENGINE_ARGS` | More engine switches, e.g. `-benchmark -benchmarkIterations=1`. |
+| `GLUE5_DEVICE_NAME` | The name GLUE 5 Studio's pages show for this device (by default its own: the computer's or the phone's name in the system's settings; on iOS, "iPhone" or "iPad" without Apple's user-assigned-device-name entitlement). |
 | `GLUE5_PLAY=1` | Start the game without the start page (`--play` on a computer). |
 | `GLUE5_GPU_PROFILE=1` | GPU time per render pass in the statistics. |
 | `GLUE5_NO_BC=1`, `GLUE5_NO_FLOAT32_FILTER=1`, `GLUE5_NO_ETC2=1` | A phone GPU's fallbacks on a desktop GPU, for testing. |

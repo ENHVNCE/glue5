@@ -57,7 +57,7 @@ pub(crate) fn Control(s: S) -> impl IntoView {
                 <div class="brand"><img src="/logo.png" alt=""/><b>"GLUE 5"</b><span>"CONTROL"</span></div>
                 <div class=move || if s.connected.get() { "device" } else { "device off" } title=move || if s.connected.get() { "Connected to the game" } else { "Reconnecting…" }>
                     <span class="dot"></span>
-                    {move || s.hello.with(|h| h["device"].as_str().unwrap_or("Game").to_string())}
+                    <span class="name">{move || s.hello.with(|h| h["device"].as_str().unwrap_or("Game").to_string())}</span>
                 </div>
             </header>
             <div class="ctl-body">
