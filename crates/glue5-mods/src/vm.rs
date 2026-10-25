@@ -17,6 +17,10 @@ use crate::{EvalResult, input, json, menus, natives};
 
 /// How long a mod may run before it yields to the game for this frame.
 pub const SLICE: Duration = Duration::from_millis(2);
+/// The time a mod's `mod.onStop` functions have, all together: they run
+/// once, as it stops, and undo what it did (a trainer turns off every
+/// feature it has on).
+const LAST_TURN: Duration = Duration::from_millis(20);
 /// How long a mod may run without calling `wait` before it is stopped.
 const RUNAWAY: Duration = Duration::from_secs(2);
 /// Memory a mod's VM may use.
@@ -357,13 +361,13 @@ impl Vm {
     pub fn last_turn(&mut self, now: u64) {
         let stop = std::mem::take(&mut *self.sched.stop.borrow_mut());
         self.sched.now.set(now);
-        self.turn_end.set(Instant::now() + SLICE);
+        self.turn_end.set(Instant::now() + LAST_TURN);
         for f in stop {
             let problem = match self.lua.create_thread(f).map(|thread| self.run(&thread, MultiValue::new()).0) {
                 Ok(Outcome::Finished) => continue,
                 Ok(Outcome::Failed(e)) => e,
                 Ok(Outcome::Wait(_)) => "mod.onStop: a stopping mod does not wait; what came after wait() did not run".into(),
-                Ok(Outcome::Preempted) => format!("mod.onStop: cut short, out of time ({} ms)", SLICE.as_millis()),
+                Ok(Outcome::Preempted) => format!("mod.onStop: cut short, out of time ({} ms)", LAST_TURN.as_millis()),
                 Err(e) => error_text(&e),
             };
             crate::log_line(&self.module, crate::LogLevel::Error, &problem);

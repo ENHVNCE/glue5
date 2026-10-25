@@ -1,13 +1,16 @@
 --!strict
 -- The other players of a GTA Online session, friends: how they are, go to them or into their
--- vehicle, watch them, mark them on the map, wear their outfit, name tags. Listed as they are
--- each time the menu opens.
+-- vehicle, follow them, watch them, mark them on the map, wear their outfit, name tags; and
+-- gifts (a vehicle beside them, weapons, health and armour, a bodyguard, fireworks). Listed as
+-- they are each time the menu opens.
 --
--- Their ped and the vehicle they drive are their game's, and what a mod makes is this player's
--- own (a mod's script is no network script of the game's): no gifts.
+-- Their ped and the vehicle they drive are their game's: nothing here takes them over. What
+-- the trainer makes is networked (mods run as the session's script), so everyone sees it.
 
 local bind = require("../core/bind")
 local game = require("../core/game")
+local catalog = require("../core/catalog")
+local spawner = require("./spawner")
 
 local M = {}
 
@@ -34,6 +37,70 @@ local function about(who: Player): string
 	end
 	table.insert(parts, `{math.floor(geo.distance(game.position(), entity.getEntityCoords(p, true)))} m away`)
 	return table.concat(parts, " · ")
+end
+
+-- Pickups the game has for health and armour (the base game's).
+local PICKUPS = { { "Health", "PICKUP_HEALTH_STANDARD" }, { "Armour", "PICKUP_ARMOUR_STANDARD" } }
+
+-- What can be given to a player: made next to them, networked, so they see it too.
+local function gifts(menu: Menu, who: Player, name: string)
+	local them = function(): Ped
+		return player.getPlayerPed(who)
+	end
+	menu:separator("Give")
+	local cars = menu:submenu("A vehicle", `Next to {name}, engine running`)
+	spawner.picker(cars, "Give", function(entry: catalog.VehicleEntry): string?
+		local p = them()
+		local car, why = spawner.spawnAt(entry.hash, entity.getOffsetFromEntityInWorldCoords(p, vector.create(3, 4, 0)), entity.getEntityHeading(p))
+		return if car then `{entry.name} for {name}` else why
+	end)
+	bind.action(menu, "Every weapon", { note = "With full ammo, a parachute too", action = "Give" }, function(): string?
+		local p = them()
+		for _, w in catalog.weapons() do
+			weapon.giveWeaponToPed(p, w.hash, 9999, false, false)
+		end
+		weapon.giveWeaponToPed(p, joaat("GADGET_PARACHUTE"), 1, false, false)
+		return `Armed {name}`
+	end)
+	for _, pick in PICKUPS do
+		bind.action(menu, pick[1], { note = "A pickup at their feet", action = "Drop" }, function(): string?
+			local at = entity.getOffsetFromEntityInWorldCoords(them(), vector.create(0, 1.5, 0))
+			local made = object.createPickupRotate(joaat(pick[2]), at, vector.zero, 512, 0, 2, true, 0)
+			return if made then nil else "The game made none"
+		end)
+	end
+	bind.action(menu, "A bodyguard", { note = "Armed, by their side, against what attacks them", action = "Send" }, function(): string?
+		local model = joaat("s_m_y_blackops_01")
+		if not streaming.load(model) then
+			return "That model did not load"
+		end
+		local p = them()
+		local guard = ped.createPed(26, model, entity.getOffsetFromEntityInWorldCoords(p, vector.create(-2, -2, 0)), entity.getEntityHeading(p), true, false)
+		streaming.setModelAsNoLongerNeeded(model)
+		if not guard then
+			return "The game made none"
+		end
+		weapon.giveWeaponToPed(guard, joaat("WEAPON_CARBINERIFLE"), 9999, false, true)
+		ped.setPedRelationshipGroupHash(guard, joaat("PLAYER"))
+		ped.setPedAccuracy(guard, 80)
+		ped.setPedKeepTask(guard, true)
+		task.taskFollowToOffsetOfEntity(guard, p, vector.create(-1.5, -1.5, 0), 2, -1, 1, true)
+		return `A bodyguard for {name}`
+	end)
+	bind.action(menu, "Fireworks", { note = "Over their head, for everyone to see", action = "Fire" }, function(): string?
+		local asset = "scr_indep_fireworks"
+		if not streaming.load(asset, "ptfx") then
+			return "The fireworks did not load"
+		end
+		local p = them()
+		for i = 1, 6 do
+			local at = entity.getEntityCoords(p, true) + vector.create(math.random(-15, 15), math.random(-15, 15), 30 + math.random(0, 15))
+			graphics.useParticleFxAsset(asset)
+			graphics.startNetworkedParticleFxNonLoopedAtCoord(if i % 2 == 0 then "scr_indep_firework_starburst" else "scr_indep_firework_trailburst", at, vector.zero, 2, false, false, false, false)
+			wait(400)
+		end
+		return nil
+	end)
 end
 
 local function playerMenu(menu: Menu, who: Player, name: string)
@@ -70,6 +137,19 @@ local function playerMenu(menu: Menu, who: Player, name: string)
 			watching = who
 		end
 	end))
+	bind.action(sub, "Follow them", { note = "Your vehicle drives behind theirs, wherever they go", action = "Follow" }, function(): string?
+		local mine, theirs = game.vehicle(), ped.getVehiclePedIsIn(them(), false)
+		if not mine then
+			return "Get in a vehicle first"
+		end
+		if not theirs then
+			return `{name} is on foot`
+		end
+		-- Behind them (mode -1), at up to 40 m/s, driving around traffic.
+		task.taskVehicleEscort(game.me(), mine, theirs, -1, 40, 786603, 8, 20, 20)
+		return `Following {name}: brake or use Vehicle › Autopilot › Stop`
+	end)
+	gifts(sub, who, name)
 	sub:separator("Them")
 	bind.action(sub, "Wear their outfit", { note = "When you are the same model", action = "Copy" }, function(): string?
 		local me, p = game.me(), them()

@@ -1,10 +1,14 @@
 --!strict
--- Going places: the waypoint (now or whenever one is set), the mission's objective, the
--- places of data/places.luau, the player's own saved spots, coordinates, the nearest vehicle.
+-- Going places: the waypoint (now or whenever one is set), the mission's objective, the map's
+-- icons, the places of data/places.luau, interiors (data/interiors.luau), the player's own
+-- saved spots, coordinates, the nearest vehicle.
 
 local bind = require("../core/bind")
 local game = require("../core/game")
 local places = require("../data/places")
+local interiors = require("../data/interiors")
+local teleports = require("../data/teleports")
+local blips = require("../data/blips")
 
 type Spot = { name: string, x: number, y: number, z: number, heading: number }
 
@@ -119,8 +123,93 @@ local function coordinates(root: Menu)
 	end)
 end
 
+-- To a place of the lists: its IPLs loaded (or removed) and its interior enabled first.
+local function go(place: teleports.Place): string?
+	local o = place.options
+	if o and o.online and not network.networkIsSessionStarted() then
+		return "That place is on GTA Online's map only"
+	end
+	local unload = o and o.unload
+	if unload then
+		for _, ipl in unload do
+			if streaming.isIplActive(ipl) then
+				streaming.removeIpl(ipl)
+			end
+		end
+	end
+	local load = o and o.load
+	if load then
+		for _, ipl in load do
+			if not streaming.isIplActive(ipl) then
+				streaming.requestIpl(ipl)
+			end
+		end
+	end
+	local at = vector.create(place.x, place.y, place.z)
+	if o and o.interior then
+		local room = interior.getInteriorAtCoords(at)
+		if room and interior.isValidInterior(room) and interior.isInteriorDisabled(room) then
+			interior.pinInteriorInMemory(room)
+			streaming.setInteriorActive(room :: any, true)
+			interior.disableInterior(room, false)
+		end
+	end
+	game.teleport(at, false, place.heading)
+	return nil
+end
+
+-- To an interior: what it needs loaded first, then there.
+local function interiorsMenu(root: Menu)
+	local menu = root:submenu("Interiors", "Rooms and places the game keeps hidden until a mission")
+	for _, room in interiors do
+		bind.action(menu, room.name, { action = "Go" }, function(): string?
+			for _, ipl in room.ipls do
+				if not streaming.isIplActive(ipl) then
+					streaming.requestIpl(ipl)
+				end
+			end
+			game.teleport(vector.create(room.x, room.y, room.z), false, room.heading)
+			return nil
+		end)
+	end
+end
+
+-- The map's icons there are now, by kind (sprite), to the nearest of each kind.
+local function icons(root: Menu)
+	local menu = root:submenu("Map icons", "The nearest of any icon on the map")
+	local function build()
+		menu:clear()
+		local found = 0
+		for sprite = 1, 600 do
+			local first = hud.getFirstBlipInfoId(sprite)
+			if first and hud.doesBlipExist(first) then
+				local count = 0
+				local b: Blip? = first
+				while b and hud.doesBlipExist(b) do
+					count += 1
+					b = hud.getNextBlipInfoId(sprite)
+				end
+				found += 1
+				local name = blips[sprite] or `Icon {sprite}`
+				bind.action(menu, name, { note = `{count} on the map`, action = "Go" }, function(): string?
+					local nearest = hud.getClosestBlipInfoId(sprite)
+					if not nearest or not hud.doesBlipExist(nearest) then
+						return "It is no longer on the map"
+					end
+					game.teleport(hud.getBlipInfoIdCoord(nearest), true)
+					return nil
+				end)
+			end
+		end
+		if found == 0 then
+			menu:label("No icons on the map now.")
+		end
+	end
+	menu:onOpen(bind.safe("Map icons", build))
+end
+
 function M.build(root: Menu)
-	local menu = root:submenu("Teleport", "Waypoint, objective, places, your saved spots")
+	local menu = root:submenu("Teleport", "Waypoint, objective, map icons, places, interiors, your saved spots")
 	bind.command(menu, "teleport.waypoint", "To the waypoint", { note = "The map's marker", action = "Go" }, toWaypoint)
 	bind.command(menu, "teleport.objective", "To the objective", { note = "Where the mission wants you", action = "Go" }, function(): string?
 		local at = objective()
@@ -150,6 +239,26 @@ function M.build(root: Menu)
 		game.teleport(ahead, false)
 		return nil
 	end)
+	bind.command(menu, "teleport.skydive", "Skydive to the waypoint", { note = "High above it, with a parachute", action = "Jump" }, function(): string?
+		local at = world.waypoint()
+		if not at then
+			return "No waypoint on the map"
+		end
+		weapon.giveWeaponToPed(game.me(), joaat("GADGET_PARACHUTE"), 1, false, false)
+		game.teleport(vector.create(at.x, at.y, 800), false)
+		return nil
+	end)
+	local steps: { { name: string, by: vector } } = {
+		{ name = "Up", by = vector.create(0, 0, 10) },
+		{ name = "Down", by = vector.create(0, 0, -10) },
+		{ name = "Back", by = vector.create(0, -10, 0) },
+	}
+	for _, step in steps do
+		bind.command(menu, `teleport.{string.lower(step.name)}`, step.name, { note = "10 m, through walls", action = "Go" }, function(): string?
+			game.teleportNow(entity.getOffsetFromEntityInWorldCoords(game.mover(), step.by), false)
+			return nil
+		end)
+	end
 	bind.command(menu, "teleport.nearestVehicle", "Into the nearest vehicle", { note = "A free seat within 50 m", action = "Get in" }, function(): string?
 		local me = game.me()
 		for _, car in world.nearby("vehicles", me, 50) do
@@ -164,13 +273,33 @@ function M.build(root: Menu)
 	end)
 	spots(menu)
 	coordinates(menu)
+	icons(menu)
+	interiorsMenu(menu)
 	menu:separator("Places")
+	-- The trainer's own places first, then the published lists' (data/teleports.luau), the
+	-- kinds both have together.
+	local kinds: { { name: string, places: { teleports.Place } } } = {}
+	local byName: { [string]: { teleports.Place } } = {}
+	local function add(name: string, list: { teleports.Place })
+		if not byName[name] then
+			byName[name] = {}
+			table.insert(kinds, { name = name, places = byName[name] })
+		end
+		for _, place in list do
+			table.insert(byName[name], place)
+		end
+	end
 	for _, kind in places do
-		local sub = menu:submenu(kind.name, `{#kind.places} places`)
+		add(kind.name, kind.places :: any)
+	end
+	for _, kind in teleports do
+		add(kind.name, kind.places)
+	end
+	for _, kind in kinds do
+		local sub = menu:submenu(kind.name, { note = `{#kind.places} places`, search = #kind.places > 20 })
 		for _, place in kind.places do
 			bind.action(sub, place.name, { action = "Go" }, function(): string?
-				game.teleport(vector.create(place.x, place.y, place.z), false, place.heading)
-				return nil
+				return go(place)
 			end)
 		end
 	end

@@ -34,16 +34,16 @@ menus (F7, or F4 straight into it, or the Studio).
 | | |
 |---|---|
 | **Search, Favourites** | Every feature and action of every menu in one list that filters as you type; the ones you pick, first in the menu. A toggle there is the feature itself. |
-| **Self** | God mode, proofs (bullets, fire, explosions...), health regeneration, no fall damage, no headshots, no ragdoll, heal, clean up; never wanted, any wanted level, ignored by everyone; super jump, super run, run and swim speed, unlimited stamina and special ability, noiseless, always a parachute, invisible, on fire; night and thermal vision, drunk. |
-| **Looks** | Any ped model of the game, by kind or by search; every piece of clothing and prop your model has; saved outfits; animations, scenarios, walks, moods. |
-| **Teleport** | The waypoint (F9) or every new one, the mission's objective, 10 m ahead, into the nearest vehicle; places of the map; coordinates; your own saved spots. |
-| **Vehicle** | The one you are in: repair, flip, engine, jump, delete, seats, back in your last one; doors, windows, locks; autopilot to the waypoint or around; indestructible, repairs itself, always clean, lands on its wheels, seatbelt; horn boost, instant brake, engine power, top speed, drift tyres, no gravity, invisible, rainbow paint. **Customs**: every part the game has for it (with the game's names), wheel types, colours, neon, tyre smoke, tint, plate, livery, extras, everything upgraded or random. |
-| **Spawn a vehicle** | Every vehicle of the installed game, by the game's classes or by search, named as the game names them; get in (aircraft in the air), replace the last one, fully upgraded, indestructible, your plate. **Your garage**: vehicles saved with their parts and colours, delivered as they were. |
-| **Weapons** | Every weapon at once or one by one (by group, or by search), fill or remove; the one in your hands: tint and every attachment it takes; saved loadouts; infinite ammo, no reloading, explosive and fire rounds, explosive punches; weapon and melee damage, damage taken; teleport, explosion (any of the game's explosions), delete, force, gravity and vehicle guns. |
-| **World** | The hour, frozen time, the device's time, slow motion; the weather, wind, waves, blackout, gravity; the game's screen filters; traffic and people, no trains and boats, no police dispatch, the army base, prison and airport open, riot; clear the area, knock out or disarm everyone, blow up or launch the vehicles; bodyguards (any ped, any weapon). In GTA Online the clock and the weather change for you. |
-| **Movement** | Noclip (F6) and a free camera (F8): the movement controls, Sprint for speed, Jump and Duck up and down. |
-| **Players** | In a GTA Online session, each player: how they are, go to them or into their vehicle, mark them, watch them, wear their outfit. Name tags, friendly fire. |
-| **Misc** | Your speed and where you are over the game; hide the HUD or the radar, reveal the map, big radar; the radio on foot, any station, next song, no police scanner; skip cutscenes, no stunt jumps. |
+| **Self** | God mode, proofs (bullets, fire, explosions...), health regeneration, no fall damage, no headshots, no ragdoll, heal, clean up; never wanted, any wanted level, ignored by everyone; super jump, super run, run and swim speed, unlimited stamina and special ability, noiseless, always a parachute, invisible, on fire, unlimited oxygen, get up where you fell (story mode), fly like a superhero, a force field; particle effects on you (everyone sees them in GTA Online), see-through, breathe fire, clone yourself, fall over, wounds, wet, sweat, say a line in your voice; night and thermal vision, drunk. |
+| **Looks** | Any ped model of the game, by kind or by search; a GTA Online character's face (parents, hair colour, eyes, beard, make-up...); every piece of clothing and prop your model has; saved outfits; animations, scenarios, walks, moods. |
+| **Teleport** | The waypoint (F9) or every new one, the mission's objective, 10 m ahead, into the nearest vehicle; skydive to the waypoint, 10 m up, down or back; the nearest of any icon on the map; about 380 places by kind (homes, landmarks, high places, underwater, shops, services, apartments...), each tried in the game; interiors the game keeps hidden (North Yankton, the FIB, Lifeinvader, the vaults...); coordinates; your own saved spots. Far teleports fly there through the sky, as the game's character switch (Settings). |
+| **Vehicle** | The one you are in: repair, flip, engine, jump, delete, seats, back in your last one; doors, windows, locks; autopilot to the waypoint or around; indestructible, repairs itself, always clean, lands on its wheels, seatbelt; keep it (never taken away); headlights, full beam, indicators, siren; horn boost, instant brake, engine power, top speed, drift tyres, no gravity, invisible, rainbow paint; cruise control, flying car, drive on water; its own weapons (rockets, cannon, tank shells...). **Tricks**: bunny hop, kickflip, front and back flips, a blip on it, frozen in place, tyres fixed, headlight brightness, under-glow. **Handling**: mass, power, top speed, brakes, grip, suspension, drag of the model. **Customs**: every part the game has for it (with the game's names), wheel types, colours, neon, tyre smoke, tint, plate, livery, extras, everything upgraded or random. |
+| **Spawn a vehicle** | In GTA Online too, networked: every player sees it. Every vehicle of the installed game, by the game's classes or by search, named as the game names them; get in (aircraft in the air), replace the last one, fully upgraded, indestructible, your plate. **Your garage**: vehicles saved with their parts and colours, delivered as they were. |
+| **Weapons** | Every weapon at once or one by one (by group, or by search), fill or remove; the one in your hands: tint and every attachment it takes; saved loadouts; infinite ammo, no reloading, explosive and fire rounds, explosive punches; weapon and melee damage, damage taken; laser sight, thermal scope, rapid fire, slow motion when aiming, shotgun bullets, cartoon gun, the targeting mode; teleport, explosion (any of the game's explosions), delete, force, gravity, vehicle, people, object, revive, magnet, paint, drive-it and body-swap guns (the ones that make things: story mode only); the parachute's canopy and smoke trail. |
+| **World** | The hour, frozen time, the device's time, slow motion; the weather, wind, waves, blackout, gravity; the game's screen filters; traffic and people, no trains and boats, no police dispatch, the army base, prison and airport open, riot; clear the area, knock out or disarm everyone, blow up or launch the vehicles; the clouds, a light around you, the ocean's waves, an interior redrawn; trains (get on one, its speed); bodyguards (any ped, any weapon; everyone sees them in GTA Online); mayhem: fireworks (for everyone, in GTA Online), and in story mode a meteor shower, a black hole, vehicles or people raining down. In GTA Online the clock and the weather change for you. |
+| **Movement** | Noclip (F6) and a free camera (F8): the movement controls, Sprint for speed, Jump and Duck up and down. The camera's distance or first person; no edge of the world. |
+| **Players** | In a GTA Online session, each player: how they are, go to them or into their vehicle, follow them in yours, mark them, watch them, wear their outfit; give them a vehicle next to them, every weapon, health or armour, a bodyguard, fireworks over their head. Name tags, friendly fire. |
+| **Misc** | The frame rate, your speed and where you are over the game; any of the HUD's colours (the waypoint's, the menus'...); the TV on the whole screen; no phone; no flight or wanted music; a top-down camera; the story characters' money and skills; hide the HUD or the radar, reveal the map, big radar; the radio on foot, any station, next song, no police scanner; skip cutscenes, no stunt jumps. |
 | **Settings** | A key for any feature or action, notifications, km/h or mph, whether what is on comes back next time. |
 
 The lists come from the installed game, as the game names them: its
@@ -61,10 +61,15 @@ files; once you have, your copy stays as it is (the app says so when a
 new version is out) and deleting the folder brings the new one back.
 Turning off "starts with the game" on its page is kept through updates.
 
-In GTA Online what a mod makes (vehicles, peds, objects) is the
-player's own: a mod's script is not one of the game's network scripts,
-so the others do not see it (`NETWORK_SET_THIS_SCRIPT_IS_NETWORK_SCRIPT`
-is refused: the game stops for a script it does not know).
+In GTA Online a mod runs as the session's own script (freemode, which
+every player runs): what it makes with `isNetwork` (`vehicle.createVehicle(
+model, pos, heading, true, ...)`) is networked, and every player sees it,
+with the mod or without. What it made goes back to the game when it
+stops, as a script's own does. Made without `isNetwork`, a vehicle is the
+player's own: the others do not see it, nor the player inside it. In a
+job, mods run as themselves: what they make there is the player's own.
+(`NETWORK_SET_THIS_SCRIPT_IS_NETWORK_SCRIPT` is refused: the game stops
+for a script it does not know.)
 
 ## GLUE 5 Studio
 
@@ -251,7 +256,7 @@ typed in the editor like the natives. Functions that wait for the game
 | `ui` | The game's own text: `ui.notify(text, { icon = "CHAR_LESTER", title, subtitle })` in the feed (plain `ui.notify(text)` stays the app's), `ui.subtitle(text, ms?)`, `ui.help(text)` (`~INPUT_CONTEXT~` shows the button; each frame it stays), `ui.loading(text)` / `ui.loading()`, `ui.hideHud(HudComponent.CASH)` (this frame), `ui.prompt(title?, default?, max?)` (the game's keyboard; `nil` if cancelled), `ui.buttons({ { control = Control.JUMP, label = "Jump" } })` (instructional buttons until changed, `nil` hides them). |
 | `scaleform.load(name)` | A scaleform movie: `sf:call("SHOW_SHARD_WASTED_MP_MESSAGE", "Wasted", "", 5)`, then each frame `sf:draw()` (or `sf:draw(x, y, w, h)`, `sf:draw3d(pos, rot, scale)`); `sf:release()`. |
 | `task.every(ms, f)` | `f` every `ms` of game time; the function it returns stops it. |
-| `mod.onStop(f)` | `f` runs when the mod stops (stopped, restarted on save, failed or done), on its script, in one last turn of 2 ms: delete what it made, put back what it changed. It cannot wait. Not when the game ends the mod's script itself. |
+| `mod.onStop(f)` | `f` runs when the mod stops (stopped, restarted on save, failed or done), on its script, in one last turn of 20 ms (all of them together): delete what it made, put back what it changed. It cannot wait. Not when the game ends the mod's script itself. |
 | `geo` | Rotations as the game has them (degrees: pitch, roll, yaw): `geo.direction(rot)`, `geo.rotation(dir)`, `geo.fromHeading(h)`, `geo.heading(dir)`, `geo.distance(a, b, flat?)`, `geo.quaternion(rot)`, `geo.fromQuaternion(x, y, z, w)`. Luau's `vector` has `lerp`, `angle`, `dot`, `cross`. |
 
 ## Menus

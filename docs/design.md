@@ -426,6 +426,24 @@ by its MIN alpha blend and keeps the original depth pixel program with the
 world-space transform vertex shader. Neither correction changes game assets.
 The same mask variant is selected when compiling recorded recipes ahead.
 
+**Fading peds (stipple fades).** An entity fading (its alpha below 255: a
+ped coming or going with the distance, a script's SET_ENTITY_ALPHA) is
+drawn in the deferred fade pass, which forces the "deferredalphaclip"
+technique group without MSAA (stipple fades: the engine's stipple is the
+blend state's sample mask, which the backend's SET_BLEND drops). A shader
+with no technique for the forced group draws nothing, and this game's
+`ped.fxc` has none (its hair shaders do): a fading ped was its hair. The
+runtime's `fades.rs` hooks `grmShader::BeginDraw`: when it gives no passes
+for a fade group, the shader's "deferred" technique draws instead, and the
+fading entity's alpha (`CShaderLib::SetStippleAlpha`) goes to the renderer
+as `op::STIPPLE` (a host command, as `SCENE_DONE`), off again at `EndDraw`.
+With a stipple on, the recipe has the level (of 16 pixels in each 4x4
+block) and the pixel program discards the others in a 4x4 ordered dither
+(`shader::with_stipple`, every game shader validates with it). The cost is
+a branch on a failed BeginDraw, and up to 15 pixel variants of the ped
+programs, compiled when first used (a fading ped is missing until then)
+and recorded for the next start.
+
 ## Application UI and game menus
 
 The engine supplies the PC front end, including loading screens, the pause
@@ -843,6 +861,28 @@ natives:
 - the active thread is the mod's;
 - entities the mod creates belong to its handler;
 - `scrThread::KillThread` cleans them up when the mod stops.
+
+**In GTA Online a mod runs as the session's script.** A mod's thread is not
+a network script: CREATE_VEHICLE with isNetwork returns 0 from it, and
+NETWORK_SET_THIS_SCRIPT_IS_NETWORK_SCRIPT quits the game for a script that
+is not in its allowlist of 378. So while freemode runs (the session script
+every player runs), each mod turn runs with freemode's `GtaThread` as the
+active thread (`tls + 3088`, swapped for the turn and restored after, a
+panic too):
+
+- what the mod makes with isNetwork is networked, as freemode's own: every
+  player sees it, with or without the mod, and sees the player in it;
+  natives that need a network script (explosive rounds...) work too;
+- natives about the running script (`*THIS_SCRIPT*`, `*THIS_THREAD*`,
+  `PARTICIPANT_ID*`) run with the mod's own thread active: its name, id
+  and host are the mod's;
+- what it made as freemode (handles returned by `CREATE_*`, `CLONE_*`,
+  `ADD_BLIP_*`) is given back when it stops: entities no longer needed,
+  blips and pickups removed, as the engine does for a script that ends;
+- no list of natives to keep: the rule is the turn, and the cost is two
+  stores per turn and finding freemode once a frame.
+
+In a job (no freemode) and in story mode the mod runs as itself.
 
 Starting and stopping happen in the same hook, from whichever thread waits
 next, so all of it stays on the engine's script update. A mod's code starts

@@ -14,6 +14,7 @@ mod cloud;
 pub mod cpu;
 mod device_reset;
 mod draw_lists;
+mod fades;
 mod dht;
 pub mod exit;
 mod files;
@@ -150,8 +151,8 @@ pub struct Config {
     /// game; the engine writes the results in the user directory
     /// (`Documents/Rockstar Games/GTA V/Benchmarks`) and asks to quit.
     pub benchmark: bool,
-    /// GTA Online: straight into it, or from the story's pause menu (the
-    /// network up all the same). `None`: the sandbox, the benchmark.
+    /// GTA Online: straight into it, or from the story's or the sandbox's
+    /// pause menu (the network up all the same). `None`: the benchmark.
     pub online: Option<Online>,
     /// The game's language, as a tag like `it-IT` (the engine matches the
     /// whole tag, then the language alone). `None`: `$LANG`, else English.
@@ -354,6 +355,7 @@ pub fn start(config: Config, gpu: gpu::GpuBackend) -> Result<Game> {
     stream::hooks(&mut hooks);
     prompts::hooks(&mut hooks);
     draw_lists::hooks(&mut hooks);
+    fades::hooks(&mut hooks);
     texts::hooks(&mut hooks);
     for set in EXTRA_HOOKS.lock().unwrap().iter() {
         set(&mut hooks);

@@ -262,7 +262,7 @@ fn invites_tab(ui: &mut egui::Ui, snapshot: &Snapshot, game: &Context, actions: 
         ui.push_id(("invite", &f.key), |ui| {
             setting(ui, &f.name, Control::Actions, Some("Sent you a multiplayer invite."), |ui| {
                 // Accepted from the start page or a game that reaches GTA
-                // Online (not the sandbox).
+                // Online (not the benchmark).
                 let can_accept = !game.started || game.online;
                 let labels: &[&str] = if can_accept { &["Decline", "Accept"] } else { &["Decline"] };
                 let buttons = action_buttons(ui, labels);

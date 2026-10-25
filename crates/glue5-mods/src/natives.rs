@@ -271,6 +271,115 @@ pub fn with_env<R>(env: *mut Env, f: impl FnOnce() -> R) -> R {
     r
 }
 
+/// GTA Online: a mod's natives run as the session's own script (freemode,
+/// which every player runs), so that what they make is networked as the
+/// game's scripts' is (engine.rs). The engine keeps the running script
+/// thread in thread-local storage: it is the session script's for the mod's
+/// turn, the mod's own again after.
+#[derive(Clone, Copy)]
+pub(crate) struct Session {
+    /// Where the engine keeps the running script thread.
+    pub(crate) slot: u64,
+    /// The mod's own thread, and the session script's.
+    pub(crate) own: u64,
+    pub(crate) host: u64,
+}
+
+thread_local! {
+    static SESSION: Cell<Option<Session>> = const { Cell::new(None) };
+    /// What each mod made as the session's script (entities, blips,
+    /// pickups), by mod: given back when it stops, as the engine gives
+    /// back a script's own when it ends.
+    static MADE: RefCell<HashMap<String, Vec<(Handle, i32)>>> = RefCell::new(HashMap::new());
+}
+
+/// Runs `f` as the session's script, when there is one; the running thread
+/// is the mod's own again after (a panic too).
+pub(crate) fn as_session<R>(env: *mut Env, session: Option<Session>, f: impl FnOnce() -> R) -> R {
+    let Some(s) = session else { return f() };
+    struct Back(Mem, Session);
+    impl Drop for Back {
+        fn drop(&mut self) {
+            self.0.set_u64(self.1.slot, self.1.own);
+            SESSION.set(None);
+        }
+    }
+    let mem = unsafe { Mem::of(env) };
+    mem.set_u64(s.slot, s.host);
+    SESSION.set(Some(s));
+    let _back = Back(mem, s);
+    f()
+}
+
+/// Natives about the running script itself (its name, id, host,
+/// participants): the mod's own, in GTA Online too.
+fn about_this_script(name: &str) -> bool {
+    name.contains("THIS_SCRIPT") || name.contains("THIS_THREAD") || name.starts_with("PARTICIPANT_ID")
+}
+
+/// Whether native `name` makes something for the running script that
+/// returns as `h`: an entity, a blip, a pickup.
+fn makes(name: &str, h: Handle) -> bool {
+    let making = name.starts_with("CREATE_") || name.starts_with("CLONE_") || name.starts_with("ADD_BLIP_");
+    making && (h.is_entity() || matches!(h, Handle::Blip | Handle::Pickup))
+}
+
+/// Gives back what mod `name` made as the session's script (it stopped):
+/// its entities no longer needed, its blips and pickups removed, as the
+/// engine does for a script that ends. Runs as `host` (the session script,
+/// if it still runs: else the game took them back with it), then `active`
+/// is the running thread again.
+///
+/// # Safety
+/// `env` is the engine thread's, inside a script's update.
+pub(crate) unsafe fn give_back(env: *mut Env, name: &str, slot: u64, host: Option<u64>, active: u64) {
+    let Some(made) = MADE.with_borrow_mut(|m| m.remove(name)) else { return };
+    let Some(host) = host else { return };
+    let mem = unsafe { Mem::of(env) };
+    mem.set_u64(slot, host);
+    for (h, id) in made {
+        let (exists, give) = match h {
+            Handle::Blip => ("DOES_BLIP_EXIST", "REMOVE_BLIP"),
+            Handle::Pickup => ("DOES_PICKUP_EXIST", "REMOVE_PICKUP"),
+            _ => ("DOES_ENTITY_EXIST", "SET_ENTITY_AS_NO_LONGER_NEEDED"),
+        };
+        if unsafe { call_with(env, exists, id) } == Some(1) {
+            unsafe { call_with(env, give, id) };
+        }
+    }
+    mem.set_u64(slot, active);
+}
+
+/// The session script ended (or another began): what mods made as it went
+/// with it.
+pub(crate) fn forget_made() {
+    MADE.with_borrow_mut(HashMap::clear);
+}
+
+/// Calls a native that takes one handle (by value, or by reference as
+/// SET_ENTITY_AS_NO_LONGER_NEEDED does) from Rust; its int result.
+unsafe fn call_with(env: *mut Env, name: &str, handle: i32) -> Option<i32> {
+    static BY_NAME: LazyLock<HashMap<&str, &Native>> = LazyLock::new(|| NATIVES.iter().map(|n| (n.name, n)).collect());
+    let n = *BY_NAME.get(name)?;
+    let by_ref = n.params.first()?.dir != Dir::In;
+    let mem = unsafe { Mem::of(env) };
+    let top = unsafe { exports::emscripten_stack_get_current(env) }.ok()?;
+    let r = (|| {
+        let info = unsafe { exports::_emscripten_stack_alloc(env, 160) }.ok()?;
+        mem.bytes_mut(info, 160).fill(0);
+        let (result, params, cell) = (info + 128, info + 136, info + 144);
+        mem.set_i32(cell, handle);
+        mem.set_u64(params, if by_ref { cell } else { handle as u32 as u64 });
+        mem.set_u64(info, result);
+        mem.set_u32(info + 8, 1);
+        mem.set_u64(info + 16, params);
+        unsafe { glue5_game::call_native(env, n.handler, info) }.ok()?;
+        Some(mem.i32(result))
+    })();
+    let _ = unsafe { exports::_emscripten_stack_restore(env, top) };
+    r
+}
+
 /// Natives that keep their string past the call: a text command's label.
 /// `CScriptTextConstruction::Begin*` keeps the pointer (when no command is
 /// open), its END_TEXT_COMMAND_* reads the text through it; the strings of
@@ -658,7 +767,15 @@ fn call_native(lua: &Lua, n: &'static Native, args: MultiValue, raw: bool) -> ml
         mem.set_u64(info + 16, params);
         mem.set_i32(info + 24, 0);
         RUNNING.store((n as *const Native).cast_mut(), std::sync::atomic::Ordering::Relaxed);
+        // As the session's script, but about the running script: the mod's.
+        let own = SESSION.get().filter(|_| about_this_script(n.name));
+        if let Some(s) = own {
+            mem.set_u64(s.slot, s.own);
+        }
         let called = unsafe { glue5_game::call_native(env, n.handler, info) };
+        if let Some(s) = own {
+            mem.set_u64(s.slot, s.host);
+        }
         RUNNING.store(std::ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
         if let Err(e) = called {
             TAINTED.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -674,6 +791,15 @@ fn call_native(lua: &Lua, n: &'static Native, args: MultiValue, raw: bool) -> ml
             for c in 0..3 {
                 mem.set_u32(orig + 8 * c, mem.u32(buf + 4 * c));
             }
+        }
+        // Made as the session's script: given back when the mod stops.
+        if SESSION.get().is_some()
+            && let Some(K::Handle(h)) = n.ret
+            && makes(n.name, h)
+            && mem.i32(result) != 0
+        {
+            let name = crate::lock(&crate::RUNNING_MOD).clone();
+            MADE.with_borrow_mut(|m| m.entry(name).or_default().push((h, mem.i32(result))));
         }
         let mut out = Vec::new();
         if let Some(k) = n.ret {
@@ -728,6 +854,23 @@ fn read(lua: &Lua, mem: Mem, at: u64, k: Kind) -> mlua::Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_rules() {
+        // About the running script: the mod's own, as the session's too.
+        assert!(about_this_script("GET_THIS_SCRIPT_NAME"));
+        assert!(about_this_script("NETWORK_IS_HOST_OF_THIS_SCRIPT"));
+        assert!(about_this_script("GET_ID_OF_THIS_THREAD"));
+        assert!(about_this_script("PARTICIPANT_ID_TO_INT"));
+        assert!(!about_this_script("CREATE_VEHICLE"));
+        // What a native makes for the script, given back when the mod stops.
+        assert!(makes("CREATE_VEHICLE", Handle::Vehicle));
+        assert!(makes("CLONE_PED", Handle::Ped));
+        assert!(makes("ADD_BLIP_FOR_COORD", Handle::Blip));
+        assert!(makes("CREATE_PICKUP", Handle::Pickup));
+        assert!(!makes("GET_CLOSEST_VEHICLE", Handle::Vehicle));
+        assert!(!makes("CREATE_CAM", Handle::Cam));
+    }
 
     fn named(lua: &Lua, s: &str) -> Value {
         Value::String(lua.create_string(s).unwrap())

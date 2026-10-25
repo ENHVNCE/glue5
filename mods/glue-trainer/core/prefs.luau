@@ -12,6 +12,8 @@ export type Prefs = {
 	notify: boolean,
 	-- "km/h" or "mph".
 	speedUnit: string,
+	-- Teleports far away fly there through the sky (game.teleport).
+	flyTeleports: boolean,
 	-- Toggles and values the menus keep (by key), when `remember` is on.
 	state: { [string]: any },
 	-- The features in Favourites, as "Label (Menu)".
@@ -29,6 +31,7 @@ local DEFAULTS: Prefs = {
 	remember = true,
 	notify = true,
 	speedUnit = "km/h",
+	flyTeleports = true,
 	state = {},
 	favourites = {},
 }

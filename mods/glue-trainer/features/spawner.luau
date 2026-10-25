@@ -1,7 +1,7 @@
 --!strict
 -- Vehicles of the game, by class or by search, delivered with the options the player keeps;
 -- and the garage: vehicles saved with their parts and colours, delivered again as they were.
--- In GTA Online they are the player's own: the others do not see them (see spawnAt).
+-- In GTA Online they are networked: every player sees them (see spawnAt).
 
 local bind = require("../core/bind")
 local game = require("../core/game")
@@ -22,16 +22,20 @@ local options: Options
 local last: Vehicle? = nil
 
 -- A vehicle of model `hash` at `pos`, facing `heading`, engine running; nil and why if it could
--- not. A mod's script is no network script of the game's: in GTA Online the vehicle is this
--- player's own (the others do not see it).
+-- not. In GTA Online it is networked (mods run as the session's script there), so every player
+-- sees it, and the player in it.
 function M.spawnAt(hash: number, pos: vector, heading: number?): (Vehicle?, string?)
 	if not streaming.load(hash) then
 		return nil, "That vehicle did not load"
 	end
-	local car = vehicle.createVehicle(hash, pos, heading or 0, false, false, false)
+	local online = network.networkIsSessionStarted()
+	local car = vehicle.createVehicle(hash, pos, heading or 0, online, false, false)
 	streaming.setModelAsNoLongerNeeded(hash)
 	if not car then
-		return nil, "The game made none"
+		return nil, if online then "The game made none (in a job, only its own vehicles)" else "The game made none"
+	end
+	if online then
+		network.setNetworkIdExistsOnAllMachines(network.vehToNet(car), true)
 	end
 	if not (vehicle.isThisModelAHeli(hash) or vehicle.isThisModelAPlane(hash)) then
 		vehicle.setVehicleOnGroundProperly(car, 5)
@@ -138,33 +142,22 @@ local function garage(root: Menu)
 	build()
 end
 
-function M.build(root: Menu)
-	local menu = root:submenu("Spawn a vehicle", "Every vehicle of the game, by class or by name; your garage")
-	local optionsMenu = menu:submenu("Options", "How vehicles are delivered")
-	options = {
-		warpIn = (bind.feature(optionsMenu, "spawn.warpIn", "Get in", "In the driver's seat; aircraft in the air", {})),
-		replace = (bind.feature(optionsMenu, "spawn.replace", "Replace the last one", "The vehicle spawned before goes", {})),
-		maxed = (bind.feature(optionsMenu, "spawn.maxed", "Fully upgraded", "Every upgrade the vehicle has", {})),
-		god = (bind.feature(optionsMenu, "spawn.god", "Indestructible", "No damage, no wear", {})),
-		plate = optionsMenu:text("Plate", "", { placeholder = "As the game gives it", max = 8 }),
-	}
-	garage(menu)
+-- Every vehicle of the game in `menu`, by search and by the game's classes (added once the
+-- catalog is read); choosing one runs `pick` (its message said, as an action's).
+function M.picker(menu: Menu, verb: string, pick: (entry: catalog.VehicleEntry) -> string?)
 	local function fill(target: Menu, entries: { catalog.VehicleEntry }): boolean
 		for _, entry in entries do
-			bind.action(target, entry.name, { note = entry.model, action = "Spawn" }, function(): string?
-				local car, why = M.spawn(entry.hash, entry.name)
-				return if car then `{entry.name} delivered` else why
+			bind.action(target, entry.name, { note = entry.model, action = verb }, function(): string?
+				return pick(entry)
 			end)
 		end
 		return #entries > 0
 	end
-	menu:separator("Vehicles")
 	lists.lazy(menu, "Search all", "Every vehicle, by name", function(target)
 		return fill(target, catalog.vehicles())
 	end)
-	-- The classes, named by the game: added under the heading once the catalog is read.
 	local listed = false
-	menu:onOpen(bind.safe("Spawn a vehicle", function()
+	menu:onOpen(bind.safe(menu.title, function()
 		if listed then
 			return
 		end
@@ -176,6 +169,24 @@ function M.build(root: Menu)
 		end
 		listed = #classes > 0
 	end))
+end
+
+function M.build(root: Menu)
+	local menu = root:submenu("Spawn a vehicle", "Every vehicle of the game, by class or by name; your garage")
+	local optionsMenu = menu:submenu("Options", "How vehicles are delivered")
+	options = {
+		warpIn = (bind.feature(optionsMenu, "spawn.warpIn", "Get in", "In the driver's seat; aircraft in the air", {})),
+		replace = (bind.feature(optionsMenu, "spawn.replace", "Replace the last one", "The vehicle spawned before goes", {})),
+		maxed = (bind.feature(optionsMenu, "spawn.maxed", "Fully upgraded", "Every upgrade the vehicle has", {})),
+		god = (bind.feature(optionsMenu, "spawn.god", "Indestructible", "No damage, no wear", {})),
+		plate = optionsMenu:text("Plate", "", { placeholder = "As the game gives it", max = 8 }),
+	}
+	garage(menu)
+	menu:separator("Vehicles")
+	M.picker(menu, "Spawn", function(entry: catalog.VehicleEntry): string?
+		local car, why = M.spawn(entry.hash, entry.name)
+		return if car then `{entry.name} delivered` else why
+	end)
 end
 
 return M

@@ -1,5 +1,6 @@
 --!strict
--- Lines over the game: the speed, where you are (coordinates, heading, street and area).
+-- Lines over the game: frames per second, the speed, where you are (coordinates, heading,
+-- street and area).
 
 local bind = require("../core/bind")
 local game = require("../core/game")
@@ -34,17 +35,26 @@ local function placeLines(): { string }
 end
 
 function M.build(root: Menu)
-	local menu = root:submenu("Overlay", "Speed and position over the game")
-	local showSpeed, showPlace = false, false
+	local menu = root:submenu("Overlay", "Frame rate, speed and position over the game")
+	local showFps, showSpeed, showPlace = false, false, false
+	-- Frames and their time since the lines were last read: the frame rate over that time.
+	local frames, elapsed = 0, 0
 	-- The lines, and their width, read again five times a second (they are drawn every frame).
 	local lines: { string } = {}
 	local width = 0
 	local age = math.huge
 	local function drawLines()
-		age += misc.getFrameTime()
+		local dt = misc.getFrameTime()
+		age += dt
+		frames += 1
+		elapsed += dt
 		if age >= 0.2 then
 			age = 0
 			lines = {}
+			if showFps and elapsed > 0 then
+				table.insert(lines, string.format("%d fps", math.floor(frames / elapsed + 0.5)))
+			end
+			frames, elapsed = 0, 0
 			if showSpeed then
 				table.insert(lines, speedLine())
 			end
@@ -69,12 +79,22 @@ function M.build(root: Menu)
 	end
 	local function update()
 		age = math.huge
-		if showSpeed or showPlace then
+		if showFps or showSpeed or showPlace then
 			loop.add("overlay", drawLines)
 		else
 			loop.remove("overlay")
 		end
 	end
+	bind.feature(menu, "overlay.fps", "Frame rate", "Frames per second", {
+		on = function()
+			showFps = true
+			update()
+		end,
+		off = function()
+			showFps = false
+			update()
+		end,
+	})
 	bind.feature(menu, "overlay.speed", "Speed", "Yours or your vehicle's", {
 		on = function()
 			showSpeed = true

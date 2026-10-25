@@ -814,7 +814,7 @@ impl App {
                 preparing: self.play_requested.then(|| self.screen.as_ref().and_then(Screen::progress)).flatten(),
                 mode: self.mode,
                 benchmark: self.benchmark.as_ref(),
-                online: self.game.is_some() && matches!(self.mode, Mode::Story | Mode::Online),
+                online: self.game.is_some() && matches!(self.mode, Mode::Story | Mode::Sandbox | Mode::Online),
                 friend_requests: glue5_runtime::friends::pending(),
                 source: self.settings.source,
                 stream: stream.as_ref().map(|(server, status)| (*server, status)),
@@ -1081,8 +1081,9 @@ impl App {
                 benchmark: self.mode == Mode::Benchmark,
                 low_memory: s.low_memory,
                 max_fps: s.max_fps,
-                // The story with the network up: GTA Online from its pause menu.
-                online: matches!(self.mode, Mode::Story | Mode::Online).then(|| glue5_runtime::Online {
+                // The story and the sandbox with the network up: GTA Online
+                // from their pause menu.
+                online: matches!(self.mode, Mode::Story | Mode::Sandbox | Mode::Online).then(|| glue5_runtime::Online {
                     name: s.online_name.trim().into(),
                     lobby: self.join.take().unwrap_or_default(),
                     freemode: self.mode == Mode::Online,

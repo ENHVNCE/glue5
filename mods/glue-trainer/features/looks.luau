@@ -108,6 +108,104 @@ local function wardrobe(root: Menu)
 	menu:onOpen(bind.safe("Wardrobe", build))
 end
 
+-- The models with a face to make: GTA Online's characters.
+local FREEMODE = { [joaat("mp_m_freemode_01")] = true, [joaat("mp_f_freemode_01")] = true }
+
+-- Head overlays (SET_PED_HEAD_OVERLAY's 0-10), and the colour kind of those that take one
+-- (1 hair, 2 make-up).
+type Overlay = { name: string, id: number, kind: number? }
+local OVERLAYS: { Overlay } = {
+	{ name = "Blemishes", id = 0 },
+	{ name = "Facial hair", id = 1, kind = 1 },
+	{ name = "Eyebrows", id = 2, kind = 1 },
+	{ name = "Ageing", id = 3 },
+	{ name = "Make-up", id = 4 },
+	{ name = "Blush", id = 5, kind = 2 },
+	{ name = "Complexion", id = 6 },
+	{ name = "Sun damage", id = 7 },
+	{ name = "Lipstick", id = 8, kind = 2 },
+	{ name = "Freckles", id = 9 },
+	{ name = "Chest hair", id = 10, kind = 1 },
+}
+
+-- An Online character's face: parents, hair colour, eyes, and each overlay.
+local function face(root: Menu)
+	local menu = root:submenu("Face", "GTA Online's characters: parents, hair colour, eyes, beard, make-up")
+	-- The parents' heads and the mixes, as last set here (the game does not tell them back).
+	local blend = { mother = 21, father = 0, shape = 0.5, skin = 0.5 }
+	local function apply()
+		ped.setPedHeadBlendData(game.me(), blend.mother, blend.father, 0, blend.mother, blend.father, 0, blend.shape, blend.skin, 0, false)
+	end
+	local hair = { colour = 0, highlight = 0 }
+	local function build()
+		menu:clear()
+		local me = game.me()
+		if not FREEMODE[entity.getEntityModel(me)] then
+			menu:label("Only GTA Online's characters have a face to make: become one in Model (mp_m_freemode_01, mp_f_freemode_01).")
+			return
+		end
+		menu:separator("Parents")
+		local heads = math.max(ped.getPedHeadBlendNumHeads(0), 1)
+		menu:number("Mother", blend.mother, { min = 0, max = heads - 1 }, bind.safe("Mother", function(v)
+			blend.mother = v
+			apply()
+		end))
+		menu:number("Father", blend.father, { min = 0, max = heads - 1 }, bind.safe("Father", function(v)
+			blend.father = v
+			apply()
+		end))
+		menu:slider("Looks like", blend.shape, 0, 1, { step = 0.05, note = "0: the mother, 1: the father" }, bind.safe("Looks like", function(v)
+			blend.shape = v
+			apply()
+		end))
+		menu:slider("Skin", blend.skin, 0, 1, { step = 0.05, note = "0: the mother's, 1: the father's" }, bind.safe("Skin", function(v)
+			blend.skin = v
+			apply()
+		end))
+		menu:separator("Hair and eyes")
+		local tints = math.max(ped.getNumPedHairTints(), 1)
+		menu:number("Hair colour", hair.colour, { min = 0, max = tints - 1 }, bind.safe("Hair colour", function(v)
+			hair.colour = v
+			ped.setPedHairTint(game.me(), hair.colour, hair.highlight)
+		end))
+		menu:number("Highlights", hair.highlight, { min = 0, max = tints - 1 }, bind.safe("Highlights", function(v)
+			hair.highlight = v
+			ped.setPedHairTint(game.me(), hair.colour, hair.highlight)
+		end))
+		menu:number("Eyes", ped.getHeadBlendEyeColor(me), { min = 0, max = 31 }, bind.safe("Eyes", function(v)
+			ped.setHeadBlendEyeColor(game.me(), v)
+		end))
+		menu:separator("Overlays")
+		for _, o in OVERLAYS do
+			local name, id, kind = o.name, o.id, o.kind
+			local count = ped.getPedHeadOverlayNum(id)
+			if count > 0 then
+				-- 255: none (shown as -1).
+				local now = ped.getPedHeadOverlay(me, id)
+				local opacity = 1
+				local index = if now == 255 then -1 else now
+				local function set()
+					ped.setPedHeadOverlay(game.me(), id, if index < 0 then 255 else index, opacity)
+				end
+				menu:number(name, index, { min = -1, max = count - 1, note = "-1: none" }, bind.safe(name, function(v)
+					index = v
+					set()
+				end))
+				menu:slider(`{name}: strength`, opacity, 0, 1, { step = 0.1 }, bind.safe(name, function(v)
+					opacity = v
+					set()
+				end))
+				if kind then
+					menu:number(`{name}: colour`, 0, { min = 0, max = 63 }, bind.safe(name, function(v)
+						ped.setPedHeadOverlayTint(game.me(), id, kind, v, v)
+					end))
+				end
+			end
+		end
+	end
+	menu:onOpen(bind.safe("Face", build))
+end
+
 -- What you wear now, to put on again.
 local function current(name: string): Outfit
 	local me = game.me()
@@ -244,8 +342,9 @@ local function moves(root: Menu)
 end
 
 function M.build(root: Menu)
-	local menu = root:submenu("Looks", "Model, clothes, outfits, animations, walks")
+	local menu = root:submenu("Looks", "Model, face, clothes, outfits, animations, walks")
 	model(menu)
+	face(menu)
 	wardrobe(menu)
 	outfits(menu)
 	menu:separator("Moves")
