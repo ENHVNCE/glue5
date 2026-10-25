@@ -273,7 +273,7 @@ local function fun(root: Menu)
 	local falling: { Object } = {}
 	local ROCK = "prop_rock_4_big2"
 	local nextRock = 0
-	bind.feature(menu, "world.meteors", "Meteor shower", "Burning rocks fall around you", {
+	bind.feature(menu, "world.meteors", "Meteor shower", "Burning rocks fall around you", bind.storyOnly({
 		tick = function()
 			for i = #falling, 1, -1 do
 				local rock = falling[i]
@@ -312,7 +312,7 @@ local function fun(root: Menu)
 			end
 			falling = {}
 		end,
-	})
+	}))
 	local nextFirework = 0
 	bind.feature(menu, "world.fireworks", "Fireworks", "Over your head", {
 		tick = function()
@@ -327,12 +327,17 @@ local function fun(root: Menu)
 			end
 			graphics.useParticleFxAsset(asset)
 			local burst = if math.random() < 0.5 then "scr_indep_firework_starburst" else "scr_indep_firework_trailburst"
-			graphics.startParticleFxNonLoopedAtCoord(burst, above(40, 50), vector.zero, 2, false, false, false)
+			-- In GTA Online, for everyone to see.
+			if game.online() then
+				graphics.startNetworkedParticleFxNonLoopedAtCoord(burst, above(40, 50), vector.zero, 2, false, false, false, false)
+			else
+				graphics.startParticleFxNonLoopedAtCoord(burst, above(40, 50), vector.zero, 2, false, false, false)
+			end
 		end,
 	})
 	-- Pulls what is within 80 m to a point 40 m ahead of where it was made, and swallows it.
 	local hole: vector? = nil
-	bind.feature(menu, "world.blackHole", "Black hole", "Everything near it is pulled in", {
+	bind.feature(menu, "world.blackHole", "Black hole", "Everything near it is pulled in", bind.storyOnly({
 		on = function()
 			local me = game.me()
 			hole = entity.getEntityCoords(me, true) + entity.getEntityForwardVector(me) * 40 + vector.create(0, 0, 15)
@@ -366,12 +371,12 @@ local function fun(root: Menu)
 		off = function()
 			hole = nil
 		end,
-	})
+	}))
 	-- Vehicles or people from the sky, a few a second, the oldest let go after 30.
 	local rain = bind.choice(menu, "world.rainOf", "Rain of", { "Vehicles", "People" }, "Vehicles", "What Raining down drops")
 	local dropped: { Entity } = {}
 	local nextDrop = 0
-	bind.feature(menu, "world.rain", "Raining down", "From the sky, around you", {
+	bind.feature(menu, "world.rain", "Raining down", "From the sky, around you", bind.storyOnly({
 		tick = function()
 			if os.clock() < nextDrop then
 				return
@@ -416,7 +421,7 @@ local function fun(root: Menu)
 			end
 			dropped = {}
 		end,
-	})
+	}))
 end
 
 -- People who follow and protect you: any ped of the game, with any weapon.
@@ -456,7 +461,8 @@ local function bodyguards(root: Menu)
 			end
 			local me = game.me()
 			local at = entity.getOffsetFromEntityInWorldCoords(me, vector.create(math.random(-3, 3), -2, 0))
-			local g = ped.createPed(26, hash, at, entity.getEntityHeading(me), false, false)
+			-- Networked in GTA Online: everyone sees them.
+			local g = ped.createPed(26, hash, at, entity.getEntityHeading(me), game.online(), false)
 			streaming.setModelAsNoLongerNeeded(hash)
 			if not g then
 				return "The game made none"

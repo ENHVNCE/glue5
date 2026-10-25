@@ -127,6 +127,28 @@ function M.feature(menu: Menu, key: string, label: string, note: string?, f: Fea
 	return item, set
 end
 
+-- Feature `f` in story mode only: in GTA Online what it makes (local vehicles, people, objects)
+-- would be this player's alone, solid to them and unseen by the others. It refuses to go on
+-- there, and does nothing while the player is there with it on.
+function M.storyOnly(f: Feature): Feature
+	return {
+		on = function()
+			if game.online() then
+				error("story mode only: in GTA Online the others would not see what it makes", 0)
+			end
+			if f.on then
+				f.on()
+			end
+		end,
+		tick = f.tick and function()
+			if not game.online() then
+				(f.tick :: () -> ())()
+			end
+		end,
+		off = f.off,
+	}
+end
+
 -- A button that says what it did, or why it could not: `run` returns the message (nil: none).
 function M.action(menu: Menu, label: string, opts: (string | ButtonOpts)?, run: () -> string?): Button
 	return menu:button(label, opts or {}, M.safe(label, function()

@@ -335,7 +335,12 @@ local function body(root: Menu)
 				return
 			end
 			graphics.useParticleFxAsset(e[2])
-			graphics.startParticleFxNonLoopedOnEntity(e[3], game.me(), vector.zero, vector.zero, 1, false, false, false)
+			-- In GTA Online, for everyone to see.
+			if game.online() then
+				graphics.startNetworkedParticleFxNonLoopedOnEntity(e[3], game.me(), vector.zero, vector.zero, 1, false, false, false)
+			else
+				graphics.startParticleFxNonLoopedOnEntity(e[3], game.me(), vector.zero, vector.zero, 1, false, false, false)
+			end
 		end,
 		off = function()
 			next = 0

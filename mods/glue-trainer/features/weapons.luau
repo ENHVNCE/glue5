@@ -340,7 +340,7 @@ local function guns(menu: Menu)
 			holding = nil
 		end,
 	})
-	bind.feature(menu, "weapons.pedGun", "People gun", "Shoot people of the city", {
+	bind.feature(menu, "weapons.pedGun", "People gun", "Shoot people of the city", bind.storyOnly({
 		tick = function()
 			if not ped.isPedShooting(me()) then
 				return
@@ -364,10 +364,10 @@ local function guns(menu: Menu)
 				end
 			end)
 		end,
-	})
+	}))
 	-- Things to throw (those this game has: checked when shot).
 	local THINGS = { "prop_beachball_02", "prop_bowling_ball", "prop_toilet_01", "prop_barrel_02a", "prop_roadcone02a", "prop_byard_floatpile" }
-	bind.feature(menu, "weapons.objectGun", "Object gun", "Shoot balls, barrels, toilets", {
+	bind.feature(menu, "weapons.objectGun", "Object gun", "Shoot balls, barrels, toilets", bind.storyOnly({
 		tick = function()
 			if not ped.isPedShooting(me()) then
 				return
@@ -389,7 +389,7 @@ local function guns(menu: Menu)
 				end
 			end)
 		end,
-	})
+	}))
 	bind.feature(menu, "weapons.reviveGun", "Revive gun", "The dead you shoot get up again", {
 		tick = function()
 			if not ped.isPedShooting(me()) then
@@ -405,7 +405,7 @@ local function guns(menu: Menu)
 			end
 		end,
 	})
-	bind.feature(menu, "weapons.vehicleGun", "Vehicle gun", "Shoot cars", {
+	bind.feature(menu, "weapons.vehicleGun", "Vehicle gun", "Shoot cars", bind.storyOnly({
 		tick = function()
 			if not ped.isPedShooting(me()) then
 				return
@@ -429,7 +429,7 @@ local function guns(menu: Menu)
 				end
 			end)
 		end,
-	})
+	}))
 end
 
 -- What the player's gun points at: from its muzzle (or the camera) along the camera's look.
