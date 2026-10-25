@@ -676,20 +676,35 @@ pub(crate) unsafe extern "C" fn script_program_loaded(env: *mut Env, this: u64, 
 }
 
 /// gameconfig.xml: the scripts are a later version than the game data, and
-/// they register more player broadcast data blocks than it provides; the
-/// engine quits when a script finds none free ("No local player broadcast
-/// data handler"). Freemode alone fills the larger sizes, and with the shops
-/// and ambient scripts around the player all 31 were in use (an iPhone log
-/// listed them), so the two largest sizes and the three smallest get more
-/// instances. A smaller block takes a larger one when its size has none
-/// left. Each longer number costs a tab of its line's indentation, so the
-/// file keeps its length.
+/// they register more broadcast data blocks than it provides; the engine
+/// quits when a script finds none free of its size or larger ("No local
+/// player broadcast data handler", "No host broadcast data handler").
+///
+/// - Player blocks: freemode alone fills the larger sizes, and with the
+///   shops and ambient scripts around the player all 31 were in use (an
+///   iPhone log listed them), so the two largest sizes and the three
+///   smallest get more instances.
+/// - Host blocks: freemode's own arrays (GSBD_*) hold most of the large
+///   ones, so a job's controller has none left for its arrays: a 1v1
+///   deathmatch's 10760-byte array found every handler of 15008 bytes or
+///   more taken. The three largest sizes go from 2 to 4 instances.
+///
+/// A smaller block takes a larger one when its size has none left. Each
+/// longer number costs a tab of its line's indentation, so the file keeps
+/// its length.
 pub(crate) fn more_broadcast_data(text: String) -> Option<String> {
+    let text = more_instances(text, "HostBroadcastData", &[(35000, 4), (11000, 4), (7500, 4)])?;
+    more_instances(text, "PlayerBroadcastData", &[(3600, 3), (2500, 4), (150, 12), (80, 12), (40, 16)])
+}
+
+/// `text` with the `<NumInstances>` of block `name`'s items of these sizes
+/// set, the text's length kept.
+fn more_instances(text: String, name: &str, sizes: &[(u32, u32)]) -> Option<String> {
     const FIELD: &str = "<NumInstances value=\"";
-    let start = text.find("<PlayerBroadcastData>")?;
-    let end = start + text[start..].find("</PlayerBroadcastData>")?;
+    let start = text.find(&format!("<{name}>"))?;
+    let end = start + text[start..].find(&format!("</{name}>"))?;
     let mut block = text[start..end].to_string();
-    for (size, instances) in [(3600, 3), (2500, 4), (150, 12), (80, 12), (40, 16)] {
+    for &(size, instances) in sizes {
         let at = block.find(&format!("<SizeOfData value=\"{size}\"/>"))?;
         let field = at + block[at..].find(FIELD)?;
         let digits = field + FIELD.len()..field + FIELD.len() + block[field + FIELD.len()..].find('"')?;
@@ -862,14 +877,17 @@ fn broadcast_data_keeps_the_length() {
         )
     };
     let sizes = [(3600, 1), (2500, 2), (150, 4), (80, 4), (40, 8)];
+    let host = [(35000, 2), (11000, 2), (7500, 2), (4000, 4)];
     let text = format!(
         "<HostBroadcastData>\r\n{}</HostBroadcastData>\r\n<PlayerBroadcastData>\r\n{}</PlayerBroadcastData>\r\n",
-        item(40, 8),
+        host.map(|(s, n)| item(s, n)).concat(),
         sizes.map(|(s, n)| item(s, n)).concat()
     );
     let patched = more_broadcast_data(text.clone()).unwrap();
     assert_eq!(patched.len(), text.len());
-    assert!(patched.starts_with(&format!("<HostBroadcastData>\r\n{}", item(40, 8))));
+    assert!(patched.contains("<SizeOfData value=\"35000\"/>\r\n\t\t\t<NumInstances value=\"4\"/>"));
+    assert!(patched.contains("<SizeOfData value=\"7500\"/>\r\n\t\t\t<NumInstances value=\"4\"/>"));
+    assert!(patched.contains(&item(4000, 4)));
     assert!(patched.contains("<SizeOfData value=\"3600\"/>\r\n\t\t\t<NumInstances value=\"3\"/>"));
     assert!(patched.contains("<SizeOfData value=\"150\"/>\r\n\t\t<NumInstances value=\"12\"/>"));
     assert!(patched.contains("<SizeOfData value=\"40\"/>\r\n\t\t<NumInstances value=\"16\"/>"));
