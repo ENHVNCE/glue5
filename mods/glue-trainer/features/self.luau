@@ -346,13 +346,6 @@ local function body(root: Menu)
 			next = 0
 		end,
 	})
-	bind.slider(root, "self.alpha", "See-through", 255, 0, 255, { step = 15, note = "255: solid; less to fade, as a ghost" }, function(v)
-		if v >= 255 then
-			entity.resetEntityAlpha(game.me())
-		else
-			entity.setEntityAlpha(game.me(), v, false)
-		end
-	end)
 	-- Fire from the mouth, as long as it is on (and fireproof meanwhile).
 	local flame: number? = nil
 	bind.feature(root, "self.breatheFire", "Breathe fire", "Flames from your mouth", {
@@ -363,7 +356,8 @@ local function body(root: Menu)
 			local me = game.me()
 			entity.setEntityProofs(me, false, true, false, false, false, false, false, false)
 			graphics.useParticleFxAsset("core")
-			flame = graphics.startParticleFxLoopedOnEntityBone("ent_sht_flame", me, 0, 0.12, 0, 90, 0, 0, ped.getPedBoneIndex(me, Bone.HEAD), 1, false, false, false)
+			-- Out of the mouth, forward (the head bone's axes).
+			flame = graphics.startParticleFxLoopedOnEntityBone("ent_sht_flame", me, -0.02, 0.2, 0, 90, 100, 90, ped.getPedBoneIndex(me, Bone.HEAD), 1, false, false, false)
 		end,
 		off = function()
 			if flame then

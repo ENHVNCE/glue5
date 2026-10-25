@@ -540,14 +540,24 @@ local function aiming(menu: Menu)
 			end
 		end,
 	})
+	-- Shots every frame while the trigger is held, however it is held (keyboard, pad, touch:
+	-- the game shooting counts too, for a moment after each shot).
+	local lastShot = 0
 	bind.feature(menu, "weapons.rapid", "Rapid fire", "A shot every frame while you shoot", {
 		tick = function()
 			local me = game.me()
-			if not player.isPlayerFreeAiming(game.player()) or not pad.isControlPressed(0, Control.ATTACK) or ped.isPedInAnyVehicle(me, false) then
+			-- 4: guns (not melee or thrown).
+			if ped.isPedInAnyVehicle(me, false) or not weapon.isPedArmed(me, 4) then
 				return
 			end
-			local from, to = aimLine()
-			misc.shootSingleBulletBetweenCoords(from, to, 30, true, weapon.getSelectedPedWeapon(me), me, true, false, -1)
+			if ped.isPedShooting(me) then
+				lastShot = os.clock()
+			end
+			local held = pad.isControlPressed(0, Control.ATTACK) or pad.isDisabledControlPressed(0, Control.ATTACK)
+			if held or os.clock() - lastShot < 0.25 then
+				local from, to = aimLine()
+				misc.shootSingleBulletBetweenCoords(from, to, 30, true, weapon.getSelectedPedWeapon(me), me, true, false, -1)
+			end
 		end,
 	})
 	-- Slow while aiming; the game's speed again after (only what this feature set).

@@ -298,46 +298,68 @@ local function fun(root: Menu)
 		local at = game.position()
 		return vector.create(at.x + math.random(-r, r), at.y + math.random(-r, r), at.z + up)
 	end
-	-- The meteors falling, each to burst when it lands.
-	local falling: { Object } = {}
+	-- Meteors: big burning rocks coming down at a slant from high up to the ground around the
+	-- player, bursting there. Moved along their path every frame (an object made far up has no
+	-- physics yet: a velocity would not move it).
+	type Meteor = { rock: Object, from: vector, to: vector, born: number, takes: number, fire: number }
+	local falling: { Meteor } = {}
+	-- The largest rock the game makes as an object (the bigger ones are the map's only).
 	local ROCK = "prop_rock_4_big2"
 	local nextRock = 0
-	bind.feature(menu, "world.meteors", "Meteor shower", "Burning rocks fall around you", bind.storyOnly({
+	local function remove(m: Meteor)
+		if m.fire ~= 0 then
+			graphics.stopParticleFxLooped(m.fire, false)
+		end
+		if entity.doesEntityExist(m.rock) then
+			entity.setEntityAsMissionEntity(m.rock, true, true)
+			object.deleteObject(m.rock)
+		end
+	end
+	bind.feature(menu, "world.meteors", "Meteor shower", "Burning rocks fall from the sky around you", bind.storyOnly({
 		tick = function()
+			local now = os.clock()
 			for i = #falling, 1, -1 do
-				local rock = falling[i]
-				if not entity.doesEntityExist(rock) or not entity.isEntityInAir(rock) then
-					if entity.doesEntityExist(rock) then
-						fire.addExplosion(entity.getEntityCoords(rock, true), ExplosionType.GRENADE, 1, true, false, 0.5, false)
-						entity.setEntityAsMissionEntity(rock, true, true)
-						object.deleteObject(rock)
-					end
+				local m = falling[i]
+				local t = (now - m.born) / m.takes
+				if t >= 1 or not entity.doesEntityExist(m.rock) then
+					fire.addExplosion(m.to, ExplosionType.PLANE, 1, true, false, 1, false)
+					remove(m)
 					table.remove(falling, i)
+				else
+					entity.setEntityCoordsNoOffset(m.rock, m.from + (m.to - m.from) * t, false, false, false)
+					entity.setEntityRotation(m.rock, vector.create(now * 200 % 360, now * 130 % 360, 0), 2, true)
 				end
 			end
-			if os.clock() < nextRock or #falling >= 12 then
+			if now < nextRock or #falling >= 10 then
 				return
 			end
-			nextRock = os.clock() + 0.6
+			nextRock = now + 0.8
 			task.spawn(function()
-				if not streaming.load(ROCK) then
+				if not streaming.load(ROCK) or not streaming.load("core", "ptfx") then
 					return
 				end
-				local rock = object.createObject(ROCK, above(60, 80), false, false, true)
+				-- Where it lands, on the ground around the player; it comes from far up, to a side.
+				local spot = above(80, 50)
+				local ground = world.groundZ(spot) or game.position().z
+				local to = vector.create(spot.x, spot.y, ground)
+				local side = math.random() * math.pi * 2
+				local from = to + vector.create(math.cos(side) * 150, math.sin(side) * 150, 220)
+				local rock = object.createObject(ROCK, from, false, false, false)
 				streaming.setModelAsNoLongerNeeded(ROCK)
-				if rock then
-					entity.setEntityVelocity(rock, vector.create(math.random(-10, 10), math.random(-10, 10), -40))
-					fire.startEntityFire(rock)
-					table.insert(falling, rock)
+				if not rock then
+					return
 				end
+				entity.setEntityCollision(rock, false, false)
+				graphics.useParticleFxAsset("core")
+				local flames = graphics.startParticleFxLoopedOnEntity("fire_wrecked_plane_cockpit", rock, 0, 0, 0, 0, 0, 0, 4, false, false, false)
+				-- About 60 m/s.
+				local takes = vector.magnitude(to - from) / 60
+				table.insert(falling, { rock = rock, from = from, to = to, born = os.clock(), takes = takes, fire = flames })
 			end)
 		end,
 		off = function()
-			for _, rock in falling do
-				if entity.doesEntityExist(rock) then
-					entity.setEntityAsMissionEntity(rock, true, true)
-					object.deleteObject(rock)
-				end
+			for _, m in falling do
+				remove(m)
 			end
 			falling = {}
 		end,
