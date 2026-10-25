@@ -23,7 +23,8 @@ to your computer.
 
 Mods with a menu show it on the Mods page's **MENUS** (F7, or the button
 next to ⚙ on touch screens), drawn by the app: it works with touch,
-controllers, keyboard and mouse.
+controllers, keyboard and mouse. And on the [control page](#the-control-page),
+from a phone.
 
 ## Glue Trainer
 
@@ -67,15 +68,11 @@ is refused: the game stops for a script it does not know).
 
 ## GLUE 5 Studio
 
-The Mods page's **Studio** tab starts it and shows its address, its
-pairing code and a QR code. Open it in a browser on the same device, or
-turn on **Other devices** and open the address on another one, a computer
-or a tablet (phones default to it: their screens are no place to write
-code).
-
-<p align="center">
-  <img src="images/studio-phone.jpg" alt="The Studio on a phone: the mods' menus" width="320">
-</p>
+The Mods page's **Studio** tab starts it and shows its address, the
+control page's, the pairing code and a QR code. Open the Studio in a
+browser on the same device, or turn on **Other devices** and open it on
+another one, a computer or a tablet (phones default to it: their screens
+are no place to write code).
 
 - **An editor that knows the game.** Every native is typed and documented,
   with completions, hovers and signatures as you type. Model names
@@ -84,13 +81,32 @@ code).
 - **Live.** Saving restarts the mod in the running game. The console runs
   Luau in the game as you type it; each mod's log and errors come back
   with the line they came from.
-- **Menus.** The mods' menus, mirrored from the game: use them from the
-  Studio, your phone, or the game itself.
+- **Files in folders**, as a tree: drag files and folders where they go.
 - **Mod pages.** Name, description, version, whether it starts with the
-  game; export a mod as a `.zip`, import one.
-- **Safe to connect.** Only a browser with the pairing code gets in, and
-  only from the Studio's own page. A new code (Mods page) closes every
-  connection made with the old one.
+  game; export a mod as a `.zip`, import one. A right click on a mod has
+  what can be done to it, its control page too.
+
+### The control page
+
+The mods and their menus on a page of their own (`/control`), made for a
+phone or a tablet, or a screen beside the game: start and stop mods, and
+use their menus as the game's Mods page does. Scan the Studio tab's QR
+code with a phone: the control page opens, paired. On a phone, add it to
+the home screen to have it as an app. The Studio opens it for a mod (its
+page, or a right click).
+
+### Pairing
+
+A browser pairs once with the code the Mods page shows (typed, or in the
+QR code's address), and stays paired: the code is not asked again, at the
+next start either. The Studio tab lists what is paired (which browser,
+for what, when it was last used): remove a pairing there and that browser
+is out at once. A pairing unused for 90 days goes by itself, and a new
+code leaves the pairings as they are.
+
+A browser paired from the control page may use the mods and their menus,
+and nothing else: no files, no code. The Studio's pairings may do
+everything.
 
 ## Your first mod
 
@@ -449,10 +465,22 @@ ScriptHookV's and ScriptHookVDotNet's calls have their counterparts:
 The Studio is also an [MCP](https://modelcontextprotocol.io) server: a
 coding agent can write a mod and get its type errors, start it and read
 its log, run Luau in the game, search the natives and use the mods' menus.
-The Studio's welcome page shows the command for your game, for example:
+
+The Studio's welcome page (nothing open) connects one: pick the agent
+(Claude Code, Codex, Cursor, VS Code, Copilot CLI, Antigravity, Claude
+Desktop, Windsurf, Zed, opencode, or any other), make its token (a pairing
+of its own, listed and removable in the Studio tab), and copy the command
+or the configuration it shows, filled in for your game. Cursor and VS
+Code add it in one click. For Claude Code, for example:
 
 ```sh
-claude mcp add --transport http glue5 http://<address>:47110/mcp --header "Authorization: Bearer <code>"
+claude mcp add --transport http --scope user glue5 http://<address>:47110/mcp \
+  --header "Authorization: Bearer <token>"
 ```
+
+Any other MCP client that speaks Streamable HTTP needs the address,
+`http://<address>:47110/mcp`, and the header `Authorization: Bearer
+<token>`. The pairing code works in the token's place too, until a new
+code is made.
 
 How mods run inside the engine is in the [design notes](design.md#mods).

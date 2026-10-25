@@ -1057,12 +1057,39 @@ whose own browser is no place to write mods).
 - **Server** (`glue5-mods/src/studio`): plain `std::net`, a thread per
   connection; HTTP/1.1 for the page, WebSockets (`tungstenite`, no async)
   for the Studio and the type checker.
-- **Pairing code**: 8 characters of Crockford base32 (40 bits), new each
-  time the Studio starts. The page carries it in its address (the QR code
-  of the Mods page), or asks for it. Every route but the page needs it.
-  After 10 wrong ones in a minute no code is taken for that minute.
-  WebSockets must come from the page's own origin, since a page elsewhere
-  in the same browser could otherwise drive the game through localhost.
+- **Pairing** (`studio/pairing.rs`): the code (8 characters of Crockford
+  base32, 40 bits, kept in the settings) is exchanged once for a token of
+  the client's own (`POST /pair`): 32 random bytes, which a page keeps in
+  its origin's storage and sends as `?token=` or `Authorization: Bearer`.
+  The game keeps each token's SHA-256 only, with the client's name (from
+  its User-Agent), its scope and when it was last used, in the mods
+  folder (`.glue5/pairings.json`): pairings outlive the game's runs and a
+  new code; the Mods page lists and removes them, which closes their
+  connections within a second; one unused for 90 days goes.
+  - Storage rather than a cookie: an origin's storage is its own (a
+    cookie goes to every port of the host), and a token no other page can
+    send means no request forgery to guard against.
+  - Scopes: the Studio's pairings may do everything; the control page's
+    only list the mods, start and stop them and use their menus (no files,
+    no eval, no type checker, no MCP), so a phone paired for the menus is
+    no key to the game's code.
+  - The code itself still works as a full credential, for agents and
+    tools that keep no pairing (whoever has it could pair anyway); the
+    Studio gives each agent a pairing of its own.
+  - A wrong code or token costs its connection a second (no lockout that
+    a page elsewhere could trigger). WebSockets must come from the page's
+    own origin, since a page elsewhere in the same browser could
+    otherwise drive the game through localhost.
+  - The address is the device's network address and the port: a page's
+    pairing lasts as long as they do (a new address is a new origin to
+    pair).
+- **Control page** (`/control`, `control.rs`): the same wasm, mounted for
+  the mods and their menus (a mod's in the address, `?mod=`), a phone's
+  layout one level at a time and a wide screen's side by side. The
+  editor's module (CodeMirror) is loaded only by the Studio, the first
+  time it shows (`/editor.js`, its class a global the wasm calls), so the
+  control page fetches none of it. A web app manifest lets a phone keep
+  it on its home screen.
 - **Type checker in the game**: Luau.Analysis is compiled from Luau's
   sources (`third_party/luau`, the release mlua builds the rest from) with
   a small C API (`csrc/checker.cpp`). It loads the natives' definitions in
@@ -1092,9 +1119,15 @@ whose own browser is no place to write mods).
   - search the natives;
   - use a mod's menus (`menus`, `menu_input`) as a player would.
 
-  `claude mcp add --transport http glue5 http://<address>:47110/mcp
-  --header "Authorization: Bearer <code>"`; the Studio's welcome page
-  shows it.
+  Any client that speaks Streamable HTTP with a header works: the
+  Studio's welcome page has each known client's own steps (agents.rs,
+  checked against their documentation in October 2026: a command, or a
+  JSON or TOML file; Cursor's and VS Code's install links), makes the
+  agent a pairing of its own (`pairings.agent`) and fills its token in.
+  Claude Desktop goes through `mcp-remote`: its connectors reach servers
+  from the cloud, never this computer. The snippets are coloured by a
+  highlighter of the page's own (highlight.rs, bash/JSON/TOML): a
+  read-only snippet needs no editor.
 - **Eval** runs in a mod of its own (`~eval`): a script thread whose Luau
   takes snippets from a queue. The console's input is a one-line
   CodeMirror with the same language server (a document of its own,
@@ -1111,21 +1144,17 @@ whose own browser is no place to write mods).
   within its mod (making the folders it goes into), deleting takes a
   folder with what it holds, and folders left empty go. Tabs follow what
   moved.
-- The pairing code is kept in the settings: a browser (and Claude Code's
-  MCP entry) paired once stays paired when the game starts again; the
-  Mods page makes a new one, which also closes the connections made with
-  the old one. A page that loses the game retries on its own; it asks
-  for a code only when the server says its code is wrong (`/check`),
-  and keeps its editor, tabs and history. A wrong code costs its
-  connection a second (no lockout that a page elsewhere could trigger);
-  bodies are read only from whoever has the code, a few connections at
+- A page that loses the game retries on its own; it asks to pair again
+  only when the server says its token is no more (`/check`), and keeps
+  its editor, tabs and history. Request bodies are read only from whoever
+  has a credential (before it, only `/pair`'s small one), a few connections at
   a time.
 - Luau's indentation in the editor: a line leaving blocks or brackets
   open adds a level, however many (`f(x, function()` ... `end)`), and
   if-expressions open none.
-- The mods' menus show in the Studio too (the MENUS panel, a screen of
-  their own on phones): the same items the game draws, sent again when
-  they change; what is done there reaches the mod as from the game.
+- The mods' menus show on the control page: the same items the game
+  draws, sent again when they change; what is done there reaches the mod
+  as from the game. A right click on a mod in the Studio opens it there.
 
 ## Known limits
 
