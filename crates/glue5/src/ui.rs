@@ -192,7 +192,8 @@ pub struct Status<'a> {
     pub mode: Mode,
     /// The last benchmark's results.
     pub benchmark: Option<&'a crate::benchmark::Results>,
-    /// The game running reaches GTA Online (GTA Online, or the story).
+    /// The game running reaches GTA Online (GTA Online, the story, the
+    /// sandbox).
     pub online: bool,
     /// Friend requests and game invites waiting for an answer.
     pub friend_requests: usize,
