@@ -237,6 +237,7 @@ pub fn run() -> Result<()> {
         sharing: None,
         studio: None,
         studio_failed: None,
+        device: crate::device::name(),
         servers: Arc::default(),
         stream_waiting: None,
         last_failure: None,
@@ -446,7 +447,10 @@ struct App {
     studio: Option<(glue5_mods::studio::Studio, ui::StudioInfo)>,
     /// The Studio could not start (both ports taken): when, and as what; not
     /// tried again for a while.
-    studio_failed: Option<(Instant, (bool, String))>,
+    studio_failed: Option<(Instant, bool)>,
+    /// This device's name, which the Studio's pages show (read once: UIKit
+    /// wants the main thread).
+    device: String,
     /// Servers found on the network by the last search, and whether one runs.
     servers: Arc<Mutex<(bool, Vec<ui::FoundServer>)>>,
     /// Engine reads have waited for the server since then.
@@ -810,7 +814,7 @@ impl App {
                 preparing: self.play_requested.then(|| self.screen.as_ref().and_then(Screen::progress)).flatten(),
                 mode: self.mode,
                 benchmark: self.benchmark.as_ref(),
-                online: self.game.is_some() && self.mode == Mode::Online,
+                online: self.game.is_some() && matches!(self.mode, Mode::Story | Mode::Online),
                 friend_requests: glue5_runtime::friends::pending(),
                 source: self.settings.source,
                 stream: stream.as_ref().map(|(server, status)| (*server, status)),
@@ -1063,7 +1067,7 @@ impl App {
         let s = &self.settings;
         let back_buffer = settings::render_size(self.window.size_in_pixels(), s.render_scale(), s.low_memory);
         if s.mods {
-            glue5_mods::install(&paths::mods_dir(&self.user_dir));
+            glue5_mods::install(&mods_dir(&self.user_dir));
         }
         let game = glue5_runtime::start(
             glue5_runtime::Config {
@@ -1373,7 +1377,7 @@ impl App {
     /// while it is on.
     fn update_studio(&mut self) {
         if self.settings.mods && glue5_mods::dir().is_none() {
-            glue5_mods::open(&paths::mods_dir(&self.user_dir));
+            glue5_mods::open(&mods_dir(&self.user_dir));
         }
         // None yet, "New" pressed, or not a code (an edited settings file).
         let code = match glue5_mods::studio::normalize(&self.settings.studio_code) {
@@ -1384,22 +1388,29 @@ impl App {
                 self.settings.studio_code.clone()
             }
         };
-        let wanted = (self.settings.mods && glue5_mods::dir().is_some() && self.settings.studio)
-            .then(|| (self.settings.studio_lan, code.clone()));
-        if self.studio.as_ref().map(|(s, _)| (s.lan(), s.token().to_string())) == wanted {
+        let wanted = (self.settings.mods && glue5_mods::dir().is_some() && self.settings.studio).then_some(self.settings.studio_lan);
+        if let Some((studio, info)) = &mut self.studio
+            && Some(studio.lan()) == wanted
+        {
+            // A new code: what is paired stays paired, the server serves on.
+            if studio.code() != code {
+                studio.set_code(&code);
+                info.code = studio.pairing_code();
+                self.ui.repaint();
+            }
             return;
         }
-        if let (Some((at, tried)), Some(w)) = (&self.studio_failed, &wanted)
-            && tried == w
+        if let (Some((at, tried)), Some(lan)) = (&self.studio_failed, wanted)
+            && *tried == lan
             && at.elapsed() < Duration::from_secs(10)
         {
             return;
         }
         self.studio = None;
-        if let Some((lan, code)) = wanted {
+        if let Some(lan) = wanted {
             // The usual port, else any (another app has it).
-            let started = glue5_mods::studio::Studio::start(glue5_mods::studio::PORT, lan, &code)
-                .or_else(|_| glue5_mods::studio::Studio::start(0, lan, &code));
+            let started = glue5_mods::studio::Studio::start(glue5_mods::studio::PORT, lan, &code, &self.device)
+                .or_else(|_| glue5_mods::studio::Studio::start(0, lan, &code, &self.device));
             match started {
                 Ok(studio) => {
                     let host = if lan {
@@ -1409,6 +1420,7 @@ impl App {
                     };
                     let info = ui::StudioInfo {
                         url: studio.url(&host),
+                        control: studio.control_url(&host),
                         code: studio.pairing_code(),
                         lan,
                     };
@@ -1417,7 +1429,7 @@ impl App {
                 }
                 Err(e) => {
                     log::warn!("studio: {e}");
-                    self.studio_failed = Some((Instant::now(), (lan, code)));
+                    self.studio_failed = Some((Instant::now(), lan));
                 }
             }
         }
@@ -1630,6 +1642,14 @@ impl App {
         }
         self.ui.repaint();
     }
+}
+
+/// The mods folder, with the mods that come with GLUE 5 put there (once a
+/// run of the app).
+fn mods_dir(user_dir: &Path) -> PathBuf {
+    let dir = paths::mods_dir(user_dir);
+    glue5_mods::bundled::install(&dir);
+    dir
 }
 
 /// The whole game downloaded from a server into `dir`: a copy (it has the

@@ -27,6 +27,7 @@ mod granular;
 mod imports;
 mod jobs;
 pub mod input;
+mod lod_lights;
 pub mod memory;
 mod online;
 pub mod overlay;
@@ -336,6 +337,7 @@ pub fn start(config: Config, gpu: gpu::GpuBackend) -> Result<Game> {
     skin::hooks(&mut hooks);
     shader_settings::hooks(&mut hooks);
     shadow_reveal::hooks(&mut hooks);
+    lod_lights::hooks(&mut hooks);
     device_reset::hooks(&mut hooks);
     readback::hooks(&mut hooks);
     audio_update::hooks(&mut hooks);
@@ -352,6 +354,7 @@ pub fn start(config: Config, gpu: gpu::GpuBackend) -> Result<Game> {
     stream::hooks(&mut hooks);
     prompts::hooks(&mut hooks);
     draw_lists::hooks(&mut hooks);
+    texts::hooks(&mut hooks);
     for set in EXTRA_HOOKS.lock().unwrap().iter() {
         set(&mut hooks);
     }

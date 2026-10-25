@@ -18,9 +18,11 @@ an invite or, for closed friends, by your friends.
 From **Story Mode** GTA Online is a choice away, as on PC: the pause
 menu's **ONLINE** tab (**Play GTA Online** and its sessions, **Join
 Friends**, the creators); its **FRIENDS** tab shows your friends and who
-is playing. A friend's invite or **Join Game** can't take the story there
-yet: join from the ONLINE tab. The story itself stays offline: only those
-menus and the way into GTA Online see the network.
+is playing. A friend's invite, or **Join** on the Friends page, takes the
+story to your friend's session too: the game asks whether to leave the
+story, loads your GTA Online character and goes there. The story itself
+stays offline: only those menus and the way into GTA Online see the
+network.
 
 Your characters are kept on your device (the [user folder](getting-started.md#where-your-data-is)'s
 `cloud`), not shared with Rockstar.

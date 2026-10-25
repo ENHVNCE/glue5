@@ -1,7 +1,8 @@
 //! Mods: switched on or off here; the mods in the user directory's `mods`
 //! folder, started with the game or during it; their menus while it runs;
-//! GLUE 5 Studio (the web IDE the app serves) with its address, QR code
-//! and pairing code; the mods' log.
+//! GLUE 5 Studio (the web IDE the app serves) and its control page (the
+//! mods' menus, for a phone) with their addresses, the pairing code, a QR
+//! code and the paired browsers and agents; the mods' log.
 
 use egui::{Color32, CornerRadius, RichText, Sense, vec2};
 use glue5_mods::ModState;
@@ -71,11 +72,21 @@ fn send(outs: Vec<Out>) {
 
 /// The Studio as it serves, for the page.
 pub struct StudioInfo {
-    /// The page's address, the pairing code in it.
+    /// The Studio's address.
     pub url: String,
+    /// The control page's address.
+    pub control: String,
     /// The pairing code as people type it.
     pub code: String,
     pub lan: bool,
+}
+
+impl StudioInfo {
+    /// `url` with the code to pair: the page opens paired (this device's
+    /// browser, a phone's camera).
+    pub fn paired(&self, url: &str) -> String {
+        format!("{url}?pair={}", self.code)
+    }
 }
 
 const ERR: Color32 = Color32::from_rgb(240, 149, 149);
@@ -130,14 +141,17 @@ pub(super) fn home_card(ui: &mut egui::Ui, settings: &Settings, status: &Status,
         Some(info) => {
             line.push_str(if info.lan { " · Studio on this network" } else { " · Studio on this device" });
             small(ui, &line, theme::MUTED);
-            let address = info.url.split('?').next().unwrap_or(&info.url).trim_end_matches('/').to_owned();
+            let address = info.url.trim_end_matches('/').to_owned();
             ui.label(RichText::new(format!("{address}  ·  code {}", info.code)).monospace().color(Color32::WHITE));
-            let [open, copy, page] = <[_; 3]>::try_from(
-                ui.horizontal(|ui| action_buttons(ui, &["Open Studio", "Copy address", "Mods"])).inner,
+            let [open, control, copy, page] = <[_; 4]>::try_from(
+                ui.horizontal(|ui| action_buttons(ui, &["Open Studio", "Control", "Copy address", "Mods"])).inner,
             )
             .unwrap();
             if open.on_hover_text("In this device's browser").clicked() {
-                ui.ctx().open_url(egui::OpenUrl::new_tab(&info.url));
+                ui.ctx().open_url(egui::OpenUrl::new_tab(info.paired(&info.url)));
+            }
+            if control.on_hover_text("The mods' menus, in this device's browser").clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(info.paired(&info.control)));
             }
             if copy.clicked() {
                 ui.ctx().copy_text(info.url.clone());
@@ -304,30 +318,34 @@ fn mods_tab(ui: &mut egui::Ui, page: &mut ModsPage, status: &Status) {
 }
 
 fn studio_tab(ui: &mut egui::Ui, settings: &mut Settings, status: &Status) {
-    setting(ui, "GLUE 5 Studio", Control::Toggle, Some("Write and run mods from a browser"), |ui| {
+    setting(ui, "GLUE 5 Studio", Control::Toggle, Some("Write and run mods from a browser; use their menus from a phone"), |ui| {
         toggle(ui, &mut settings.studio);
     });
-    let others = if settings.studio_lan { "Browsers on this network connect with the code" } else { "Only a browser on this device" };
+    let others = if settings.studio_lan { "Browsers on this network pair with the code" } else { "Only a browser on this device" };
     setting(ui, "Other devices", Control::Toggle, Some(others), |ui| {
         toggle(ui, &mut settings.studio_lan);
     });
     match &status.studio {
         Some(info) => {
-            // The address as typed; copied with the code in it.
-            let address = info.url.split('?').next().unwrap_or(&info.url).trim_end_matches('/');
-            let open = if info.lan { "Open it in a browser on this network" } else { "Open it in a browser on this device" };
-            setting(ui, address, Control::Actions, Some(open), |ui| {
-                let [go, copy] = <[_; 2]>::try_from(action_buttons(ui, &["Open", "Copy"])).unwrap();
-                if go.on_hover_text("In this device's browser").clicked() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(&info.url));
-                }
-                if copy.clicked() {
-                    ui.ctx().copy_text(info.url.clone());
-                }
-            });
-            setting(ui, &info.code, Control::Actions, Some("Pairing code: the page asks for it once"), |ui| {
+            let place = if info.lan { "on this network" } else { "on this device" };
+            for (url, title, note) in [
+                (&info.url, "Studio", format!("The editor, in a browser {place}")),
+                (&info.control, "Control page", format!("The mods and their menus, for a phone or a tablet {place}")),
+            ] {
+                let address = format!("{title} · {}", url.trim_end_matches('/'));
+                setting(ui, &address, Control::Actions, Some(&note), |ui| {
+                    let [go, copy] = <[_; 2]>::try_from(action_buttons(ui, &["Open", "Copy"])).unwrap();
+                    if go.on_hover_text("In this device's browser, paired").clicked() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(info.paired(url)));
+                    }
+                    if copy.clicked() {
+                        ui.ctx().copy_text(url.clone());
+                    }
+                });
+            }
+            setting(ui, &info.code, Control::Actions, Some("Pairing code: a browser or an agent pairs with it once"), |ui| {
                 let [new, copy] = <[_; 2]>::try_from(action_buttons(ui, &["New", "Copy"])).unwrap();
-                if new.on_hover_text("A new code: browsers paired with this one must pair again").clicked() {
+                if new.on_hover_text("A new code: what is paired stays paired").clicked() {
                     settings.studio_code.clear();
                 }
                 if copy.clicked() {
@@ -335,17 +353,67 @@ fn studio_tab(ui: &mut egui::Ui, settings: &mut Settings, status: &Status) {
                 }
             });
             if info.lan {
-                qr_row(ui, &info.url);
+                qr_row(ui, &info.paired(&info.control));
             }
+            paired(ui);
         }
         None if settings.studio => small(ui, "Starting…", theme::MUTED),
         None => {}
     }
-    muted(ui, "Whoever has the code can run code in the game: make a new one if someone should no longer have it.");
+    muted(
+        ui,
+        "Whoever has the code can pair, and a paired Studio runs code in the game: make a new code if someone should no \
+         longer have it, and remove what should no longer be paired. A pairing unused for 90 days goes by itself.",
+    );
 }
 
-/// The address as a QR code, in a row like the settings': a tablet's or a
-/// phone's camera opens the Studio, paired.
+/// The browsers and agents paired with the Studio, each removable: its
+/// token no longer works, its pages close.
+fn paired(ui: &mut egui::Ui) {
+    let pairings = glue5_mods::studio::pairing::list();
+    if pairings.is_empty() {
+        return;
+    }
+    let scale = theme::density(ui);
+    ui.add_space(6.0 * scale);
+    ui.label(theme::heading("PAIRED", 15.0 * scale).color(theme::MUTED));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    for p in &pairings {
+        let what = match p.scope {
+            glue5_mods::studio::Scope::Studio => "Studio",
+            glue5_mods::studio::Scope::Control => "Control page",
+        };
+        let note = format!("{what} · used {}", ago(now.saturating_sub(p.last_used)));
+        setting(ui, &p.name, Control::Actions, Some(&note), |ui| {
+            if action_button(ui, "Remove").on_hover_text("It must pair again with the code").clicked() {
+                glue5_mods::studio::pairing::forget(&p.id);
+            }
+        });
+    }
+    if pairings.len() > 1 {
+        setting(ui, "Everything paired", Control::Actions, Some("Every browser and agent pairs again"), |ui| {
+            if action_button(ui, "Remove all").clicked() {
+                glue5_mods::studio::pairing::forget_all();
+            }
+        });
+    }
+}
+
+/// `seconds` ago, as people say it.
+fn ago(seconds: u64) -> String {
+    match seconds {
+        0..60 => "just now".into(),
+        60..3600 => format!("{} min ago", seconds / 60),
+        3600..86400 => format!("{} h ago", seconds / 3600),
+        _ => match seconds / 86400 {
+            1 => "yesterday".into(),
+            d => format!("{d} days ago"),
+        },
+    }
+}
+
+/// The control page's address (with the code) as a QR code, in a row like
+/// the settings': a phone's camera opens it, paired for the control page.
 fn qr_row(ui: &mut egui::Ui, url: &str) {
     let scale = theme::density(ui);
     egui::Frame::new()
@@ -360,7 +428,7 @@ fn qr_row(ui: &mut egui::Ui, url: &str) {
                 ui.vertical(|ui| {
                     ui.label(RichText::new("Scan to open").size(14.0 * scale).color(Color32::WHITE));
                     ui.label(
-                        RichText::new("With a tablet's or a phone's camera: the Studio opens already paired.")
+                        RichText::new("With a phone's or a tablet's camera: the control page opens, paired, with the mods' menus.")
                             .size(11.0 * scale)
                             .color(theme::MUTED),
                     );

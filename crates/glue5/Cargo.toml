@@ -52,6 +52,8 @@ sdl3 = { version = "0.20", features = ["build-from-source-static", "raw-window-h
 # The binaries' allocator on Windows (see src/main.rs).
 [target.'cfg(windows)'.dependencies]
 mimalloc = "0.1"
+# The computer's name (device.rs).
+windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 sdl3 = { version = "0.20", features = ["build-from-source", "raw-window-handle"] }
