@@ -427,21 +427,30 @@ world-space transform vertex shader. Neither correction changes game assets.
 The same mask variant is selected when compiling recorded recipes ahead.
 
 **Fading peds (stipple fades).** An entity fading (its alpha below 255: a
-ped coming or going with the distance, a script's SET_ENTITY_ALPHA) is
-drawn in the deferred fade pass, which forces the "deferredalphaclip"
-technique group without MSAA (stipple fades: the engine's stipple is the
-blend state's sample mask, which the backend's SET_BLEND drops). A shader
-with no technique for the forced group draws nothing, and this game's
-`ped.fxc` has none (its hair shaders do): a fading ped was its hair. The
-runtime's `fades.rs` hooks `grmShader::BeginDraw`: when it gives no passes
-for a fade group, the shader's "deferred" technique draws instead, and the
-fading entity's alpha (`CShaderLib::SetStippleAlpha`) goes to the renderer
-as `op::STIPPLE` (a host command, as `SCENE_DONE`), off again at `EndDraw`.
-With a stipple on, the recipe has the level (of 16 pixels in each 4x4
-block) and the pixel program discards the others in a 4x4 ordered dither
-(`shader::with_stipple`, every game shader validates with it). The cost is
-a branch on a failed BeginDraw, and up to 15 pixel variants of the ped
-programs, compiled when first used (a fading ped is missing until then)
+ped coming or going with the distance, a script's SET_ENTITY_ALPHA) draws
+with the "deferredalphaclip" technique group forced, without MSAA (stipple
+fades: `CShaderLib::SetStippleAlpha` sets a 16-bit mask, a bit for each
+pixel of a 4x4 block, that the clipping techniques read; `ResetAlpha` sets
+it back to all after the entity). A shader with no technique for the forced
+group draws nothing, and this game's `ped.fxc` has none (its hair shaders
+do): a fading ped was its hair. The runtime's `fades.rs` hooks
+`grmShader::BeginDraw`: when it gives no passes for a clipping group while
+the mask stipples, the shader's "deferred" technique draws instead, and the
+mask's share of pixels goes to the renderer as `op::STIPPLE` (a host
+command, as `SCENE_DONE`), off again at `EndDraw`. Only while the mask
+stipples: the cutout pass forces the same groups for draws that are not
+fading, and there such a shader still draws nothing (drawing it, with the
+last fading entity's alpha, put unclipped weed and grass cards in the
+world). Nor for a shader that has another clipping group (hair: its
+techniques are looked up as `BeginDraw` does, a byte per group and draw type in its
+effect): a "deferred" copy of its cards does not clip, and showed as blocky
+patches in a fading ped's hair. The hair itself still draws unstippled in
+a fade, as before (why the engine's own stipple does not show on it is
+open). With a stipple on, the recipe has the level (of 16 pixels in each
+4x4 block) and the pixel program discards the others in a 4x4 ordered
+dither (`shader::with_stipple`, every game shader validates with it). The
+cost is a branch on a failed BeginDraw, and up to 15 pixel variants of the
+ped programs, compiled when first used (a fading ped is missing until then)
 and recorded for the next start.
 
 ## Application UI and game menus
