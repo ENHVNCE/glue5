@@ -1458,15 +1458,7 @@ impl Gpu {
 
     /// The textures' and buffers' bytes.
     pub(crate) fn gpu_bytes(&self) -> [u64; 2] {
-        let (mut textures, mut buffers) = (0u64, 0u64);
-        for o in self.objs.values() {
-            match o {
-                Obj::Texture(t) => textures += t.bytes,
-                Obj::Buffer(b) => buffers += b.gpu.as_ref().map_or(0, |_| b.bytes),
-                _ => {}
-            }
-        }
-        [textures, buffers]
+        self.objs.bytes()
     }
 
     /// What Metal has allocated for the device, all resources included.
