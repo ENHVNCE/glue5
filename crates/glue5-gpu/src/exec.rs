@@ -62,9 +62,6 @@ pub struct D3d {
     pub raster: u32,
     pub viewport: Option<[f32; 6]>,
     pub scissor: Option<[u32; 4]>,
-    /// The pixels of each 4x4 block the draws cover, of 16 (0: all): a
-    /// stipple fade (`op::STIPPLE`).
-    pub stipple: u32,
 }
 
 impl Default for D3d {
@@ -89,7 +86,6 @@ impl Default for D3d {
             raster: 0,
             viewport: None,
             scissor: None,
-            stipple: 0,
         }
     }
 }
@@ -404,13 +400,6 @@ impl Gpu {
             }
             op::PRESENT => self.present(c.w(0)),
             op::SCENE_DONE => self.scene_done(),
-            op::STIPPLE => {
-                let level = c.w(0).min(16) % 16;
-                if self.s.stipple != level {
-                    self.s.stipple = level;
-                    self.pdirty = true;
-                }
-            }
             op::FENCE => {
                 self.works.push(Work::Store { at: c.addr(0), value: c.w(2) });
                 self.flush("fence");
