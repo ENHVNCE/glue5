@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: mempage4k <mempage4k@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 11:00:00 +0100
+Subject: [PATCH] wgpu-hal: Vulkan command pools on Adreno keep their memory
+
+0003 (pools replaced when they hold twice what their last use needed,
+since 0013 after eight resets in a row) and 0006 (memory given back every
+16th reset), with TRANSIENT pools, keep Mali's per-command-buffer host
+memory bounded. On Adreno they are the biggest CPU cost of a frame: a command buffer with no memory from an
+earlier use gets it from the kernel as it records (ioctl and mmap from
+kgsl_sharedmem_alloc in vkBeginCommandBuffer and as the buffer grows),
+and TRANSIENT pools do not recycle it. On a Galaxy S24 Ultra (Adreno 750,
+Android 16) in a game, each encoding thread spent 43 % of its time in the
+kernel with ~15k page faults a second, and recording took ~80 ms a frame.
+
+On Qualcomm devices the pools are now not TRANSIENT, never replaced and
+reset without RELEASE_RESOURCES: recording ~21 ms a frame, page faults
+divided by 8, 45-55 fps instead of ~18. The memory the pools keep
+plateaus (~1.9 GB more in that game, on a 12 GB phone); other vendors
+keep the policy of 0003, 0006 and 0013.
+---
+diff --git a/src/vulkan/command.rs b/src/vulkan/command.rs
+index e44bf15..bdff560 100644
+--- a/src/vulkan/command.rs
++++ b/src/vulkan/command.rs
+@@ -210,8 +210,11 @@ impl crate::CommandEncoder for super::CommandEncoder {
+         // the queue is idle: destroyed with the queue running other work,
+         // though none of its command buffers was pending, it made an NVIDIA
+         // RTX 3070 (driver 621.01) lose the device reading commands.
++        //
++        // Not where pools keep their memory (see `keeps_command_memory`).
++        let keep = self.device.keeps_command_memory();
+         let used = self.free.len() - unused;
+-        if unused >= 4 && unused >= used {
++        if !keep && unused >= 4 && unused >= used {
+             self.slack += 1;
+         } else {
+             self.slack = 0;
+@@ -219,7 +222,7 @@ impl crate::CommandEncoder for super::CommandEncoder {
+         if self.slack >= REPLACE_AFTER {
+             let vk_info = vk::CommandPoolCreateInfo::default()
+                 .queue_family_index(self.family_index)
+-                .flags(vk::CommandPoolCreateFlags::TRANSIENT);
++                .flags(self.device.command_pool_flags());
+             if let Ok(raw) = unsafe { self.device.raw.create_command_pool(&vk_info, None) } {
+                 self.device.retired_command_pools.lock().push(self.raw);
+                 self.slack = 0;
+@@ -235,7 +238,7 @@ impl crate::CommandEncoder for super::CommandEncoder {
+         // command memory across a game's pools); giving it back at every
+         // reset made recording slower.
+         self.resets += 1;
+-        let flags = if self.resets >= 16 {
++        let flags = if !keep && self.resets >= 16 {
+             self.resets = 0;
+             vk::CommandPoolResetFlags::RELEASE_RESOURCES
+         } else {
+diff --git a/src/vulkan/device.rs b/src/vulkan/device.rs
+index 481d220..860bff2 100644
+--- a/src/vulkan/device.rs
++++ b/src/vulkan/device.rs
+@@ -16,6 +16,27 @@ use super::{conv, descriptor::DescriptorCounts, RawTlasInstance};
+ use crate::TlasInstance;
+ 
+ impl super::DeviceShared {
++    /// Whether command pools keep their command buffers and memory for
++    /// reuse, rather than being replaced or giving their memory back. On
++    /// Adreno, a command buffer that has no memory from an earlier use gets
++    /// it from the kernel as it records (ioctl and mmap in
++    /// vkBeginCommandBuffer and as it grows, ~15k page faults a second on
++    /// each encoding thread), and TRANSIENT pools do not recycle it: on a
++    /// Galaxy S24 Ultra (Adreno 750) recording took ~80 ms a frame with the
++    /// Mali policy below, ~21 ms keeping the memory.
++    pub(super) fn keeps_command_memory(&self) -> bool {
++        self.vendor_id == crate::auxil::db::qualcomm::VENDOR
++    }
++
++    /// The flags of a command encoder's pool.
++    pub(super) fn command_pool_flags(&self) -> vk::CommandPoolCreateFlags {
++        if self.keeps_command_memory() {
++            vk::CommandPoolCreateFlags::empty()
++        } else {
++            vk::CommandPoolCreateFlags::TRANSIENT
++        }
++    }
++
+     /// Set the name of `object` to `name`.
+     ///
+     /// If `name` contains an interior null byte, then the name set will be truncated to that byte.
+@@ -1384,7 +1405,7 @@ impl crate::Device for super::Device {
+     ) -> Result<super::CommandEncoder, crate::DeviceError> {
+         let vk_info = vk::CommandPoolCreateInfo::default()
+             .queue_family_index(desc.queue.family_index)
+-            .flags(vk::CommandPoolCreateFlags::TRANSIENT);
++            .flags(self.shared.command_pool_flags());
+ 
+         let raw = unsafe {
+             self.shared
