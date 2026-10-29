@@ -8,8 +8,22 @@ set -euo pipefail
 # Compile the shared Icon Composer source, including the legacy .icns fallback.
 assets="$PWD/target/package/macos-assets"
 mkdir -p "$assets"
-xcrun actool platform/shared/Glue5.icon --compile "$assets" \
+if ! xcrun actool platform/shared/Glue5.icon --compile "$assets" \
     --platform macosx --minimum-deployment-target 14.0 --app-icon Glue5 \
-    --output-partial-info-plist "$assets/Info.plist" --output-format human-readable-text
+    --output-partial-info-plist "$assets/Info.plist" --output-format human-readable-text; then
+    # Apple's asset tooling crashes on some machines (ibtoold: "The tool closed
+    # the connection"). The icon is cosmetic: make a plain .icns from the
+    # source art and carry on without an asset catalog.
+    echo "warning: actool failed; building a plain .icns instead" >&2
+    src=platform/shared/Glue5.icon/Assets/02-five.png
+    set="$assets/Glue5.iconset"
+    rm -rf "$set" && mkdir -p "$set"
+    for s in 16 32 128 256 512; do
+        sips -z $s $s "$src" --out "$set/icon_${s}x${s}.png" >/dev/null
+        sips -z $((s*2)) $((s*2)) "$src" --out "$set/icon_${s}x${s}@2x.png" >/dev/null
+    done
+    iconutil -c icns "$set" -o "$assets/Glue5.icns"
+    rm -rf "$set"
+fi
 cargo packager --release --formats app
 echo "built $PWD/target/package/Glue 5.app"
