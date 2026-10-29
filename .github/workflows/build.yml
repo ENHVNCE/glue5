@@ -35,6 +35,9 @@ jobs:
       MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
       # The tools each platform needs are installed below, not all of them.
       MISE_TASK_RUN_AUTO_INSTALL: "false"
+      # This copy's game.wasm is build 8b0b5899ed with a cosmetic 960-byte
+      # difference (all 283 hooked functions resolve by name), so build anyway.
+      GLUE5_ALLOW_UNKNOWN_BUILD: "1"
     steps:
       # A fork behind this project builds without its latest fixes: said,
       # but the build goes on.
