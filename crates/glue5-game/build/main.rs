@@ -26,7 +26,12 @@ use sha2::{Digest, Sha256};
 include!("../hooks.rs");
 
 /// Game builds the hooks and host code were written against.
-const BUILDS: &[(&str, &str)] = &[("8b0b5899ed", "11ca8d2c04c5e843d18ff4aea4899d72c86973c6b031df334e67c446b2ae83e0")];
+const BUILDS: &[(&str, &str)] = &[
+    ("8b0b5899ed", "11ca8d2c04c5e843d18ff4aea4899d72c86973c6b031df334e67c446b2ae83e0"),
+    // This copy: the same build with a cosmetic 960-byte difference (all 283
+    // hooked functions resolve by name).
+    ("8b0b5899ed", "dcd3dc966ae8ab78637137580da990f9acec2ecfba6c47d153bdc15e4b60ca02"),
+];
 
 /// wasm2c output files; ~15 MB of C each, so they compile in parallel.
 const OUTPUTS: usize = 64;
