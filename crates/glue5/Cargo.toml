@@ -17,7 +17,8 @@ out-dir = "../../target/package"
 # Made by macos:build and linux:package; each system's formats take theirs
 # (an .icns on macOS, PNGs on Linux) and a missing one matches nothing.
 icons = ["../../target/package/macos-assets/Glue5.icns", "../../target/package/linux-assets/glue5.png"]
-resources = [{ src = "../../target/package/macos-assets/Assets.car", target = "Assets.car" }]
+# resources = [{ src = "../../target/package/macos-assets/Assets.car", target = "Assets.car" }]
+# ^ commented out: no asset catalog when actool cannot run (see macos/build)
 
 [package.metadata.packager.macos]
 minimum-system-version = "14.0"
